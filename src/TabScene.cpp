@@ -688,33 +688,50 @@ private:
 
     // ── Probe overlay ─────────────────────────────────────────────────────────
     void drawProbeOverlay() {
-        canvas.fillRect(0, TOP, W, NAV_Y - TOP, 0x0001);
+        // Full-screen dark overlay
         canvas.fillRect(0, TOP, W, NAV_Y - TOP, 0x0863);
 
-        int pw = W - 24, ph = H - TOP - BOT - 20;
-        int px = (W - pw) / 2, py = TOP + 10, titleH = 24;
+        // Title bar
+        int titleH = 26;
+        canvas.fillRect(0, TOP, W, titleH, 0x10A3);
+        hline(0, TOP + titleH, W, COL_BORDER);
+        canvas.fillCircle(14, TOP + titleH / 2, 4, CYAN);
+        f2("Probe Operation", 26, TOP + titleH / 2, COL_WHITE, middle_left);
+        _probeClose = { W - 30, TOP, 30, titleH };
+        f2("X", W - 15, TOP + titleH / 2, COL_DIM2);
 
-        fillR(px, py, pw, ph, 6, 0x0882);
-        strokeR(px, py, pw, ph, 6, CYAN);
-        canvas.fillRect(px, py, pw, titleH, 0x0863);
-        hline(px, py + titleH, pw, COL_BORDER);
-        canvas.fillCircle(px + 14, py + titleH / 2, 4, CYAN);
-        f2("Select Probe Operation", px + 26, py + titleH / 2, COL_WHITE, middle_left);
+        // Rows — full width, generous height for easy tapping
+        int listY = TOP + titleH + 4;
+        int avail = NAV_Y - listY - 4;
+        int rowH  = avail / N_PROBE_OPTS;
 
-        _probeClose = { px + pw - 22, py, 22, titleH };
-        f2("X", px + pw - 11, py + titleH / 2, COL_DIM2);
-
-        int listY = py + titleH + 4;
-        int rowH  = (ph - titleH - 8) / N_PROBE_OPTS;
         for (int i = 0; i < N_PROBE_OPTS; i++) {
-            int rx = px + 10, ry = listY + i * rowH;
-            int rw = pw - 20, rh = rowH - 3;
-            _probeRows[i] = { rx, ry, rw, rh };
-            canvas.fillRoundRect(rx, ry, rw, rh, 3, i % 2 == 0 ? 0x0883 : 0x0863);
-            canvas.fillRect(rx, ry, 3, rh, PROBE_OPTS[i].col);
-            f2(PROBE_OPTS[i].label, rx + 10, ry + rh * 38 / 100, COL_WHITE, middle_left);
-            f2(PROBE_OPTS[i].sub,   rx + 10, ry + rh * 72 / 100, COL_DIM2,  middle_left);
-            f2(">",  rx + rw - 6,   ry + rh / 2, PROBE_OPTS[i].col, middle_right);
+            int ry = listY + i * rowH;
+            int rh = rowH - 3;
+            _probeRows[i] = { 0, ry, W, rh };
+
+            // Alternating background
+            canvas.fillRect(0, ry, W, rh, i % 2 == 0 ? 0x0883 : 0x0841);
+
+            // Coloured left accent strip
+            canvas.fillRect(0, ry, 5, rh, PROBE_OPTS[i].col);
+
+            // Label centred in row — TINY font, single line
+            txt(PROBE_OPTS[i].label, 14, ry + rh * 42 / 100,
+                COL_WHITE, TINY, middle_left);
+            // Sub-description in Font0 below label
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_left);
+            canvas.setTextColor(COL_DIM2);
+            canvas.drawString(PROBE_OPTS[i].sub, 14, ry + rh * 78 / 100);
+
+            // Arrow indicator
+            canvas.setFont(&fonts::Font2);
+            canvas.setTextDatum(middle_right);
+            canvas.setTextColor(PROBE_OPTS[i].col);
+            canvas.drawString(">", W - 8, ry + rh / 2);
+
+            hline(0, ry + rh, W, COL_BORDER);
         }
     }
 
