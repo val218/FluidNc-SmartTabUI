@@ -1,0 +1,48 @@
+# FluidDial TabUI — builds the 'tabui' environment for JC2432W328C
+# This is the ONLY workflow file needed. Delete any other workflow files.
+name: Build FluidDial TabUI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Clean
+        run: rm -rf .pio/build
+
+      - name: Build firmware (tabui)
+        run: pio run -e tabui
+
+      - name: Build filesystem (tabui)
+        run: pio run -e tabui -t buildfs
+
+      - name: Build merged flash image
+        run: pio run -e tabui -t build_merged
+
+      - name: Upload merged-flash.bin
+        uses: actions/upload-artifact@v4
+        with:
+          name: FluidDial-TabUI
+          path: .pio/build/tabui/merged-flash.bin
