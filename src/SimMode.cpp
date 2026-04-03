@@ -148,3 +148,7 @@ const std::vector<SimFile>& simMode_fileList() { return _files; }
 void simMode_setPos(int axis, float val) {
     if (axis >= 0 && axis < 4) _axes[axis] = val;
 }
+
+void simMode_reset() {
+    for (int i = 0; i < 4; i++) _axes[i] = 0;
+}

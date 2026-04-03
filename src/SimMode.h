@@ -24,3 +24,7 @@ const std::vector<SimFile>& simMode_fileList();
 
 // Inject sim data into FluidNC model globals (called by tick)
 void simMode_injectState();
+
+// Direct axis position control (used by path animation)
+void simMode_setPos(int axis, float val);
+void simMode_reset();
