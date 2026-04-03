@@ -13,6 +13,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cmath>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Palette — RGB565 literals
@@ -421,30 +422,28 @@ private:
         }
         vline(DROW - 1, TOP, NAV_Y - TOP - FEED_H, COL_BORDER);
 
-        // Timed path animation (80ms per step) — self-scheduling via millis
+        // Timed path animation (80ms/step) driven here during drawing
         if (simJobRunning && !simPath.empty()) {
             static uint32_t _lastStep = 0;
             uint32_t _now = millis();
             if (_now - _lastStep >= 80) {
                 _lastStep = _now;
-                simPathIdx++;
-                if (simPathIdx >= (int)simPath.size()) {
-                    simPathIdx = (int)simPath.size() - 1;
-                    simJobRunning = false;
-                } else {
+                if (simPathIdx < (int)simPath.size()-1) {
+                    simPathIdx++;
                     simMode_setPos(0, simPath[simPathIdx].first);
                     simMode_setPos(1, simPath[simPathIdx].second);
-                    // Schedule next redraw via scene tick — dispatch_events picks it up
                     reDisplay();
+                } else {
+                    simJobRunning = false;
                 }
             }
         }
 
-        // Visualizer area
+        // Visualizer area — simple blank until job running
         canvas.fillRect(VIZ_X, VIZ_Y, VIZ_W, VIZ_H, COL_PANEL2);
 
-        if (!simPath.empty()) {
-            // Draw parsed G-code path scaled to fit the visualizer area
+        if (simJobRunning || (!simPath.empty() && simPathIdx > 0)) {
+            // Draw tool path
             float minX=simPath[0].first, maxX=minX;
             float minY=simPath[0].second, maxY=minY;
             for (auto& pt : simPath) {
@@ -452,37 +451,40 @@ private:
                 minY=std::min(minY,pt.second); maxY=std::max(maxY,pt.second);
             }
             float rx=maxX-minX, ry=maxY-minY;
-            if (rx<1) rx=1; if (ry<1) ry=1;
-            float scale = std::min((VIZ_W-8)/(float)rx, (VIZ_H-8)/(float)ry);
-            float ox = VIZ_X+4 + (VIZ_W-8 - rx*scale)/2;
-            float oy = VIZ_Y+4 + (VIZ_H-8 - ry*scale)/2 + ry*scale;
+            if (rx<1.0f) rx=1.0f; if (ry<1.0f) ry=1.0f;
+            // Shrink bottom 10px to leave room for progress bar
+            int vizH2 = VIZ_H - 12;
+            float scale = std::min((VIZ_W-8)/(float)rx, (float)vizH2/(float)ry);
+            float ox = VIZ_X+4 + (VIZ_W-8 - rx*scale)/2.0f;
+            float oy = VIZ_Y+4 + ((float)vizH2 - ry*scale)/2.0f + ry*scale;
 
-            auto toVX = [&](float x){ return (int)(ox + (x-minX)*scale); };
-            auto toVY = [&](float y){ return (int)(oy - (y-minY)*scale); };
+            auto toVX = [&](float vx){ return (int)(ox + (vx-minX)*scale); };
+            auto toVY = [&](float vy){ return (int)(oy - (vy-minY)*scale); };
 
-            // Draw path
+            int drawn = std::min(simPathIdx, (int)simPath.size()-1);
             for (int pi=1; pi<(int)simPath.size(); pi++) {
                 int x1=toVX(simPath[pi-1].first), y1=toVY(simPath[pi-1].second);
                 int x2=toVX(simPath[pi].first),   y2=toVY(simPath[pi].second);
-                bool done = (pi <= simPathIdx);
-                canvas.drawLine(x1,y1,x2,y2, done ? CYAN : COL_DIM);
+                canvas.drawLine(x1,y1,x2,y2, pi<=drawn ? CYAN : COL_DIM);
             }
-            // Current position marker
-            if (simPathIdx < (int)simPath.size()) {
-                int mx=toVX(simPath[simPathIdx].first);
-                int my=toVY(simPath[simPathIdx].second);
-                canvas.fillCircle(mx,my,3,GREEN);
+            if (drawn < (int)simPath.size()) {
+                canvas.fillCircle(toVX(simPath[drawn].first), toVY(simPath[drawn].second), 3, GREEN);
             }
-            // File name
-            if (!simJobName.empty()) {
-                hdrTxt(simJobName.c_str(), VIZ_X+4, VIZ_Y+6, COL_DIM2, middle_left);
-            }
+
+            // Progress bar at bottom of viz area
+            int pbY = VIZ_Y + VIZ_H - 10;
+            int pct = simPath.size()>1 ? simPathIdx*100/((int)simPath.size()-1) : 100;
+            int pbW = (VIZ_W-4) * pct / 100;
+            canvas.fillRect(VIZ_X+2, pbY, VIZ_W-4, 7, COL_BORDER);
+            if (pbW>0) canvas.fillRect(VIZ_X+2, pbY, pbW, 7, CYAN);
+            // Job name top-left
+            if (!simJobName.empty())
+                hdrTxt(simJobName.c_str(), VIZ_X+3, VIZ_Y+6, COL_DIM2, middle_left);
         } else {
-            txt("G-code Visualizer", VIZ_X + VIZ_W/2, VIZ_Y + VIZ_H/2 - 8, COL_DIM, TINY, middle_center);
-            if (simMode_active())
-                txt("Select file to visualise", VIZ_X+VIZ_W/2, VIZ_Y+VIZ_H/2+8, COL_DIM, TINY, middle_center);
-            else
-                txt("(connect to machine)", VIZ_X+VIZ_W/2, VIZ_Y+VIZ_H/2+8, COL_DIM, TINY, middle_center);
+            // Idle — simple placeholder
+            txt("Visualizer", VIZ_X+VIZ_W/2, VIZ_Y+VIZ_H/2-6, COL_DIM, TINY, middle_center);
+            txt(simMode_active()?"Run a file to preview":"(no job running)",
+                VIZ_X+VIZ_W/2, VIZ_Y+VIZ_H/2+8, COL_DIM, TINY, middle_center);
         }
 
         // File progress bar
@@ -652,100 +654,79 @@ private:
         }
     }
 
-    // ── G-code preview ───────────────────────────────────────────────────────
+    // ── G-code preview overlay (bottom sheet, ~60% height) ──────────────────
     void drawGcodePreview() {
-        // Header bar with filename and back button
-        canvas.fillRect(0, TOP, W, 18, COL_PANEL);
-        hline(0, TOP + 18, W, COL_BORDER);
-        const std::string& fname = fileList[fileSelected].name;
-        f2s(fname, 18, TOP + 9, CYAN, middle_left);
-        tintStrokeR(W - 38, TOP + 2, 34, 14, 2, COL_BORDER2, COL_BORDER, 60);
-        f2("Back", W - 21, TOP + 9, COL_DIM2);
-
-        // G-code lines area
-        int listY  = TOP + 20;
-        int listH  = NAV_Y - listY - 22;
-        int lh     = 14;   // line height in pixels (Font0 = 8px + padding)
-        int maxL   = listH / lh;
+        int panelY = TOP + 30;   // starts 30px below header — shows file list peeking above
+        int panelH = NAV_Y - panelY;
+        int titleH = 18;
+        int abH    = 22;
+        int listY  = panelY + titleH;
+        int listH  = panelH - titleH - abH;
+        int lh     = 13;
         int total  = (int)previewLines.size();
+        int maxL   = listH / lh;
 
-        canvas.fillRect(0, listY, W, listH, COL_PANEL3);
+        // Semi-transparent dim above panel
+        canvas.fillRect(0, TOP, W, 30, 0x0000);
+
+        // Panel background
+        canvas.fillRect(0, panelY, W, panelH, 0x0883);
+        hline(0, panelY, W, CYAN);
+
+        // Title bar
+        canvas.fillRect(0, panelY, W, titleH, 0x10A3);
+        const std::string& fname = fileList[fileSelected].name;
+        f2s(fname, 8, panelY + titleH/2, CYAN, middle_left);
+        tintStrokeR(W-32, panelY+2, 28, 14, 3, COL_BORDER2, COL_BORDER, 60);
+        f2("X", W-18, panelY+titleH/2, COL_DIM2);
 
         // Scroll indicator
         if (total > maxL) {
-            int trackH = listH;
-            int thumbH = std::max(6, trackH * maxL / total);
-            int thumbY = listY + (trackH - thumbH) * previewScroll / std::max(1, total - maxL);
-            canvas.fillRect(W - 3, listY, 3, trackH, COL_BORDER);
-            canvas.fillRect(W - 3, thumbY, 3, thumbH, COL_DIM2);
+            int thumbH = std::max(4, listH * maxL / total);
+            int thumbY = listY + (listH-thumbH) * previewScroll / std::max(1, total-maxL);
+            canvas.fillRect(W-3, listY, 3, listH, COL_BORDER);
+            canvas.fillRect(W-3, thumbY, 3, thumbH, COL_DIM2);
         }
 
-        for (int i = 0; i < maxL && (previewScroll + i) < total; i++) {
-            int ly  = listY + i * lh;
-            int idx = previewScroll + i;
-            if (i % 2 == 0) canvas.fillRect(0, ly, W - 4, lh, 0x0841);
-            // Line number
-            canvas.setFont(&fonts::Font0);
-            canvas.setTextDatum(middle_right);
-            canvas.setTextColor(COL_DIM);
-            char lnum[8]; snprintf(lnum, sizeof(lnum), "%d", previewFirstLine + idx + 1);
-            canvas.drawString(lnum, 30, ly + lh / 2);
-            // G-code line - colour by type
+        // G-code lines
+        for (int i = 0; i < maxL && (previewScroll+i) < total; i++) {
+            int ly  = listY + i*lh;
+            int idx = previewScroll+i;
+            if (i%2==0) canvas.fillRect(0, ly, W-4, lh, 0x0841);
             const std::string& ln = previewLines[idx];
             int col = COL_DIM2;
             if (!ln.empty()) {
                 char c = ln[0];
-                if (c == 'G' || c == 'g')      col = CYAN;
-                else if (c == 'M' || c == 'm') col = YELLOW;
-                else if (c == ';' || c == '(') col = COL_DIM;
-                else if (c == 'F' || c == 'f') col = GREEN;
-                else                            col = COL_WHITE2;
+                if      (c=='G'||c=='g') col = CYAN;
+                else if (c=='M'||c=='m') col = YELLOW;
+                else if (c==';'||c=='(') col = COL_DIM;
+                else if (c=='F'||c=='f') col = GREEN;
+                else                     col = COL_WHITE2;
             }
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_right);
+            canvas.setTextColor(COL_DIM);
+            char lnum[6]; snprintf(lnum,sizeof(lnum),"%d",previewFirstLine+idx+1);
+            canvas.drawString(lnum, 26, ly+lh/2);
             canvas.setTextDatum(middle_left);
             canvas.setTextColor(col);
-            // Truncate long lines
-            std::string disp = ln.substr(0, 42);
-            canvas.drawString(disp.c_str(), 34, ly + lh / 2);
+            canvas.drawString(ln.substr(0,44).c_str(), 30, ly+lh/2);
         }
 
-        // Action bar: progress bar (if running) or G-code|Run buttons
-        int abY = NAV_Y - 24;
-        canvas.fillRect(0, abY, W, 24, COL_PANEL);
+        // Action bar
+        int abY = NAV_Y - abH;
+        canvas.fillRect(0, abY, W, abH, 0x10A3);
         hline(0, abY, W, COL_BORDER);
-
-        if (simJobRunning) {
-            // Progress bar during run
-            int pct = simPath.empty() ? 0 : simPathIdx * 100 / (int)simPath.size();
-            int pw  = (W - 8) * pct / 100;
-            canvas.fillRect(4, abY + 8, W - 8, 8, COL_BORDER2);
-            canvas.fillRect(4, abY + 8, pw,    8, CYAN);
-            char pbuf[16]; snprintf(pbuf, sizeof(pbuf), "%d%%", pct);
-            f2(pbuf, W / 2, abY + 12, COL_WHITE);
-        } else {
-            int bw = 76, bh = 18, bp = 4;
-            int b1x = bp, b2x = W - bp - bw;
-
-            // G-code button (highlighted — currently showing)
-            canvas.fillRoundRect(b1x, abY+3, bw, bh, 3, 0x0019);
-            canvas.drawRoundRect(b1x, abY+3, bw, bh, 3, BLUE);
-            f2("G-code", b1x + bw/2, abY+12, COL_WHITE);
-
-            // Lines count
-            char info[16]; snprintf(info, sizeof(info), "%d lines", (int)previewLines.size());
-            f2(info, W/2, abY+12, COL_DIM2);
-
-            // Run button
-            canvas.fillRoundRect(b2x, abY+3, bw, bh, 3, 0x0C00);
-            canvas.drawRoundRect(b2x, abY+3, bw, bh, 3, GREEN);
-            f2(simMode_active() ? "Sim Run" : "Run", b2x + bw/2, abY+12, GREEN);
-        }
+        char info[20]; snprintf(info,sizeof(info),"%d lines", total);
+        f2(info, 8, abY+abH/2, COL_DIM2, middle_left);
+        int rbw=70, rbh=16;
+        tintStrokeR(W-rbw-4, abY+3, rbw, rbh, 3, GREEN, GREEN, 40);
+        f2(simMode_active() ? "Sim Run" : "Run", W-4-rbw/2, abY+abH/2, GREEN, middle_center);
     }
 
     // ── Files screen ─────────────────────────────────────────────────────────
     void drawFilesScreen() {
-        if (filePreviewMode && fileSelected >= 0) {
-            drawGcodePreview(); return;
-        }
+        // Draw file list always (preview is an overlay on top)
         canvas.fillRect(0, TOP, W, 18, COL_PANEL);
         hline(0, TOP + 18, W, COL_BORDER);
         f2s(filePath, 18, TOP + 9, CYAN, middle_left);
@@ -789,14 +770,21 @@ private:
                 }
             }
         }
-        // Action bar
+        // Selection indicator in action bar (no overlay)
         if (fileSelected >= 0 && fileSelected < (int)fileList.size() && !fileList[fileSelected].isDir) {
             int abY = NAV_Y - 20;
             canvas.fillRect(0, abY, W, 20, COL_PANEL);
             hline(0, abY, W, COL_BORDER);
             f2s(fileList[fileSelected].name, 6, abY + 10, CYAN, middle_left);
-            tintStrokeR(W - 42, abY + 2, 38, 16, 2, GREEN, GREEN, 40);
-            f2("Run", W - 23, abY + 10, GREEN);
+            tintStrokeR(W - 58, abY + 2, 26, 16, 2, COL_BORDER2, COL_BORDER, 60);
+            f2("View", W - 45, abY + 10, COL_WHITE2);
+            tintStrokeR(W - 28, abY + 2, 24, 16, 2, GREEN, GREEN, 40);
+            f2("Run", W - 16, abY + 10, GREEN);
+        }
+
+        // G-code overlay panel (bottom sheet) — drawn on top of file list
+        if (filePreviewMode && fileSelected >= 0) {
+            drawGcodePreview();
         }
     }
 
@@ -1195,17 +1183,81 @@ public:
                         previewScroll    = 0;
                         // Load preview: request 60 lines from start of file
                         if (simMode_active()) {
-                            // Inject simulated gcode
+                            // Unique gcode per file index so each shows a different path
                             previewLines.clear();
-                            const char* simGcode[] = {
-                                "; Simulated G-code file", "G21 G90 G17",
-                                "G0 Z5", "G0 X0 Y0",
-                                "M3 S10000", "G1 F500",
-                                "G1 X50 Y0", "G1 X50 Y50",
-                                "G1 X0 Y50", "G1 X0 Y0",
-                                "G0 Z5", "M5", "M30"
-                            };
-                            for (auto& l : simGcode) previewLines.push_back(l);
+                            const std::string& fn = fileList[fi].name;
+                            previewLines.push_back(std::string("; ") + fn);
+                            previewLines.push_back("G21 G90 G17");
+                            previewLines.push_back("G0 Z5");
+                            int fidx = fi % 6;  // 6 distinct patterns
+                            if (fidx == 0) {
+                                // Circle (16-segment)
+                                previewLines.push_back("G0 X25 Y0");
+                                previewLines.push_back("M3 S10000");
+                                previewLines.push_back("G1 F300");
+                                for (int si=1; si<=16; si++) {
+                                    float a=si*3.14159f/8.0f;
+                                    char b[32]; snprintf(b,sizeof(b),"G1 X%.2f Y%.2f",25+25*cosf(a),25+25*sinf(a));
+                                    previewLines.push_back(b);
+                                }
+                            } else if (fidx == 1) {
+                                // L-shaped contour
+                                previewLines.push_back("G0 X0 Y0");
+                                previewLines.push_back("M3 S12000");
+                                previewLines.push_back("G1 F400");
+                                const float pts[][2]={{0,0},{70,0},{70,20},{30,20},{30,60},{0,60},{0,0}};
+                                for (auto& pp2 : pts) {
+                                    char b[32]; snprintf(b,sizeof(b),"G1 X%.0f Y%.0f",pp2[0],pp2[1]);
+                                    previewLines.push_back(b);
+                                }
+                            } else if (fidx == 2) {
+                                // Drill grid 4x3
+                                previewLines.push_back("M3 S8000");
+                                for (int xi=0;xi<4;xi++) for (int yi=0;yi<3;yi++) {
+                                    char b[32]; snprintf(b,sizeof(b),"G0 X%.0f Y%.0f",10.f+xi*16,10.f+yi*16);
+                                    previewLines.push_back(b);
+                                    previewLines.push_back("G1 Z-8 F100");
+                                    previewLines.push_back("G0 Z5");
+                                }
+                            } else if (fidx == 3) {
+                                // Star / cross
+                                previewLines.push_back("G0 X35 Y5");
+                                previewLines.push_back("M3 S9000");
+                                previewLines.push_back("G1 F350");
+                                const float pts[][2]={{35,5},{45,25},{65,25},{50,40},{55,60},{35,48},{15,60},{20,40},{5,25},{25,25},{35,5}};
+                                for (auto& pp2 : pts) {
+                                    char b[32]; snprintf(b,sizeof(b),"G1 X%.0f Y%.0f",pp2[0],pp2[1]);
+                                    previewLines.push_back(b);
+                                }
+                            } else if (fidx == 4) {
+                                // Zigzag facing
+                                previewLines.push_back("G0 X0 Y0");
+                                previewLines.push_back("M3 S15000");
+                                previewLines.push_back("G1 F800");
+                                for (int row=0;row<8;row++) {
+                                    char b[32];
+                                    float fy=row*8.0f;
+                                    snprintf(b,sizeof(b),"G1 X%.0f Y%.0f",(row%2==0?70.0f:0.0f),fy);
+                                    previewLines.push_back(b);
+                                    snprintf(b,sizeof(b),"G1 Y%.0f",fy+8.0f);
+                                    previewLines.push_back(b);
+                                }
+                            } else {
+                                // Rounded pocket spiral
+                                previewLines.push_back("G0 X35 Y30");
+                                previewLines.push_back("M3 S11000");
+                                previewLines.push_back("G1 F500");
+                                for (int r=5;r<=30;r+=5) {
+                                    for (int si=0;si<=16;si++) {
+                                        float a=si*3.14159f/8.0f;
+                                        char b[32]; snprintf(b,sizeof(b),"G1 X%.2f Y%.2f",35+r*cosf(a),30+r*sinf(a));
+                                        previewLines.push_back(b);
+                                    }
+                                }
+                            }
+                            previewLines.push_back("G0 Z5");
+                            previewLines.push_back("M5");
+                            previewLines.push_back("M30");
                             filePreviewMode = true;
                         } else {
                             std::string path = filePath + "/" + fileList[fi].name;
@@ -1216,75 +1268,56 @@ public:
                 }
                 return;
             }
-            // G-code preview mode touches
+            // G-code preview overlay touches
             if (filePreviewMode) {
-                // Back button (top right)
-                if (y >= TOP && y <= TOP + 18 && x >= W - 38) {
-                    filePreviewMode = false; reDisplay(); return;
-                }
-                // Action bar buttons (bottom, 3 buttons)
-                if (y >= NAV_Y - 24) {
-                    int bw = 76, bp = 4;
-                    int b1x = bp, b2x = bp*2+bw, b3x = bp*3+bw*2;
-                    int bw2 = 76, bp2 = 4;
-                    int b1x2 = bp2, b2x2 = W - bp2 - bw2;
-                    if (x >= b1x2 && x < b1x2+bw2) {
-                        // G-code — already showing
-                        return;
+                int panelTop = TOP + 30;
+                if (y < panelTop) {
+                    // Touch above panel → close overlay, fall through to file list tap
+                    filePreviewMode = false;
+                    reDisplay();
+                    // intentional fall-through to file list handler below
+                } else {
+                    // Touch inside panel
+                    int abH = 22;
+                    // X close button
+                    if (y <= panelTop + 18 && x >= W - 32) {
+                        filePreviewMode = false; reDisplay(); return;
                     }
-                    if (x >= b2x2 && x < b2x2+bw2) {
-                        // Run (+ parse path for visualizer)
-                        // Parse G-code XY moves into simPath
+                    // Run button in action bar
+                    if (y >= NAV_Y - abH && x >= W - 74) {
+                        // Parse gcode XY path
                         simPath.clear(); simPathIdx = 0;
-                        float cx2=0, cy2=0, cz2=0;
-                        bool absMode = true;
+                        float _cx=0, _cy=0; bool _abs=true;
                         for (auto& ln : previewLines) {
                             const char* p = ln.c_str();
-                            while (*p == ' ') p++;
-                            if (*p==';'||*p=='('||*p=='\0') continue;
-                            // Detect G90/G91 mode
-                            if ((p[0]=='G'||p[0]=='g') && p[1]=='9') {
-                                if (p[2]=='0') absMode=true;
-                                if (p[2]=='1') absMode=false;
+                            while (*p==' ') p++;
+                            if (!*p||*p==';'||*p=='(') continue;
+                            if ((*p=='G'||*p=='g')&&p[1]=='9') { if(p[2]=='0')_abs=true; if(p[2]=='1')_abs=false; }
+                            float nx=_cx, ny=_cy; bool mv=false;
+                            for (const char* q=p; *q; q++) {
+                                if ((*q=='X'||*q=='x')&&(q==p||*(q-1)==' '||*(q-1)=='	')) { nx=_abs?strtof(q+1,nullptr):_cx+strtof(q+1,nullptr); mv=true; }
+                                if ((*q=='Y'||*q=='y')&&(q==p||*(q-1)==' '||*(q-1)=='	')) { ny=_abs?strtof(q+1,nullptr):_cy+strtof(q+1,nullptr); mv=true; }
                             }
-                            // Extract coordinates from any G command
-                            float nx=cx2, ny=cy2;
-                            bool moved=false;
-                            const char* pp = p;
-                            while (*pp) {
-                                if (*pp=='X'||*pp=='x') {
-                                    float v=strtof(pp+1,nullptr);
-                                    nx = absMode ? v : cx2+v; moved=true;
-                                }
-                                if (*pp=='Y'||*pp=='y') {
-                                    float v=strtof(pp+1,nullptr);
-                                    ny = absMode ? v : cy2+v; moved=true;
-                                }
-                                pp++;
-                            }
-                            if (moved && (nx!=cx2||ny!=cy2)) {
-                                simPath.push_back({nx,ny});
-                                cx2=nx; cy2=ny;
-                            }
+                            if (mv&&(nx!=_cx||ny!=_cy)) { simPath.push_back({nx,ny}); _cx=nx; _cy=ny; }
                         }
                         simJobName = fileList[fileSelected].name;
                         if (!simMode_active()) {
                             std::string path = filePath + "/" + fileList[fileSelected].name;
                             send_linef("$Localfs/Run=%s", path.c_str());
-                            termLines.push_back({ std::string("> Run: ") + simJobName, COL_DIM2 });
+                            termLines.push_back({ "> Run: " + simJobName, COL_DIM2 });
                         } else {
-                            simJobRunning = true;
-                            simMode_setPos(0, simPath.empty() ? 0 : simPath[0].first);
-                            simMode_setPos(1, simPath.empty() ? 0 : simPath[0].second);
+                            simJobRunning = true; simPathIdx = 0;
+                            if (!simPath.empty()) {
+                                simMode_setPos(0, simPath[0].first);
+                                simMode_setPos(1, simPath[0].second);
+                            }
                             termLines.push_back({ "> [SIM] Run: " + simJobName, ORANGE });
                         }
                         filePreviewMode = false;
-                        _tab = 0;
-                        reDisplay(); return;
+                        _tab = 0; reDisplay(); return;
                     }
-                    return;
+                    return;  // consume all other panel touches
                 }
-                return;  // consume all other touches in preview mode
             }
             // Run button (action bar in list mode)
             if (fileSelected >= 0 && y >= NAV_Y - 20 && x >= W - 42) {
