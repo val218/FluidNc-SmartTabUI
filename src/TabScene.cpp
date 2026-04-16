@@ -119,6 +119,7 @@ void tabui_setAxes(int a)         { _droAxesMode  = a; }
 void tabui_setEnableMode(int m, int macro) { _enableMode = m; _enableMacro = macro; }
 int  tabui_getAxes()      { return _droAxesMode; }
 bool mpgEnableHeld()      { return (bool)mpgEnable; }
+bool mpgConsumeChanged()  { if (!_mpgChanged) return false; _mpgChanged = false; return true; }
 bool tabui_touchGated()   { return (_enableMode==0||_enableMode==1) && !mpgEnable; }
 void setSimMode(bool sim) { if (sim) simMode_enable(); }
 bool getSimMode()         { return simMode_active(); }

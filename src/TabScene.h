@@ -11,7 +11,8 @@
 // to use the new tab-based UI.
 Scene* getTabScene();
 void   readMpgSwitches();
-bool   mpgEnableHeld();   // true when P6 enable button is held
+bool   mpgEnableHeld();
+bool   mpgConsumeChanged();  // true if MPG state changed since last call   // true when P6 enable button is held
 void   mpgCheckMacroFire(); // call from main loop to fire P6 macro if pending
 bool   tabui_touchGated();  // true when touch input should be blocked
 void   tabui_setTheme(int theme);  // 0=Dark 1=Neutral 2=Light
