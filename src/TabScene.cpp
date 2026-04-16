@@ -93,7 +93,8 @@ static volatile bool  mpgEnable    = false;  // P6 enable button state
 static int  _enableMode  = 0;  // EnableMode: 0=EnableGate 1=TouchOnly 2=JogOnly 3=MacroBtn 4=Disabled
 static int  _enableMacro = 0;  // macro index for MacroBtn mode
 static bool _p6Prev      = false;  // previous P6 state for edge detection
-static volatile bool _p6MacroFire = false; // set by readMpgSwitches, consumed in dispatch
+static volatile bool _p6MacroFire  = false;
+static volatile bool _mpgChanged   = false; // set by Core0 readMpgSwitches, consumed on Core1
 
 static int  _droAxesMode = 0;  // 0=XYZ 1=XYZA 2=XY 3=XYYZ (dual Y)
 
@@ -127,7 +128,7 @@ bool getSimMode()         { return simMode_active(); }
 static bool    pcf8574Present = false;  // detected on first successful read
 static uint8_t readPCF8574() {
     uint8_t val = 0xFF;
-    esp_err_t err = i2c_master_read_from_device(I2C_NUM_1, 0x20, &val, 1, pdMS_TO_TICKS(2));
+    esp_err_t err = i2c_master_read_from_device(I2C_NUM_1, 0x20, &val, 1, pdMS_TO_TICKS(20));
     if (err == ESP_OK) pcf8574Present = true;
     return (err == ESP_OK) ? val : 0xFF;
 }
@@ -202,8 +203,8 @@ void readMpgSwitches() {
         pcnt_counter_clear(PCNT_UNIT_0);
     }
 
-    if ((mpgAxis != prevAxis || mpgStepIdx != prevStep) && current_scene) {
-        current_scene->reDisplay();
+    if (mpgAxis != prevAxis || mpgStepIdx != prevStep) {
+        _mpgChanged = true;  // picked up by dispatch_events on Core 1
     }
 }
 static const char* QUICK_CMDS[] = { "$H", "$?", "!", "~", "$X" };
@@ -929,20 +930,22 @@ private:
         for (int vi = 0; vi < visible; vi++) {
             int mi = macroScroll + vi;
             int by = TOP + pad + vi * (bh + gap);
-            _macroBtns[vi] = { pad, by, bw, bh };
+            int rh = std::min(bh, NAV_Y - by - 2);  // clamp to screen
+            if (rh < 8) break;                        // too small, stop
+            _macroBtns[vi] = { pad, by, bw, rh };
 
             // Background
-            canvas.fillRoundRect(pad, by, bw, bh, 4, COL_PANEL2);
-            canvas.drawRoundRect(pad, by, bw, bh, 4, COL_BORDER2);
+            canvas.fillRoundRect(pad, by, bw, rh, 4, COL_PANEL2);
+            canvas.drawRoundRect(pad, by, bw, rh, 4, COL_BORDER2);
 
             // Coloured left accent strip
-            canvas.fillRect(pad, by + 2, 4, bh - 4, MACROS[mi].col);
+            canvas.fillRect(pad, by + 2, 4, rh - 4, MACROS[mi].col);
 
             // Dot indicator
-            canvas.fillCircle(pad + 14, by + bh / 2, 4, MACROS[mi].col);
+            canvas.fillCircle(pad + 14, by + rh / 2, 4, MACROS[mi].col);
 
             // Name — TINY font, vertically centred
-            txt(MACROS[mi].name.c_str(), pad + 26, by + bh / 2,
+            txt(MACROS[mi].name.c_str(), pad + 26, by + rh / 2,
                 MACROS[mi].cmd.empty() ? COL_DIM : COL_WHITE, TINY, middle_left);
 
             // Command preview in small font
@@ -950,7 +953,7 @@ private:
                 canvas.setFont(&fonts::Font0);
                 canvas.setTextDatum(middle_right);
                 canvas.setTextColor(COL_DIM2);
-                canvas.drawString(MACROS[mi].cmd.c_str(), W - 10, by + bh / 2);
+                canvas.drawString(MACROS[mi].cmd.c_str(), W - 10, by + rh / 2);
             }
         }
         // Clear unused slots

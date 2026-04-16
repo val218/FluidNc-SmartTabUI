@@ -168,7 +168,7 @@ static void init_capacitive_cyd() {
         i2c_driver_install(I2C_NUM_1, I2C_MODE_MASTER, 0, 0, 0);
         // Probe PCF8574 — ignore error if not connected
         uint8_t val = 0xFF;
-        i2c_master_write_to_device(I2C_NUM_1, 0x20, &val, 1, pdMS_TO_TICKS(5));
+        i2c_master_write_to_device(I2C_NUM_1, 0x20, &val, 1, pdMS_TO_TICKS(20));
         // Error is ignored — readPCF8574() returns 0xFF (all-off) on failure
     }
 

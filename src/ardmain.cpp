@@ -46,42 +46,42 @@ static bool touchIn(int tx, int ty, int x, int y, int w, int h) {
 // ── Check enable button ───────────────────────────────────────────────────────
 static bool readEnableNow() {
     uint8_t val = 0xFF;
-    i2c_master_read_from_device(I2C_NUM_1, 0x20, &val, 1, pdMS_TO_TICKS(20));
+    i2c_master_read_from_device(I2C_NUM_1, 0x20, &val, 1, pdMS_TO_TICKS(50));
     return !(val & 0x40);  // P6 active-LOW
 }
 
 // ── Settings menu ─────────────────────────────────────────────────────────────
 static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
-    display.fillScreen(S_BG);
+    canvas.fillScreen(S_BG);
     int cx = display.width() / 2;
 
     // Title
-    display.setFont(&fonts::Font2);
-    display.setTextDatum(middle_center);
-    display.setTextColor(S_WHITE);
-    display.drawString("Settings", cx, 16);
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextDatum(middle_center);
+    canvas.setTextColor(S_WHITE);
+    canvas.drawString("Settings", cx, 16);
 
-    display.setFont(&fonts::Font0);
-    display.setTextColor(S_DIM);
-    display.drawString(mpgOk ? "MPG: Connected" : "MPG: Not detected", cx, 30);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextColor(S_DIM);
+    canvas.drawString(mpgOk ? "MPG: Connected" : "MPG: Not detected", cx, 30);
 
     int y = 44, rowH = 36, pad = 8, optW = 80, optH = 26;
 
     // ── Mode ─────────────────────────────────────────────────────────────────
-    display.setFont(&fonts::Font0);
-    display.setTextDatum(middle_left);
-    display.setTextColor(S_DIM);
-    display.drawString("MODE", pad, y + rowH/2);
+    canvas.setFont(&fonts::Font0);
+    canvas.setTextDatum(middle_left);
+    canvas.setTextColor(S_DIM);
+    canvas.drawString("MODE", pad, y + rowH/2);
 
     sBtn(80,  y+5, optW, optH, s.simMode ? S_PANEL : 0x0019, s.simMode ? S_BORDER : S_BLUE,  "Normal",     s.simMode ? S_DIM : S_WHITE);
     sBtn(168, y+5, optW, optH, s.simMode ? 0x2800  : S_PANEL, s.simMode ? S_ORANGE : S_BORDER, "Simulation", s.simMode ? S_ORANGE : S_DIM);
     y += rowH;
 
     // ── Theme ────────────────────────────────────────────────────────────────
-    display.setTextDatum(middle_left);
-    display.setTextColor(S_DIM);
-    display.setFont(&fonts::Font0);
-    display.drawString("THEME", pad, y + rowH/2);
+    canvas.setTextDatum(middle_left);
+    canvas.setTextColor(S_DIM);
+    canvas.setFont(&fonts::Font0);
+    canvas.drawString("THEME", pad, y + rowH/2);
 
     const char* themes[] = { "Dark", "Neutral", "Light" };
     int tw = 72, tx0 = 76;
@@ -94,10 +94,10 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
     y += rowH;
 
     // ── DRO Axes ─────────────────────────────────────────────────────────────
-    display.setTextDatum(middle_left);
-    display.setTextColor(S_DIM);
-    display.setFont(&fonts::Font0);
-    display.drawString("AXES", pad, y + rowH/2);
+    canvas.setTextDatum(middle_left);
+    canvas.setTextColor(S_DIM);
+    canvas.setFont(&fonts::Font0);
+    canvas.drawString("AXES", pad, y + rowH/2);
 
     const char* axOpts[] = { "XYZ", "XYZA", "XY", "XYYZ" };
     int aw = 66, ax0 = 76;
@@ -109,10 +109,10 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
     y += rowH;
 
     // ── P6 Enable button mode ────────────────────────────────────────────────
-    display.setTextDatum(middle_left);
-    display.setTextColor(S_DIM);
-    display.setFont(&fonts::Font0);
-    display.drawString("P6 BTN", pad, y + rowH/2);
+    canvas.setTextDatum(middle_left);
+    canvas.setTextColor(S_DIM);
+    canvas.setFont(&fonts::Font0);
+    canvas.drawString("P6 BTN", pad, y + rowH/2);
 
     const char* enOpts[] = { "Gate All", "Touch", "Jog", "Macro", "Off" };
     int enw = 52, enx0 = 76;
@@ -125,10 +125,10 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
 
     // Macro index selector — only visible in Macro mode
     if (s.enableMode == EnableMode::MacroBtn) {
-        display.setTextDatum(middle_left);
-        display.setTextColor(S_DIM);
-        display.setFont(&fonts::Font0);
-        display.drawString("MACRO#", pad, y + rowH/2);
+        canvas.setTextDatum(middle_left);
+        canvas.setTextColor(S_DIM);
+        canvas.setFont(&fonts::Font0);
+        canvas.drawString("MACRO#", pad, y + rowH/2);
         // Show current macro name
         char mname[24];
         // We can't access MACROS vector here, just show index
@@ -145,7 +145,9 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
     sBtn(cx2 - 156, y, 96, 28, S_PANEL, S_CYAN,   "Inputs",      S_CYAN);
     sBtn(cx2 - 54,  y, 96, 28, S_PANEL, S_ORANGE, "UART",        S_ORANGE);
     sBtn(cx2 + 50,  y, 96, 28, 0x0C00,  S_GREEN,  "Save & Boot", S_GREEN);
+    canvas.pushSprite(0, 0);
 }
+
 
 // ── UART Terminal Monitor ─────────────────────────────────────────────────────
 // Shows live raw UART data from FluidNC and lets user test baud rate
@@ -199,27 +201,27 @@ static void runUartMonitor() {
         if (now - lastDraw < 150) { delay(10); }
         else {
             lastDraw = now;
-            display.fillScreen(S_BG);
+            canvas.fillScreen(S_BG);
             int cx = display.width() / 2;
             int W  = display.width();
 
             // Title
-            display.setFont(&fonts::Font2);
-            display.setTextDatum(middle_center);
-            display.setTextColor(S_WHITE);
-            display.drawString("UART Monitor", cx, 11);
+            canvas.setFont(&fonts::Font2);
+            canvas.setTextDatum(middle_center);
+            canvas.setTextColor(S_WHITE);
+            canvas.drawString("UART Monitor", cx, 11);
 
             // Baud rate selector
             int bx = 4, by = 23, bw = 36, bh = 14, bg = 6;
-            display.setFont(&fonts::Font0);
-            display.setTextDatum(middle_left);
-            display.setTextColor(S_DIM);
-            display.drawString("Baud:", bx, by + bh/2);
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_left);
+            canvas.setTextColor(S_DIM);
+            canvas.drawString("Baud:", bx, by + bh/2);
             bx += 30;
             for (int i = 0; i < nBauds; i++) {
                 bool sel = (i == selBaud);
-                display.fillRoundRect(bx, by, bw, bh, 2, sel ? 0x0019 : S_PANEL);
-                display.drawRoundRect(bx, by, bw, bh, 2, sel ? S_CYAN : S_BORDER);
+                canvas.fillRoundRect(bx, by, bw, bh, 2, sel ? 0x0019 : S_PANEL);
+                canvas.drawRoundRect(bx, by, bw, bh, 2, sel ? S_CYAN : S_BORDER);
                 char bb[12];
                 if (baudOpts[i] >= 1000000)
                     snprintf(bb, sizeof(bb), "%dM", (int)(baudOpts[i]/1000000));
@@ -227,25 +229,25 @@ static void runUartMonitor() {
                     snprintf(bb, sizeof(bb), "%dk", (int)(baudOpts[i]/1000));
                 else
                     snprintf(bb, sizeof(bb), "%d", (int)baudOpts[i]);
-                display.setTextDatum(middle_center);
-                display.setTextColor(sel ? S_WHITE : S_DIM);
-                display.drawString(bb, bx + bw/2, by + bh/2);
+                canvas.setTextDatum(middle_center);
+                canvas.setTextColor(sel ? S_WHITE : S_DIM);
+                canvas.drawString(bb, bx + bw/2, by + bh/2);
                 bx += bw + bg;
             }
 
             // Current baud confirmation
             char baudStr[24];
             snprintf(baudStr, sizeof(baudStr), "Active: %lu", (unsigned long)baud);
-            display.setTextDatum(middle_right);
-            display.setTextColor(S_DIM);
-            display.drawString(baudStr, W - 4, by + bh/2);
+            canvas.setTextDatum(middle_right);
+            canvas.setTextColor(S_DIM);
+            canvas.drawString(baudStr, W - 4, by + bh/2);
 
             // Divider
-            display.drawFastHLine(0, 40, W, S_BORDER);
+            canvas.drawFastHLine(0, 40, W, S_BORDER);
 
             // Received lines
             int lineY = 42, lh = 13;
-            display.setFont(&fonts::Font0);
+            canvas.setFont(&fonts::Font0);
             for (int i = 0; i < nLines; i++) {
                 // Colour by first char
                 int col = S_DIM2;
@@ -253,22 +255,22 @@ static void runUartMonitor() {
                 else if (lines[i][0] == '[') col = S_CYAN;
                 else if (lines[i][0] == 'e' || lines[i][0] == 'E') col = S_RED;
                 else if (lines[i][0] == 'o') col = S_WHITE;
-                display.setTextDatum(middle_left);
-                display.setTextColor(col);
-                display.drawString(lines[i], 2, lineY + i * lh);
+                canvas.setTextDatum(middle_left);
+                canvas.setTextColor(col);
+                canvas.drawString(lines[i], 2, lineY + i * lh);
             }
 
             // Partial current line (dim)
             if (lineLen > 0) {
                 lineBuf[lineLen] = 0;
-                display.setTextColor(S_DIM);
-                display.drawString(lineBuf, 2, lineY + nLines * lh);
+                canvas.setTextColor(S_DIM);
+                canvas.drawString(lineBuf, 2, lineY + nLines * lh);
             }
 
             // Exit hint
-            display.setTextDatum(middle_center);
-            display.setTextColor(S_DIM);
-            display.drawString("Hold e-stop 2s to exit", cx, display.height() - 6);
+            canvas.setTextDatum(middle_center);
+            canvas.setTextColor(S_DIM);
+            canvas.drawString("Hold e-stop 2s to exit", cx, display.height() - 6);
         }
 
         // Touch for baud rate selection
@@ -311,7 +313,7 @@ static void runInputMonitor() {
 
     for (;;) {
         uint8_t pins = 0xFF;
-        i2c_master_read_from_device(I2C_NUM_1, 0x20, &pins, 1, pdMS_TO_TICKS(10));
+        i2c_master_read_from_device(I2C_NUM_1, 0x20, &pins, 1, pdMS_TO_TICKS(20));
         int16_t encNow  = get_encoder();
         int16_t encDelta = encNow - encBase;
         bool estop = (gpio_get_level(GPIO_NUM_17) == 0);
@@ -320,28 +322,28 @@ static void runInputMonitor() {
         auto t = touch.getDetail();
         if (t.state == m5::touch_state_t::touch) { lastTx = t.x; lastTy = t.y; }
 
-        display.fillScreen(S_BG);
+        canvas.fillScreen(S_BG);
         int cx = display.width() / 2;
 
         // Title + back hint
-        display.setFont(&fonts::Font2);
-        display.setTextDatum(middle_center);
-        display.setTextColor(S_WHITE);
-        display.drawString("Input Monitor", cx, 12);
-        display.setFont(&fonts::Font0);
-        display.setTextColor(S_DIM);
-        display.drawString("Hold e-stop 2s to exit", cx, 24);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextDatum(middle_center);
+        canvas.setTextColor(S_WHITE);
+        canvas.drawString("Input Monitor", cx, 12);
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextColor(S_DIM);
+        canvas.drawString("Hold e-stop 2s to exit", cx, 24);
 
-        display.setFont(&fonts::Font0);
+        canvas.setFont(&fonts::Font0);
         int y = 36, lh = 18;
 
         // ── PCF8574 bits ──────────────────────────────────────────────────
-        display.setTextDatum(middle_left);
-        display.setTextColor(S_DIM);
-        display.drawString("PCF8574 raw:", 6, y);
+        canvas.setTextDatum(middle_left);
+        canvas.setTextColor(S_DIM);
+        canvas.drawString("PCF8574 raw:", 6, y);
         char hexbuf[12]; snprintf(hexbuf, sizeof(hexbuf), "0x%02X", pins);
-        display.setTextColor(S_WHITE);
-        display.drawString(hexbuf, 100, y);
+        canvas.setTextColor(S_WHITE);
+        canvas.drawString(hexbuf, 100, y);
         y += lh;
 
         // Individual bits with labels
@@ -351,41 +353,43 @@ static void runInputMonitor() {
             bool active = !(pins & (1 << i));
             int col = active ? S_GREEN : S_DIM;
             // Dot indicator
-            display.fillCircle(10, y, 4, col);
-            display.setTextDatum(middle_left);
-            display.setTextColor(col);
-            display.drawString(bitLabels[i], 18, y);
-            display.setTextColor(active ? S_GREEN : S_DIM);
-            display.drawString(active ? "LOW (active)" : "HIGH", 130, y);
+            canvas.fillCircle(10, y, 4, col);
+            canvas.setTextDatum(middle_left);
+            canvas.setTextColor(col);
+            canvas.drawString(bitLabels[i], 18, y);
+            canvas.setTextColor(active ? S_GREEN : S_DIM);
+            canvas.drawString(active ? "LOW (active)" : "HIGH", 130, y);
             y += lh;
         }
 
         // ── E-stop ────────────────────────────────────────────────────────
         y += 2;
-        display.fillCircle(10, y, 4, estop ? S_RED : S_DIM);
-        display.setTextDatum(middle_left);
-        display.setTextColor(estop ? S_RED : S_DIM);
-        display.drawString("E-stop GPIO17", 18, y);
-        display.drawString(estop ? "PRESSED" : "open", 130, y);
+        canvas.fillCircle(10, y, 4, estop ? S_RED : S_DIM);
+        canvas.setTextDatum(middle_left);
+        canvas.setTextColor(estop ? S_RED : S_DIM);
+        canvas.drawString("E-stop GPIO17", 18, y);
+        canvas.drawString(estop ? "PRESSED" : "open", 130, y);
         y += lh;
 
         // ── Encoder ───────────────────────────────────────────────────────
         char encbuf[20];
         snprintf(encbuf, sizeof(encbuf), "Encoder delta: %+d", (int)encDelta);
-        display.setTextColor(S_CYAN);
-        display.drawString(encbuf, 6, y);
+        canvas.setTextColor(S_CYAN);
+        canvas.drawString(encbuf, 6, y);
         y += lh;
 
         // ── Touch ─────────────────────────────────────────────────────────
         if (lastTx >= 0) {
             char tbuf[28];
             snprintf(tbuf, sizeof(tbuf), "Touch: x=%d y=%d", lastTx, lastTy);
-            display.setTextColor(S_CYAN);
-            display.drawString(tbuf, 6, y);
+            canvas.setTextColor(S_CYAN);
+            canvas.drawString(tbuf, 6, y);
         } else {
-            display.setTextColor(S_DIM);
-            display.drawString("Touch: none", 6, y);
+            canvas.setTextColor(S_DIM);
+            canvas.drawString("Touch: none", 6, y);
         }
+
+        canvas.pushSprite(0, 0);  // flip buffer — no flicker
 
         // Exit: e-stop held for 2s
         static uint32_t estopHeldSince = 0;
@@ -478,7 +482,7 @@ static void mpgTask(void*) {
     static uint32_t resetTime    = 0;
     static uint32_t unlockTime   = 0;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(30));  // 30ms: leaves headroom for 20ms I2C timeout
         readMpgSwitches();
         uint32_t now = millis();
         bool estopHigh = (gpio_get_level(GPIO_NUM_17) != 0);
@@ -524,7 +528,7 @@ void setup() {
     fnc_realtime(StatusReport);
     activate_scene(getTabScene());
 
-    xTaskCreatePinnedToCore(mpgTask, "mpg", 2048, nullptr, 1, nullptr, 0);
+    xTaskCreatePinnedToCore(mpgTask, "mpg", 4096, nullptr, 1, nullptr, 0);
 }
 
 void loop() {

@@ -129,6 +129,10 @@ void dispatch_events() {
     // Fire P6 macro button if pending
     mpgCheckMacroFire();
 
+    // MPG switch changed (set by Core 0) — redraw safely on Core 1
+    extern volatile bool _mpgChanged;
+    if (_mpgChanged) { _mpgChanged = false; if (current_scene) current_scene->reDisplay(); }
+
     // On disconnect, stay on TabScene — skip in simulation (no real machine)
     if (!simMode_active() && !fnc_is_connected()) {
         if (state != Disconnected) {
