@@ -31,12 +31,12 @@ extern const char* git_info;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 static void sBtn(int x, int y, int w, int h, int bg, int border, const char* label, int col) {
-    display.fillRoundRect(x, y, w, h, 5, bg);
-    display.drawRoundRect(x, y, w, h, 5, border);
-    display.setTextDatum(middle_center);
-    display.setTextColor(col);
-    display.setFont(&fonts::Font2);
-    display.drawString(label, x + w/2, y + h/2);
+    canvas.fillRoundRect(x, y, w, h, 5, bg);
+    canvas.drawRoundRect(x, y, w, h, 5, border);
+    canvas.setTextDatum(middle_center);
+    canvas.setTextColor(col);
+    canvas.setFont(&fonts::Font2);
+    canvas.drawString(label, x + w/2, y + h/2);
 }
 
 static bool touchIn(int tx, int ty, int x, int y, int w, int h) {
@@ -409,6 +409,11 @@ static void runSettingsMenu(AppSettings& s) {
     bool mpgOk = (i2c_master_read_from_device(
         I2C_NUM_1, 0x20, &pcfVal, 1, pdMS_TO_TICKS(20)) == ESP_OK);
 
+    // Use 16-bit canvas for settings menu (better colour accuracy than 8-bit)
+    canvas.deleteSprite();
+    canvas.setColorDepth(16);
+    canvas.createSprite(display.width(), display.height());
+
     drawSettingsMenu(s, mpgOk);
 
     int cx = display.width() / 2;
@@ -473,6 +478,11 @@ static void runSettingsMenu(AppSettings& s) {
 
         drawSettingsMenu(s, mpgOk);
     }
+
+    // Restore 8-bit canvas for main UI
+    canvas.deleteSprite();
+    canvas.setColorDepth(8);
+    canvas.createSprite(display.width(), display.height());
 }
 
 // ── Background task: MPG switches + e-stop ────────────────────────────────────

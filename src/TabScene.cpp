@@ -93,7 +93,8 @@ static volatile bool  mpgEnable    = false;  // P6 enable button state
 static int  _enableMode  = 0;  // EnableMode: 0=EnableGate 1=TouchOnly 2=JogOnly 3=MacroBtn 4=Disabled
 static int  _enableMacro = 0;  // macro index for MacroBtn mode
 static bool _p6Prev      = false;  // previous P6 state for edge detection
-static volatile bool _p6MacroFire  = false;
+static volatile bool _p6MacroFire   = false;
+static volatile bool mpgJogAllowed  = false;  // jog permitted (enable gating)
 static volatile bool _mpgChanged   = false; // set by Core0 readMpgSwitches, consumed on Core1
 
 static int  _droAxesMode = 0;  // 0=XYZ 1=XYZA 2=XY 3=XYYZ (dual Y)
@@ -175,23 +176,24 @@ void readMpgSwitches() {
     else if (st1)  mpgStepIdx = 1;
     else           mpgStepIdx = 0;
 
-    // Axis — gating depends on enableMode
+    // Axis — always read for display; jogging gated separately in onEncoder
+    if      (axA) mpgAxis = 3;
+    else if (axZ) mpgAxis = 2;
+    else if (axY) mpgAxis = 1;
+    else if (axX) mpgAxis = 0;
+    else          mpgAxis = -1;
+
+    // Jog is allowed based on enableMode + enable button
     bool jogAllowed = false;
     switch (_enableMode) {
-        case 0: jogAllowed = enable;  break;   // EnableGate: must hold
-        case 1: jogAllowed = true;    break;   // TouchOnly:  jog always allowed
-        case 2: jogAllowed = enable;  break;   // JogOnly:    must hold
-        case 3: jogAllowed = true;    break;   // MacroBtn:   jog always allowed
-        case 4: jogAllowed = true;    break;   // Disabled:   jog always allowed
+        case 0: jogAllowed = enable; break;   // EnableGate: must hold enable
+        case 1: jogAllowed = true;   break;   // TouchOnly:  jog always free
+        case 2: jogAllowed = enable; break;   // JogOnly:    must hold enable
+        case 3: jogAllowed = true;   break;   // MacroBtn:   jog always free
+        case 4: jogAllowed = true;   break;   // Disabled:   jog always free
     }
-
-    if (!jogAllowed) {
-        mpgAxis = -1;
-    } else if (axA) mpgAxis = 3;
-    else if (axZ)   mpgAxis = 2;
-    else if (axY)   mpgAxis = 1;
-    else if (axX)   mpgAxis = 0;
-    else            mpgAxis = -1;
+    // Store jog permission so onEncoder can check it
+    mpgJogAllowed = jogAllowed;
 
     // MacroBtn mode: P6 rising edge — set a flag, fired in reDisplay context
     if (_enableMode == 3 && enable && !_p6Prev) {
@@ -1091,13 +1093,15 @@ public:
         mpgLastDir = (delta > 0) ? 1 : -1;
         mpgDirTime = millis();
 
-        // Jog when axis selected
+        // Jog when axis selected AND jog is permitted by enable mode
         if (mpgAxis >= 0) {
-            static const char axChar[] = { 'X', 'Y', 'Z', 'A' };
-            float dist = delta * mpgSteps[mpgStepIdx];
-            static const int jogFeed[] = { 100, 500, 2000 };
-            send_linef("$J=G91 %c%.3f F%d", axChar[mpgAxis], dist, jogFeed[mpgStepIdx]);
-            reDisplay();
+            reDisplay();  // always update display to show axis/step
+            if (mpgJogAllowed) {
+                static const char axChar[] = { 'X', 'Y', 'Z', 'A' };
+                float dist = delta * mpgSteps[mpgStepIdx];
+                static const int jogFeed[] = { 100, 500, 2000 };
+                send_linef("$J=G91 %c%.3f F%d", axChar[mpgAxis], dist, jogFeed[mpgStepIdx]);
+            }
             return;
         }
 
