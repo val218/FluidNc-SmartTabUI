@@ -58,8 +58,8 @@ static const int VIZ_W   = W - DROW;        // full width to right edge
 static const int VIZ_H   = NAV_Y - FEED_H - VIZ_Y - 14; // 14px for filename+bar strip below
 static const int TAB_X   = W;               // tabs gone — pushed off screen
 static const int DRO_ROW = (NAV_Y - TOP - FEED_H) / 4;
-static const int N_TABS  = 6;
-static const int CMD_H   = 34;
+static const int N_TABS  = 5;
+static const int CMD_H   = 54;
 static const int OUT_LH  = 16;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ static const AxisStyle AX_STYLES[4] = {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tab names
 // ─────────────────────────────────────────────────────────────────────────────
-static const char* TAB_LABELS[N_TABS] = { "DRO", "Home", "Probe", "Files", "Term", "Macros" };
+static const char* TAB_LABELS[N_TABS] = { "DRO", "Home", "Files", "Term", "Macros" };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Terminal
@@ -512,14 +512,19 @@ private:
         int tw = W / N_TABS;
         for (int i = 0; i < N_TABS; i++) {
             int x = i * tw;
-            _navTabs[i] = { x, NAV_Y, tw, BOT };
+            int w = (i == N_TABS-1) ? W - x : tw;  // last tab fills to edge
+            _navTabs[i] = { x, NAV_Y, w, BOT };
             if (i == _tab) {
-                canvas.fillRect(x, NAV_Y, tw, BOT, 0x0019);
-                canvas.fillRect(x, NAV_Y, tw, 3, BLUE);
+                canvas.fillRect(x, NAV_Y, w, BOT, 0x0019);
+                canvas.fillRect(x, NAV_Y, w, 3, BLUE);
             }
             if (i > 0) vline(x, NAV_Y + 5, BOT - 10, COL_BORDER);
             int col = (i == _tab) ? COL_WHITE : COL_WHITE2;
-            navTxt(TAB_LABELS[i], x + tw / 2, NAV_Y + BOT / 2, col);
+            // Use Font0 for 6 tabs (Font2 too wide at 53px)
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_center);
+            canvas.setTextColor(col);
+            canvas.drawString(TAB_LABELS[i], x + w/2, NAV_Y + BOT/2);
         }
     }
 
@@ -916,43 +921,33 @@ private:
 
     // ── Homing screen ────────────────────────────────────────────────────────
     void drawHomingScreen() {
-        int pad = 10, gap = 5, bw = W - 2 * pad;
-        int homeH = 28, axH = 24, esH = 22, zeroH = 26;
-        int divH = 1, labH = 12, secGap = 5;
-        int total = homeH + (secGap + divH + labH + axH)
-                          + (secGap + divH + labH + esH)
-                          + (secGap + divH + labH + zeroH);
-        int y = TOP + std::max(4, (NAV_Y - TOP - total) / 2);
+        int pad=8, gap=4, bw=W-2*pad;
+        int y=TOP+4;
 
         // ── Home All + Probe ─────────────────────────────────────────────
-        int btnGap = 6;
-        int homeW  = bw * 56 / 100;
-        int probW  = bw - homeW - btnGap;
-        _homeAllBtn = { pad, y, homeW, homeH };
-        _probeBtnR  = { pad + homeW + btnGap, y, probW, homeH };
+        int homeW=bw*58/100, probW=bw-homeW-gap;
+        _homeAllBtn={pad,y,homeW,26};
+        _probeBtnR ={pad+homeW+gap,y,probW,26};
+        tintStrokeR(pad,y,homeW,26,4,COL_WHITE2,COL_WHITE,50);
+        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_WHITE);
+        canvas.drawString("Home All ($H)",pad+homeW/2,y+13);
+        tintStrokeR(pad+homeW+gap,y,probW,26,4,ORANGE,ORANGE,40);
+        canvas.setTextColor(ORANGE);
+        canvas.drawString("Probe",pad+homeW+gap+probW/2,y+13);
+        y+=30;
 
-        // Home All: solid white border, dark fill — primary action
-        canvas.fillRoundRect(pad, y, homeW, homeH, 4, COL_PANEL2);
-        canvas.drawRoundRect(pad, y, homeW, homeH, 4, COL_WHITE);
-        f2("Home All  ($H)", pad + homeW / 2, y + homeH / 2, COL_WHITE);
-
-        // Probe: amber accent border only
-        canvas.fillRoundRect(pad + homeW + btnGap, y, probW, homeH, 4, COL_PANEL2);
-        canvas.drawRoundRect(pad + homeW + btnGap, y, probW, homeH, 4, ORANGE);
-        f2("Probe", pad + homeW + btnGap + probW / 2, y + homeH / 2, ORANGE);
-        y += homeH + secGap;
-
-        // ── Individual axis ───────────────────────────────────────────────
-        hline(pad, y, bw, COL_BORDER); y += divH + 2;
-        f2("Individual axis", pad, y + labH / 2, COL_DIM2, middle_left); y += labH;
-        int aw = (bw - 2 * gap) / 3;
-        int axcols[3] = { COL_AX_X, COL_AX_Y, COL_AX_Z };
-        const char* axlet[3] = { "X", "Y", "Z" };
-        for (int i = 0; i < 3; i++) {
-            int hx = pad + i * (aw + gap);
-            _axisHomeBtns[i] = { hx, y, aw, axH };
-            // Neutral dark bg, thin coloured left accent bar, white text
-            canvas.fillRoundRect(hx, y, aw, axH, 3, COL_PANEL2);
+        // ── Individual axis homing ────────────────────────────────────────
+        canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+        canvas.setTextDatum(middle_left);
+        canvas.drawString("Home axis:",pad,y+7); y+=14;
+        int aw=(bw-2*gap)/3;
+        int axcols[3]={COL_AX_X,COL_AX_Y,COL_AX_Z};
+        const char* axlet[3]={"X","Y","Z"};
+        for(int i=0;i<3;i++){
+            int hx=pad+i*(aw+gap);
+            _axisHomeBtns[i]={hx,y,aw,22};
+            canvas.fillRoundRect(hx,y,aw,22,3,COL_PANEL2);
             canvas.drawRoundRect(hx, y, aw, axH, 3, COL_BORDER2);
             canvas.fillRect(hx, y, 3, axH, axcols[i]);  // coloured left strip
             char lbl[12]; snprintf(lbl, sizeof(lbl), "Home %s", axlet[i]);
@@ -1134,135 +1129,151 @@ private:
 
     // ── Terminal screen ───────────────────────────────────────────────────────
     void drawTerminalScreen() {
-        int cmdY = NAV_Y - CMD_H;
-        int outH = cmdY - TOP - 4;
-        int outY = TOP + 4;
+        // Layout: [spindle row 22px] [term output] [quick cmd row 28px] [nav]
+        int sRowH = 22;            // spindle/coolant row height (top)
+        int qRowH = 28;            // quick commands row height (bottom, easier to press)
+        int sRowY = TOP;           // spindle row just below header
+        int qRowY = NAV_Y - qRowH; // quick cmds just above nav bar
+        int outY  = sRowY + sRowH + 1;
+        int outH  = qRowY - outY - 1;
 
+        // ── Top row: Spindle + Coolant ───────────────────────────────────────
+        canvas.fillRect(0, sRowY, W, sRowH, COL_PANEL2);
+        hline(0, sRowY + sRowH, W, COL_BORDER);
+        int scmdW = (W - 8 - (N_SPINDLE-1)*3) / N_SPINDLE;
+        for (int ci = 0; ci < N_SPINDLE; ci++) {
+            int bx = 4 + ci*(scmdW+3);
+            int col2 = (ci<2)?GREEN:(ci==2)?RED:(ci==3)?CYAN:COL_DIM2;
+            tintStrokeR(bx, sRowY+2, scmdW, sRowH-4, 3, col2, col2, 25);
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(col2);
+            canvas.drawString(SPINDLE_LBLS[ci], bx+scmdW/2, sRowY+sRowH/2);
+        }
+
+        // ── Terminal output area ─────────────────────────────────────────────
         canvas.fillRect(0, outY, W, outH, COL_PANEL3);
-        hline(0, outY + outH, W, COL_BORDER);
-
-        // Build merged view: raw UART RX lines + TX commands from termLines
-        // Use font0 for compact display — fits more lines
-        int lh      = 12;
-        int maxLines = (outH - 4) / lh;
-        int rxTotal  = fnc_term_count();
-        int txTotal  = (int)termLines.size();
-        // Show RX raw lines, scrollable
-        int total = rxTotal;
+        int lh = 13;
+        int maxLines = (outH - 2) / lh;
+        int total = fnc_term_count();
         int start = std::max(0, total - maxLines - termScroll);
         start     = std::min(start, std::max(0, total - maxLines));
 
         // Scroll indicator
         if (total > maxLines) {
-            int trackH = outH - 8;
+            int trackH = outH - 4;
             int thumbH = std::max(6, trackH * maxLines / total);
-            int thumbY = outY + 4 + (trackH-thumbH) * start / std::max(1, total-maxLines);
-            canvas.fillRect(W-3, outY+4, 3, trackH, COL_BORDER);
+            int thumbY = outY + 2 + (trackH-thumbH) * start / std::max(1, total-maxLines);
+            canvas.fillRect(W-3, outY+2, 3, trackH, COL_BORDER);
             canvas.fillRect(W-3, thumbY, 3, thumbH, COL_DIM2);
         }
 
-        // Draw RX lines from UART capture
         for (int i = 0; i < maxLines && (start + i) < total; i++) {
-            int ly = outY + 4 + i * lh;
+            int ly = outY + 2 + i * lh;
             if (i % 2 == 0) canvas.fillRect(0, ly, W-4, lh, 0x0841);
             const char* line = fnc_term_line(start + i);
-            // Colour by content
             int col = COL_DIM2;
-            if (line[0] == '<') col = GREEN;           // status reports
-            else if (line[0] == '[') col = CYAN;        // [MSG:] info
-            else if (line[0] == 'e' || line[0]=='E') col = RED;  // error
-            else if (line[0] == 'o') col = COL_WHITE2;  // ok
-            else if (line[0] == '>') col = YELLOW;      // echo of sent commands
+            if (line[0]=='<') col=GREEN;
+            else if (line[0]=='[') col=CYAN;
+            else if (line[0]=='e'||line[0]=='E'||line[0]=='A') col=RED;
+            else if (line[0]=='o') col=COL_WHITE2;
+            else if (line[0]=='>') col=YELLOW;
             canvas.setFont(&fonts::Font0);
             canvas.setTextDatum(middle_left);
             canvas.setTextColor(col);
-            canvas.drawString(line, 6, ly + lh/2);
+            canvas.drawString(line, 5, ly+lh/2);
         }
 
-        // Command buttons bar
-        // Two rows of command buttons: spindle/coolant row + GCode quick row
-        int row2Y = cmdY + CMD_H/2;
-        canvas.fillRect(0, cmdY, W, CMD_H, COL_PANEL2);
-        hline(0, cmdY, W, COL_BORDER);
-        int bh2 = (CMD_H - 10) / 2;
-
-        // Top row: Spindle + Coolant
-        int scmdW = (W - 8 - (N_SPINDLE-1)*3) / N_SPINDLE;
-        for (int ci = 0; ci < N_SPINDLE; ci++) {
-            int bx = 4 + ci*(scmdW+3);
-            int col2 = (ci<2)?GREEN:(ci==2)?RED:(ci==3)?CYAN:COL_DIM2;
-            tintStrokeR(bx, cmdY+3, scmdW, bh2, 2, col2, col2, 25);
-            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
-            canvas.setTextColor(col2);
-            canvas.drawString(SPINDLE_LBLS[ci], bx+scmdW/2, cmdY+3+bh2/2);
-        }
-
-        // Bottom row: GCode quick commands
-        int totalGaps = (N_QUICK_CMDS - 1) * 4;
-        int cmdW      = (W - 8 - totalGaps) / N_QUICK_CMDS;
+        // ── Bottom row: Quick GCode commands (large, easy to press) ─────────
+        canvas.fillRect(0, qRowY, W, qRowH, COL_PANEL2);
+        hline(0, qRowY, W, COL_BORDER);
+        int totalGaps = (N_QUICK_CMDS - 1) * 3;
+        int cmdW = (W - 6 - totalGaps) / N_QUICK_CMDS;
         for (int ci = 0; ci < N_QUICK_CMDS; ci++) {
-            int bx = 4 + ci * (cmdW + 4);
-            int bh = bh2;
-            _cmdBtns[ci] = { bx, cmdY + 5 + bh2, cmdW, bh };
-            tintStrokeR(bx, cmdY+5+bh2, cmdW, bh, 2, 0xF81F, 0xF81F, 20);
-            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            int bx = 3 + ci * (cmdW + 3);
+            _cmdBtns[ci] = { bx, qRowY+2, cmdW, qRowH-4 };
+            tintStrokeR(bx, qRowY+2, cmdW, qRowH-4, 3, 0xF81F, 0xF81F, 20);
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
             canvas.setTextColor(0xF81F);
-            canvas.drawString(QUICK_CMDS[ci], bx+cmdW/2, cmdY+5+bh2+bh/2);
+            canvas.drawString(QUICK_CMDS[ci], bx+cmdW/2, qRowY+qRowH/2);
         }
     }
 
     // ── Macros screen ─────────────────────────────────────────────────────────
     void drawMacrosScreen() {
-        int pad = 6, gap = 5;
-        int bh  = 36;  // tall enough for comfortable tapping
-        int avH = NAV_Y - TOP - pad;
-        int visible = std::min((int)MACROS.size(), avH / (bh + gap));
+        int pad=6, gap=4, bh=38;
+        int avH=NAV_Y-TOP-pad;
+        int visible=std::min((int)MACROS.size(), avH/(bh+gap));
+        int maxScroll=std::max(0,(int)MACROS.size()-visible);
+        macroScroll=std::max(0,std::min(macroScroll,maxScroll));
 
-        // Clamp scroll
-        int maxScroll = std::max(0, (int)MACROS.size() - visible);
-        macroScroll = std::max(0, std::min(macroScroll, maxScroll));
-
-        // Scroll indicator bar (right edge, 3px wide)
-        if ((int)MACROS.size() > visible) {
-            int trackH = avH;
-            int thumbH = std::max(8, trackH * visible / (int)MACROS.size());
-            int thumbY = TOP + pad + (trackH - thumbH) * macroScroll / std::max(1, maxScroll);
-            canvas.fillRect(W - 3, TOP + pad, 3, trackH, COL_BORDER);
-            canvas.fillRect(W - 3, thumbY, 3, thumbH, COL_DIM2);
+        // Scroll bar
+        if((int)MACROS.size()>visible){
+            int trackH=avH;
+            int thumbH=std::max(8,trackH*visible/(int)MACROS.size());
+            int thumbY=TOP+pad+(trackH-thumbH)*macroScroll/std::max(1,maxScroll);
+            canvas.fillRect(W-4,TOP+pad,4,trackH,COL_BORDER);
+            canvas.fillRect(W-4,thumbY,4,thumbH,COL_DIM2);
         }
 
-        int bw = W - 2 * pad - 6;  // leave 6px for scroll bar
-        for (int vi = 0; vi < visible; vi++) {
-            int mi = macroScroll + vi;
-            int by = TOP + pad + vi * (bh + gap);
-            int rh = std::min(bh, NAV_Y - by - 2);  // clamp to screen
-            if (rh < 8) break;                        // too small, stop
-            _macroBtns[vi] = { pad, by, bw, rh };
+        int bw=W-2*pad-6;
+        for(int vi=0;vi<visible;vi++){
+            int mi=macroScroll+vi;
+            int by=TOP+pad+vi*(bh+gap);
+            int rh=std::min(bh,NAV_Y-by-2);
+            if(rh<12) break;
+            _macroBtns[vi]={pad,by,bw,rh};
 
-            // Background
-            canvas.fillRoundRect(pad, by, bw, rh, 4, COL_PANEL2);
-            canvas.drawRoundRect(pad, by, bw, rh, 4, COL_BORDER2);
+            bool empty=MACROS[mi].cmd.empty();
+            int mcol=empty?COL_DIM:MACROS[mi].col;
 
-            // Coloured left accent strip
-            canvas.fillRect(pad, by + 2, 4, rh - 4, MACROS[mi].col);
+            // Background — lit up if this is the P6 macro
+            bool isP6macro=(_enableMode==3 && mi==_enableMacro);
+            if(isP6macro){
+                canvas.fillRoundRect(pad,by,bw,rh,4,0x0019);
+                canvas.drawRoundRect(pad,by,bw,rh,4,mcol);
+            } else {
+                canvas.fillRoundRect(pad,by,bw,rh,4,COL_PANEL2);
+                canvas.drawRoundRect(pad,by,bw,rh,4,COL_BORDER2);
+            }
 
-            // Dot indicator
-            canvas.fillCircle(pad + 14, by + rh / 2, 4, MACROS[mi].col);
+            // Left colour bar
+            canvas.fillRect(pad+1,by+2,5,rh-4,mcol);
 
-            // Name — TINY font, vertically centred
-            txt(MACROS[mi].name.c_str(), pad + 26, by + rh / 2,
-                MACROS[mi].cmd.empty() ? COL_DIM : COL_WHITE, TINY, middle_left);
+            // Index number
+            char idx2[4]; snprintf(idx2,sizeof(idx2),"%d",mi+1);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(mcol);
+            canvas.drawString(idx2,pad+16,by+rh/2);
 
-            // Command preview in small font
-            if (!MACROS[mi].cmd.empty()) {
-                canvas.setFont(&fonts::Font0);
-                canvas.setTextDatum(middle_right);
+            // Macro name — Font2 for readability
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
+            canvas.setTextColor(empty?COL_DIM:COL_WHITE);
+            canvas.drawString(MACROS[mi].name.c_str(),pad+28,by+rh*36/100);
+
+            // Command preview — Font0 below name
+            if(!empty){
+                std::string preview=MACROS[mi].cmd.substr(0,32);
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
                 canvas.setTextColor(COL_DIM2);
-                canvas.drawString(MACROS[mi].cmd.c_str(), W - 10, by + rh / 2);
+                canvas.drawString(preview.c_str(),pad+28,by+rh*70/100);
+            } else {
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+                canvas.setTextColor(COL_DIM);
+                canvas.drawString("(empty)",pad+28,by+rh*70/100);
+            }
+
+            // State badge right side
+            if(state==Cycle && _p6MacroFire && mi==_enableMacro){
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_right);
+                canvas.setTextColor(GREEN);
+                canvas.drawString("RUNNING",pad+bw-4,by+rh/2);
+            } else if(isP6macro){
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_right);
+                canvas.setTextColor(CYAN);
+                canvas.drawString("P6 BTN",pad+bw-4,by+rh/2);
             }
         }
-        // Clear unused slots
-        for (int vi = visible; vi < 8; vi++) _macroBtns[vi] = { 0, 0, 0, 0 };
+        for(int vi=visible;vi<8;vi++) _macroBtns[vi]={0,0,0,0};
     }
 
     // ── Probe overlay ─────────────────────────────────────────────────────────
@@ -1366,7 +1377,7 @@ public:
     }
 
     void onDROChange()    override { if (_tab == 0) reDisplay(); }
-    void onLineReceived()  override { if (_tab == 4) reDisplay(); }
+    void onLineReceived()  override { if (_tab == 2) reDisplay(); }
     void onLimitsChange() override { if (_tab == 1) reDisplay(); }
 
     void onStateChange(state_t old_state) override {
@@ -1393,8 +1404,8 @@ public:
         std::string line = std::string("[MSG:") + arguments + "]";
         termLines.push_back({ line, GREEN });
         if (termLines.size() > 200) termLines.erase(termLines.begin());
-        if (termScroll == 0 && _tab == 4) reDisplay();  // live update when pinned to bottom
-        if (_tab == 4) reDisplay();
+        if (termScroll == 0 && _tab == 2) reDisplay();  // live update when pinned to bottom
+        if (_tab == 2) reDisplay();
     }
 
     void onFileLines(int firstLine, const std::vector<std::string>& lines) override {
@@ -1410,7 +1421,7 @@ public:
             previewScroll = 0;
             filePreviewMode = true;
         }
-        if (_tab == 3) reDisplay();
+        if (_tab == 2) reDisplay();
     }
 
     void onFilesList() override {
@@ -1424,7 +1435,7 @@ public:
             fe.size  = fe.isDir ? 0 : fileVector[i].fileSize;
             fileList.push_back(fe);
         }
-        if (_tab == 3) reDisplay();
+        if (_tab == 2) reDisplay();
     }
 
     void onEncoder(int delta) override {
@@ -1463,12 +1474,17 @@ public:
                 // Spindle override: coarse ±10% per detent
                 fnc_realtime(delta>0 ? (realtime_cmd_t)0x9A : (realtime_cmd_t)0x9B);
             }
-            reDisplay();
+            // Throttle reDisplay during job to avoid CPU overload
+            static uint32_t _lastOvrRedraw = 0;
+            if (millis() - _lastOvrRedraw > 150) {
+                _lastOvrRedraw = millis();
+                reDisplay();
+            }
             return;
         }
 
         // All other cases: scroll the active tab (axis switch position ignored)
-        if (_tab == 3) {
+        if (_tab == 2) {
             if (filePreviewMode) {
                 // Scroll gcode preview
                 int maxS = std::max(0, (int)previewLines.size() - 1);
@@ -1476,7 +1492,7 @@ public:
             } else {
                 fileScroll = std::max(0, fileScroll + delta);
             }
-        } else if (_tab == 4) {
+        } else if (_tab == 2) {
             termScroll = std::max(0, termScroll - delta);
             int cmdY      = NAV_Y - CMD_H;
             int outH      = cmdY - TOP - 4;
@@ -1484,7 +1500,7 @@ public:
             int maxL      = (outH - 4) / lh2;
             int maxScroll = std::max(0, fnc_term_count() - maxL);
             termScroll    = std::min(termScroll, maxScroll);
-        } else if (_tab == 5) {
+        } else if (_tab == 2) {
             macroScroll = std::max(0, macroScroll + delta);
         }
         reDisplay();  // always redraw so header arrow is immediate on any tab
@@ -1565,7 +1581,7 @@ public:
             for (int i = 0; i < N_TABS; i++) {
                 if (hit(_navTabs[i], x, y)) {
                     _tab = i;
-                    if (_tab == 3) {
+                    if (_tab == 2) {
                         if (simMode_active()) {
                             // Load simulated file list
                             fileList.clear(); fileScroll = 0; fileSelected = -1;
@@ -1644,7 +1660,7 @@ public:
         }
 
         // Files screen
-        if (_tab == 3) {
+        if (_tab == 2) {
             // Up button
             if (filePath != "/sd" && x >= W - 34 && y >= TOP + 2 && y <= TOP + 16) {
                 size_t pos = filePath.rfind('/');
@@ -1818,7 +1834,7 @@ public:
                 send_linef("$Localfs/Run=%s", path.c_str());
                 termLines.push_back({ std::string("> Run: ") + fileList[fileSelected].name, COL_DIM2 });
                 _jobSentToFluidNC = true;
-                _tab = 4; reDisplay();
+                _tab = 2; reDisplay();
                 return;
             }
         }
@@ -1861,18 +1877,17 @@ public:
             }
         }
 
-        if (_tab == 4) {
-            // Spindle/coolant top row
-            int bh2=(CMD_H-10)/2, scmdW=(W-8-(N_SPINDLE-1)*3)/N_SPINDLE;
-            int cmdY4=NAV_Y-CMD_H;
+        if (_tab == 2) {
+            // Spindle/coolant top row (at TOP)
+            { int sRowHt=22, scmdWt=(W-8-(N_SPINDLE-1)*3)/N_SPINDLE;
             for (int ci=0; ci<N_SPINDLE; ci++) {
-                int bx=4+ci*(scmdW+3);
-                if ((x>=bx&&x<bx+scmdW&&y>=cmdY4+3&&y<cmdY4+3+bh2)) {
+                int bx=4+ci*(scmdWt+3);
+                if ((x>=bx&&x<bx+scmdWt&&y>=TOP&&y<TOP+sRowHt)) {
                     send_line(SPINDLE_CMDS[ci]);
                     fnc_term_inject((std::string("> ")+SPINDLE_CMDS[ci]).c_str());
                     reDisplay(); return;
                 }
-            }
+            }}
             for (int ci = 0; ci < N_QUICK_CMDS; ci++) {
                 if (hit(_cmdBtns[ci], x, y)) {
                     char _echo[68];
@@ -1885,7 +1900,7 @@ public:
         }
 
         // Macros screen — _macroBtns maps visible slots to MACROS[macroScroll+vi]
-        if (_tab == 5) {
+        if (_tab == 2) {
             for (int vi = 0; vi < 8; vi++) {
                 if (_macroBtns[vi].w == 0) break;
                 if (hit(_macroBtns[vi], x, y)) {
@@ -1903,13 +1918,13 @@ public:
     void onLeftFlick()  override {}
     void onRightFlick() override {}
     void onUpFlick() override {
-        if (_tab == 3 && filePreviewMode) { previewScroll = std::max(0, previewScroll - 5); reDisplay(); }
-        if (_tab == 4) { termScroll = std::max(0, termScroll - 5); reDisplay(); }
-        if (_tab == 5) { macroScroll = std::max(0, macroScroll - 3); reDisplay(); }
+        if (_tab == 2 && filePreviewMode) { previewScroll = std::max(0, previewScroll - 5); reDisplay(); }
+        if (_tab == 2) { termScroll = std::max(0, termScroll - 5); reDisplay(); }
+        if (_tab == 2) { macroScroll = std::max(0, macroScroll - 3); reDisplay(); }
     }
     void onDownFlick() override {
-        if (_tab == 3 && filePreviewMode) { previewScroll += 5; reDisplay(); }
-        if (_tab == 4) {
+        if (_tab == 2 && filePreviewMode) { previewScroll += 5; reDisplay(); }
+        if (_tab == 2) {
             termScroll += 5;
             int cmdY  = NAV_Y - CMD_H;
             int outH  = cmdY - TOP - 4;
@@ -1919,7 +1934,7 @@ public:
             termScroll = std::min(termScroll, maxSc);
             reDisplay();
         }
-        if (_tab == 5) { macroScroll += 3; reDisplay(); }
+        if (_tab == 2) { macroScroll += 3; reDisplay(); }
     }
 
     void reDisplay() override {
@@ -1930,10 +1945,9 @@ public:
         switch (_tab) {
             case 0: drawDROScreen();      break;
             case 1: drawHomingScreen();   break;
-            case 2: drawProbeScreen();    break;
-            case 3: drawFilesScreen();    break;
-            case 4: drawTerminalScreen(); break;
-            case 5: drawMacrosScreen();   break;
+            case 2: drawFilesScreen();    break;
+            case 3: drawTerminalScreen(); break;
+            case 4: drawMacrosScreen();   break;
         }
         if (_probeOpen)              drawProbeOverlay();
         if (_alarmOpen || _forceAlarm) drawAlarmOverlay();
