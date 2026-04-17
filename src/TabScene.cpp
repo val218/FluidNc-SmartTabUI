@@ -1909,7 +1909,7 @@ public:
                         return;
                     }
                     // Run button
-                    if (y >= NAV_Y - abH && x >= W - 74) {
+                    {
                         // Parse gcode XY path
                         simPath.clear(); simPathIdx = 0;
                         parseGcodeToVizPath(previewLines, fileList[fileSelected].name);
