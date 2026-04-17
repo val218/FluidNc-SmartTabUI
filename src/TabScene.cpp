@@ -55,7 +55,7 @@ static const int TAB_W   = 22;
 static const int VIZ_X   = DROW;
 static const int VIZ_Y   = TOP;
 static const int VIZ_W   = W - DROW;        // full width to right edge
-static const int VIZ_H   = NAV_Y - FEED_H - VIZ_Y;
+static const int VIZ_H   = NAV_Y - FEED_H - VIZ_Y - 8;  // 8px for progress strip below
 static const int TAB_X   = W;               // tabs gone — pushed off screen
 static const int DRO_ROW = (NAV_Y - TOP - FEED_H) / 4;
 static const int N_TABS  = 5;
@@ -699,49 +699,40 @@ private:
                 canvas.fillCircle(dx, dy, 2, GREEN);
             }
 
-            // Filename — scrolling marquee at top of viz area (max 26 chars fit)
-            if (!vizJobName.empty()) {
-                static int _nameScroll = 0;
-                static uint32_t _nameTime = 0;
-                if (millis() - _nameTime > 300) { _nameTime = millis(); _nameScroll++; }
-                std::string display_name = vizJobName;
-                if ((int)display_name.size() > 26) {
-                    int pos = _nameScroll % (int)(display_name.size() + 4);
-                    std::string padded = display_name + "    " + display_name;
-                    display_name = padded.substr(pos, 26);
-                }
-                canvas.setFont(&fonts::Font0);
-                canvas.setTextDatum(middle_left);
-                canvas.setTextColor(CYAN);
-                canvas.drawString(display_name.c_str(), offXv+2, offYv+5);
-            }
 
-            // Progress bar — 5px tall, at bottom of work area
-            int pbY = offYv + drawnHv - 6;
-            int pbPct = vizPath.size()>1 ? executed*100/((int)vizPath.size()-1) : 0;
-            if (myPercent > 0) pbPct = (int)myPercent;
-            int pbW = drawnWv * pbPct / 100;
-            canvas.fillRect(offXv, pbY, drawnWv, 5, COL_BORDER);
-            if (pbW > 0) canvas.fillRect(offXv, pbY, pbW, 5, CYAN);
-            // Percentage text
-            char pctStr[8]; snprintf(pctStr, sizeof(pctStr), "%d%%", pbPct);
+        }  // end vizPath overlay
+
+        // ── G-code progress bar — strip between viz area and feed bar ────────
+        // Sits in the 6px gap between VIZ bottom and FEED bar top
+        if (!vizJobName.empty()) {
+            int pbStripY = VIZ_Y + VIZ_H + 1;  // 1px gap then strip
+            int pbStripH = 6;  // fits in 8px gap
+            int pbPct = 0;
+            if (simJobRunning && !vizPath.empty())
+                pbPct = vizPathExecuted * 100 / std::max(1, (int)vizPath.size()-1);
+            else if (myPercent > 0)
+                pbPct = (int)myPercent;
+            // Background strip
+            canvas.fillRect(VIZ_X, pbStripY, VIZ_W, pbStripH, COL_BORDER);
+            // Fill
+            int pbFill = VIZ_W * pbPct / 100;
+            if (pbFill > 0) canvas.fillRect(VIZ_X, pbStripY, pbFill, pbStripH, CYAN);
+            // Filename left, percentage right — in the strip itself
             canvas.setFont(&fonts::Font0);
-            canvas.setTextDatum(middle_right);
+            canvas.setTextDatum(middle_left);
             canvas.setTextColor(pbPct>0 ? CYAN : COL_DIM);
-            canvas.drawString(pctStr, offXv+drawnWv-1, pbY-4);
-
-
-        // File progress bar
-        if (myPercent > 0) {
-            int bw = (int)((VIZ_W - 10) * (int)myPercent / 100);
-            canvas.fillRect(VIZ_X + 5, NAV_Y - FEED_H - 6, VIZ_W - 10, 3, COL_BORDER2);
-            if (bw > 0) canvas.fillRect(VIZ_X + 5, NAV_Y - FEED_H - 6, bw, 3, CYAN);
-            char pct[12];
-            snprintf(pct, sizeof(pct), "%d%%", (int)myPercent);
-            txt(pct, TAB_X - 3, VIZ_Y + 5, COL_DIM2, TINY, middle_right);
+            // Scrolling filename
+            static int _ns=0; static uint32_t _nt=0;
+            if (millis()-_nt>300){_nt=millis();_ns++;}
+            std::string dn=vizJobName;
+            if((int)dn.size()>22){int p=_ns%(int)(dn.size()+4);std::string pd=dn+"    "+dn;dn=pd.substr(p,22);}
+            canvas.drawString(dn.c_str(), VIZ_X+2, pbStripY+pbStripH/2);
+            char pctS[8]; snprintf(pctS,sizeof(pctS),"%d%%",pbPct);
+            canvas.setTextDatum(middle_right);
+            canvas.drawString(pctS, VIZ_X+VIZ_W-1, pbStripY+pbStripH/2);
         }
 
-        // Viz view tabs
+        // Viz view tabs (now off-screen since TAB_X=W)
         canvas.fillRect(TAB_X, VIZ_Y, TAB_W, VIZ_H, COL_PANEL);
         vline(TAB_X, VIZ_Y, VIZ_H, COL_BORDER);
         const char* vt[] = { "XY", "XZ", "3D" };
@@ -1609,6 +1600,8 @@ public:
                             previewLines.push_back("M5");
                             previewLines.push_back("M30");
                             filePreviewMode = true;
+                            // Parse sim gcode into vizPath for DRO visualizer
+                            parseGcodeToVizPath(previewLines, fileList[fi].name);
                         } else {
                             std::string path = filePath + "/" + fileList[fi].name;
                             request_file_preview(path.c_str(), 0, 60);
