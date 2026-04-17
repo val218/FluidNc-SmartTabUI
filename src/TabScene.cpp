@@ -732,40 +732,7 @@ private:
             canvas.drawString(pctS, VIZ_X+VIZ_W-1, pbStripY+pbStripH/2);
         }
 
-        // Viz view tabs (now off-screen since TAB_X=W)
-        canvas.fillRect(TAB_X, VIZ_Y, TAB_W, VIZ_H, COL_PANEL);
-        vline(TAB_X, VIZ_Y, VIZ_H, COL_BORDER);
-        const char* vt[] = { "XY", "XZ", "3D" };
-        int tabH = VIZ_H / 3;
-        for (int i = 0; i < 3; i++) {
-            int ty = VIZ_Y + i * tabH;
-            _vizTabs[i] = { TAB_X, ty, TAB_W, tabH };
-            if (i == _vizView) {
-                canvas.fillRect(TAB_X, ty, TAB_W, tabH, 0x0019);
-                canvas.fillRect(TAB_X, ty, 2, tabH, BLUE);
-            }
-            hline(TAB_X, ty + tabH - 1, TAB_W, COL_BORDER);
-            {
-                int tcol2 = (i == _vizView) ? COL_WHITE : COL_DIM2;
-                int bg    = (i == _vizView) ? 0x0019 : COL_PANEL;
-                LGFX_Sprite tmp(&canvas);
-                tmp.setColorDepth(8);
-                // Create sprite sized for the text, rotate 90 CCW when pushing
-                tmp.createSprite(tabH - 2, TAB_W - 2);
-                tmp.fillSprite(bg);
-                tmp.setFont(&fonts::Font2);
-                tmp.setTextColor(tcol2);
-                tmp.setTextDatum(middle_center);
-                tmp.drawString(vt[i], (tabH - 2) / 2, (TAB_W - 2) / 2);
-                // 90 = CW = text reads bottom-to-top; 270 = CCW = text reads top-to-bottom
-                // Use bg+1 as transparent key so bg fills the cell correctly
-                tmp.pushRotateZoom(&canvas, TAB_X + TAB_W / 2, ty + tabH / 2,
-                                   270.0f, 1.0f, 1.0f, bg + 1);
-                tmp.deleteSprite();
-            }
-        }
-
-        }  // end tool path if-block
+    }  // end drawDROScreen
 
         // ── Feed / Speed / Spindle bar — tap to select, MPG adjusts ──────────
         int fy  = NAV_Y - FEED_H;
