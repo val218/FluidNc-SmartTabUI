@@ -58,7 +58,7 @@ static const int VIZ_W   = W - DROW;        // full width to right edge
 static const int VIZ_H   = NAV_Y - FEED_H - VIZ_Y - 14; // 14px for filename+bar strip below
 static const int TAB_X   = W;               // tabs gone — pushed off screen
 static const int DRO_ROW = (NAV_Y - TOP - FEED_H) / 4;
-static const int N_TABS  = 5;
+static const int N_TABS  = 6;
 static const int CMD_H   = 34;
 static const int OUT_LH  = 16;
 
@@ -76,7 +76,7 @@ static const AxisStyle AX_STYLES[4] = {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tab names
 // ─────────────────────────────────────────────────────────────────────────────
-static const char* TAB_LABELS[N_TABS] = { "DRO", "Home", "Files", "Term", "Macros" };
+static const char* TAB_LABELS[N_TABS] = { "DRO", "Home", "Probe", "Files", "Term", "Macros" };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Terminal
@@ -104,6 +104,10 @@ static bool _p6Prev      = false;  // previous P6 state for edge detection
 static volatile bool _p6MacroFire   = false;
 static volatile bool mpgJogAllowed  = false;  // jog permitted (enable gating)
 static int  _barSel      = 0;  // 0=none 1=feed selected 2=spindle selected
+static bool _showMPos    = false;  // false=WPos true=MPos
+static bool _inInchMode  = false;  // display inch instead of mm
+static uint32_t _jobStartTime = 0; // millis when job started
+static uint32_t _jobElapsed   = 0; // accumulated elapsed ms
 static int  _currentTab  = 0;
 static int  _workX       = 1250;  // machine work area short axis (mm)
 static int  _workY       = 2500;  // machine work area long axis (mm)
@@ -241,6 +245,9 @@ void readMpgSwitches() {
     }
 }
 static const char* QUICK_CMDS[] = { "$H", "$?", "!", "~", "$X" };
+static const char* SPINDLE_CMDS[] = { "M3 S10000", "M4 S10000", "M5", "M8", "M9" };
+static const char* SPINDLE_LBLS[] = { "CW", "CCW", "Stop", "Flood", "M-off" };
+static const int   N_SPINDLE = 5;
 static const int   N_QUICK_CMDS = 5;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -562,6 +569,41 @@ private:
         }
         vline(DROW - 1, TOP, NAV_Y - TOP - FEED_H, COL_BORDER);
 
+        // DRO mode pills: MPos/WPos and mm/in toggles
+        { int px=DROW+2, py=TOP+2, pw=36, ph=10, g=3;
+          // MPos/WPos toggle
+          tintStrokeR(px, py, pw, ph, 2, _showMPos?COL_BORDER:0x0019, _showMPos?COL_DIM:CYAN, 30);
+          canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+          canvas.setTextColor(_showMPos?COL_DIM:CYAN);
+          canvas.drawString("WPos", px+pw/2, py+ph/2);
+          px+=pw+g;
+          tintStrokeR(px, py, pw, ph, 2, _showMPos?0x0019:COL_BORDER, _showMPos?CYAN:COL_DIM, 30);
+          canvas.setTextColor(_showMPos?CYAN:COL_DIM);
+          canvas.drawString("MPos", px+pw/2, py+ph/2);
+          px+=pw+g+4;
+          // mm/in toggle
+          tintStrokeR(px, py, 24, ph, 2, inInches?COL_BORDER:0x0019, inInches?COL_DIM:YELLOW, 30);
+          canvas.setTextColor(inInches?COL_DIM:YELLOW);
+          canvas.drawString("mm", px+12, py+ph/2);
+          px+=27;
+          tintStrokeR(px, py, 24, ph, 2, inInches?0x0019:COL_BORDER, inInches?YELLOW:COL_DIM, 30);
+          canvas.setTextColor(inInches?YELLOW:COL_DIM);
+          canvas.drawString("in", px+12, py+ph/2);
+        }
+
+        // Job timer in viz area top-right
+        if (_jobStartTime > 0 || _jobElapsed > 0) {
+          uint32_t elapsed = _jobElapsed + (state==Cycle ? millis()-_jobStartTime : 0);
+          uint32_t s2=elapsed/1000, m=s2/60, h=m/60;
+          char tstr[12];
+          if(h>0) snprintf(tstr,sizeof(tstr),"%02lu:%02lu:%02lu",h,m%60,s2%60);
+          else    snprintf(tstr,sizeof(tstr),"%02lu:%02lu",m,s2%60);
+          canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_right);
+          canvas.setTextColor(state==Cycle?CYAN:COL_DIM2);
+          canvas.drawString(tstr, VIZ_X+VIZ_W-2, TOP+7);
+        }
+
+
         // Timed path animation (80ms/step) driven here during drawing
         if (simJobRunning && !simPath.empty()) {
             static uint32_t _lastStep = 0;
@@ -803,6 +845,73 @@ private:
           _spndPill={px2,fy,pillW3,FEED_H};
           drawPill3(px2,pillW3,"SPND",v,col,_barSel==3); }
     }  // end drawDROScreen
+
+    // ── Probe screen ─────────────────────────────────────────────────────────
+    // WCS selector, probing operations, tool length
+    int _wcsNum = 1;  // active WCS: 1=G54..6=G59
+    int _probeStep = 0;  // 0=idle, 1-N=wizard step
+    struct ProbeWizard { const char* title; const char* desc; const char* cmd; } ;
+
+    void drawProbeScreen() {
+        int pad=8, gap=6;
+        int W2=W, y=TOP+4;
+
+        // ── WCS selector G54–G59 ─────────────────────────────────────────────
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextDatum(middle_left);
+        canvas.setTextColor(COL_DIM);
+        canvas.drawString("WCS:", pad, y+8);
+        const char* wcsNames[]={"G54","G55","G56","G57","G58","G59"};
+        int bw=(W2-pad*2-4*5)/6;
+        for(int i=0;i<6;i++){
+            bool sel=(i==_wcsNum-1);
+            int bx=pad+(bw+5)*i;
+            if(sel){canvas.fillRoundRect(bx,y,bw,16,3,0x0019);canvas.drawRoundRect(bx,y,bw,16,3,CYAN);}
+            else tintStrokeR(bx,y,bw,16,3,COL_BORDER,COL_BORDER,30);
+            canvas.setTextDatum(middle_center);
+            canvas.setTextColor(sel?CYAN:COL_DIM2);
+            canvas.drawString(wcsNames[i],bx+bw/2,y+8);
+        }
+        y+=22; hline(0,y,W2,COL_BORDER); y+=4;
+
+        // ── Axis zero buttons ────────────────────────────────────────────────
+        canvas.setTextDatum(middle_left); canvas.setTextColor(COL_DIM);
+        canvas.setFont(&fonts::Font0);
+        canvas.drawString("Zero:", pad, y+10);
+        const char* axNames[]={"X","Y","Z","All"};
+        int zbw=(W2-pad*2-3*gap)/4;
+        for(int i=0;i<4;i++){
+            int bx=pad+(zbw+gap)*i;
+            tintStrokeR(bx,y,zbw,20,3,COL_BORDER2,COL_BORDER,40);
+            canvas.setTextDatum(middle_center);
+            canvas.setTextColor(i<3?axCols[i]:ORANGE);
+            canvas.drawString(axNames[i],bx+zbw/2,y+10);
+        }
+        y+=26; hline(0,y,W2,COL_BORDER); y+=4;
+
+        // ── Probing operations ───────────────────────────────────────────────
+        struct { const char* label; const char* sub; int col; } ops[]={
+            {"Tool Length", "Touch-off Z to surface",   YELLOW  },
+            {"Z Surface",   "Probe workpiece top",       CYAN    },
+            {"X Edge",      "Find X axis edge",          COL_AX_X},
+            {"Y Edge",      "Find Y axis edge",          COL_AX_Y},
+            {"XY Corner",   "Find corner of workpiece",  ORANGE  },
+            {"XY Center",   "Center of hole/boss",       GREEN   },
+        };
+        int nOps=6, opH=22, opW=W2-2*pad;
+        for(int i=0;i<nOps;i++){
+            int oy=y+i*(opH+3);
+            if(oy+opH>NAV_Y-4) break;
+            canvas.fillRoundRect(pad,oy,opW,opH,3,COL_PANEL2);
+            canvas.drawRoundRect(pad,oy,opW,opH,3,COL_BORDER);
+            canvas.fillRect(pad,oy+2,4,opH-4,ops[i].col);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+            canvas.setTextColor(COL_WHITE);
+            canvas.drawString(ops[i].label,pad+10,oy+opH*36/100);
+            canvas.setTextColor(COL_DIM2);
+            canvas.drawString(ops[i].sub,pad+10,oy+opH*72/100);
+        }
+    }
 
     // ── Homing screen ────────────────────────────────────────────────────────
     void drawHomingScreen() {
@@ -1070,16 +1179,34 @@ private:
         }
 
         // Command buttons bar
+        // Two rows of command buttons: spindle/coolant row + GCode quick row
+        int row2Y = cmdY + CMD_H/2;
         canvas.fillRect(0, cmdY, W, CMD_H, COL_PANEL2);
         hline(0, cmdY, W, COL_BORDER);
+        int bh2 = (CMD_H - 10) / 2;
+
+        // Top row: Spindle + Coolant
+        int scmdW = (W - 8 - (N_SPINDLE-1)*3) / N_SPINDLE;
+        for (int ci = 0; ci < N_SPINDLE; ci++) {
+            int bx = 4 + ci*(scmdW+3);
+            int col2 = (ci<2)?GREEN:(ci==2)?RED:(ci==3)?CYAN:COL_DIM2;
+            tintStrokeR(bx, cmdY+3, scmdW, bh2, 2, col2, col2, 25);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(col2);
+            canvas.drawString(SPINDLE_LBLS[ci], bx+scmdW/2, cmdY+3+bh2/2);
+        }
+
+        // Bottom row: GCode quick commands
         int totalGaps = (N_QUICK_CMDS - 1) * 4;
         int cmdW      = (W - 8 - totalGaps) / N_QUICK_CMDS;
         for (int ci = 0; ci < N_QUICK_CMDS; ci++) {
             int bx = 4 + ci * (cmdW + 4);
-            int bh = CMD_H - 8;
-            _cmdBtns[ci] = { bx, cmdY + 4, cmdW, bh };
-            tintStrokeR(bx, cmdY + 4, cmdW, bh, 3, 0xF81F, 0xF81F, 25);
-            f2(QUICK_CMDS[ci], bx + cmdW / 2, cmdY + CMD_H / 2, 0xF81F);
+            int bh = bh2;
+            _cmdBtns[ci] = { bx, cmdY + 5 + bh2, cmdW, bh };
+            tintStrokeR(bx, cmdY+5+bh2, cmdW, bh, 2, 0xF81F, 0xF81F, 20);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(0xF81F);
+            canvas.drawString(QUICK_CMDS[ci], bx+cmdW/2, cmdY+5+bh2+bh/2);
         }
     }
 
@@ -1238,14 +1365,26 @@ public:
     }
 
     void onDROChange()    override { if (_tab == 0) reDisplay(); }
-    void onLineReceived()  override { if (_tab == 3) reDisplay(); }
+    void onLineReceived()  override { if (_tab == 4) reDisplay(); }
     void onLimitsChange() override { if (_tab == 1) reDisplay(); }
 
     void onStateChange(state_t old_state) override {
         if (state == Alarm) _alarmOpen = true;
         else _alarmOpen = false;
-        // Clear job flag when machine returns to Idle
-        if (state == Idle) _jobSentToFluidNC = false;
+        if (state == Idle) { _jobSentToFluidNC = false; }
+        // Job timer
+        if (state == Cycle && old_state != Cycle) {
+            // Started or resumed
+            _jobStartTime = millis();
+        } else if (state != Cycle && old_state == Cycle) {
+            // Paused or ended — accumulate elapsed
+            _jobElapsed += millis() - _jobStartTime;
+            _jobStartTime = 0;
+        }
+        if (state == Idle || state == Alarm) {
+            // Job ended — keep elapsed for display
+            _jobStartTime = 0;
+        }
         reDisplay();
     }
 
@@ -1253,8 +1392,8 @@ public:
         std::string line = std::string("[MSG:") + arguments + "]";
         termLines.push_back({ line, GREEN });
         if (termLines.size() > 200) termLines.erase(termLines.begin());
-        if (termScroll == 0 && _tab == 3) reDisplay();  // live update when pinned to bottom
-        if (_tab == 3) reDisplay();
+        if (termScroll == 0 && _tab == 4) reDisplay();  // live update when pinned to bottom
+        if (_tab == 4) reDisplay();
     }
 
     void onFileLines(int firstLine, const std::vector<std::string>& lines) override {
@@ -1270,7 +1409,7 @@ public:
             previewScroll = 0;
             filePreviewMode = true;
         }
-        if (_tab == 2) reDisplay();
+        if (_tab == 3) reDisplay();
     }
 
     void onFilesList() override {
@@ -1284,7 +1423,7 @@ public:
             fe.size  = fe.isDir ? 0 : fileVector[i].fileSize;
             fileList.push_back(fe);
         }
-        if (_tab == 2) reDisplay();
+        if (_tab == 3) reDisplay();
     }
 
     void onEncoder(int delta) override {
@@ -1328,7 +1467,7 @@ public:
         }
 
         // All other cases: scroll the active tab (axis switch position ignored)
-        if (_tab == 2) {
+        if (_tab == 3) {
             if (filePreviewMode) {
                 // Scroll gcode preview
                 int maxS = std::max(0, (int)previewLines.size() - 1);
@@ -1336,7 +1475,7 @@ public:
             } else {
                 fileScroll = std::max(0, fileScroll + delta);
             }
-        } else if (_tab == 3) {
+        } else if (_tab == 4) {
             termScroll = std::max(0, termScroll - delta);
             int cmdY      = NAV_Y - CMD_H;
             int outH      = cmdY - TOP - 4;
@@ -1344,7 +1483,7 @@ public:
             int maxL      = (outH - 4) / lh2;
             int maxScroll = std::max(0, fnc_term_count() - maxL);
             termScroll    = std::min(termScroll, maxScroll);
-        } else if (_tab == 4) {
+        } else if (_tab == 5) {
             macroScroll = std::max(0, macroScroll + delta);
         }
         reDisplay();  // always redraw so header arrow is immediate on any tab
@@ -1425,7 +1564,7 @@ public:
             for (int i = 0; i < N_TABS; i++) {
                 if (hit(_navTabs[i], x, y)) {
                     _tab = i;
-                    if (_tab == 2) {
+                    if (_tab == 3) {
                         if (simMode_active()) {
                             // Load simulated file list
                             fileList.clear(); fileScroll = 0; fileSelected = -1;
@@ -1444,6 +1583,15 @@ public:
 
         // DRO screen
         if (_tab == 0) {
+            // Mode toggle pills: WPos/MPos and mm/in (top of viz area)
+            if (y >= TOP+2 && y <= TOP+12 && x >= DROW+2) {
+                int px=DROW+2, pw=36, g=3;
+                if (x < px+pw)   { _showMPos=false; reDisplay(); return; }  // WPos
+                if (x < px+pw+g+pw) { _showMPos=true; reDisplay(); return; }  // MPos
+                px+=pw+g+pw+g+4;
+                if (x < px+24)   { send_line("G21"); reDisplay(); return; }  // mm
+                if (x < px+51)   { send_line("G20"); reDisplay(); return; }  // in
+            }
             // Simulation mode: tap a DRO axis row to simulate +0.1mm jog
             if (simMode_active() && x < DROW && y >= TOP && y < NAV_Y - FEED_H) {
                 static const int _axCounts[] = {3,4,2,4};
@@ -1495,7 +1643,7 @@ public:
         }
 
         // Files screen
-        if (_tab == 2) {
+        if (_tab == 3) {
             // Up button
             if (filePath != "/sd" && x >= W - 34 && y >= TOP + 2 && y <= TOP + 16) {
                 size_t pos = filePath.rfind('/');
@@ -1669,13 +1817,61 @@ public:
                 send_linef("$Localfs/Run=%s", path.c_str());
                 termLines.push_back({ std::string("> Run: ") + fileList[fileSelected].name, COL_DIM2 });
                 _jobSentToFluidNC = true;
-                _tab = 3; reDisplay();
+                _tab = 4; reDisplay();
                 return;
             }
         }
 
         // Terminal screen
-        if (_tab == 3) {
+        // Probe screen touches (tab 2)
+        if (_tab == 2) {
+            int pad=8, gap=6, y=TOP+4;
+            // WCS selector
+            int bw=(W-pad*2-4*5)/6;
+            for(int i=0;i<6;i++){
+                int bx=pad+(bw+5)*i;
+                if(touchIn(x,y,bx,y,bw,16)){ _wcsNum=i+1;
+                    char cmd[16]; snprintf(cmd,sizeof(cmd),"G%d",53+_wcsNum);
+                    send_line(cmd); reDisplay(); return; }
+            }
+            y+=26;
+            // Axis zero buttons
+            int zbw=(W-pad*2-3*gap)/4;
+            const char* zeroCmds[]={"G10 L20 P0 X0","G10 L20 P0 Y0","G10 L20 P0 Z0","G10 L20 P0 X0 Y0 Z0"};
+            for(int i=0;i<4;i++){
+                int bx=pad+(zbw+gap)*i;
+                if(touchIn(x,y,bx,y,zbw,20)){
+                    send_line(zeroCmds[i]);
+                    fnc_term_inject((std::string("> ")+zeroCmds[i]).c_str());
+                    reDisplay(); return;
+                }
+            }
+            y+=30;
+            // Probe operations
+            const char* probeCmds[]={"G38.2 Z-50 F100","G38.2 Z-50 F100","G38.2 X-50 F100","G38.2 Y-50 F100","G38.2 X-25 F100","G38.2 X-25 F100"};
+            for(int i=0;i<6;i++){
+                int oy=y+i*25;
+                if(oy+22>NAV_Y-4) break;
+                if(touchIn(x,y,8,oy,W-16,22)){
+                    send_line(probeCmds[i]);
+                    fnc_term_inject((std::string("> ")+probeCmds[i]).c_str());
+                    reDisplay(); return;
+                }
+            }
+        }
+
+        if (_tab == 4) {
+            // Spindle/coolant top row
+            int bh2=(CMD_H-10)/2, scmdW=(W-8-(N_SPINDLE-1)*3)/N_SPINDLE;
+            int cmdY4=NAV_Y-CMD_H;
+            for (int ci=0; ci<N_SPINDLE; ci++) {
+                int bx=4+ci*(scmdW+3);
+                if (touchIn(x,y,bx,cmdY4+3,scmdW,bh2)) {
+                    send_line(SPINDLE_CMDS[ci]);
+                    fnc_term_inject((std::string("> ")+SPINDLE_CMDS[ci]).c_str());
+                    reDisplay(); return;
+                }
+            }
             for (int ci = 0; ci < N_QUICK_CMDS; ci++) {
                 if (hit(_cmdBtns[ci], x, y)) {
                     char _echo[68];
@@ -1688,7 +1884,7 @@ public:
         }
 
         // Macros screen — _macroBtns maps visible slots to MACROS[macroScroll+vi]
-        if (_tab == 4) {
+        if (_tab == 5) {
             for (int vi = 0; vi < 8; vi++) {
                 if (_macroBtns[vi].w == 0) break;
                 if (hit(_macroBtns[vi], x, y)) {
@@ -1706,13 +1902,13 @@ public:
     void onLeftFlick()  override {}
     void onRightFlick() override {}
     void onUpFlick() override {
-        if (_tab == 2 && filePreviewMode) { previewScroll = std::max(0, previewScroll - 5); reDisplay(); }
-        if (_tab == 3) { termScroll = std::max(0, termScroll - 5); reDisplay(); }
-        if (_tab == 4) { macroScroll = std::max(0, macroScroll - 3); reDisplay(); }
+        if (_tab == 3 && filePreviewMode) { previewScroll = std::max(0, previewScroll - 5); reDisplay(); }
+        if (_tab == 4) { termScroll = std::max(0, termScroll - 5); reDisplay(); }
+        if (_tab == 5) { macroScroll = std::max(0, macroScroll - 3); reDisplay(); }
     }
     void onDownFlick() override {
-        if (_tab == 2 && filePreviewMode) { previewScroll += 5; reDisplay(); }
-        if (_tab == 3) {
+        if (_tab == 3 && filePreviewMode) { previewScroll += 5; reDisplay(); }
+        if (_tab == 4) {
             termScroll += 5;
             int cmdY  = NAV_Y - CMD_H;
             int outH  = cmdY - TOP - 4;
@@ -1722,7 +1918,7 @@ public:
             termScroll = std::min(termScroll, maxSc);
             reDisplay();
         }
-        if (_tab == 4) { macroScroll += 3; reDisplay(); }
+        if (_tab == 5) { macroScroll += 3; reDisplay(); }
     }
 
     void reDisplay() override {
@@ -1733,9 +1929,10 @@ public:
         switch (_tab) {
             case 0: drawDROScreen();      break;
             case 1: drawHomingScreen();   break;
-            case 2: drawFilesScreen();    break;
-            case 3: drawTerminalScreen(); break;
-            case 4: drawMacrosScreen();   break;
+            case 2: drawProbeScreen();    break;
+            case 3: drawFilesScreen();    break;
+            case 4: drawTerminalScreen(); break;
+            case 5: drawMacrosScreen();   break;
         }
         if (_probeOpen)              drawProbeOverlay();
         if (_alarmOpen || _forceAlarm) drawAlarmOverlay();
