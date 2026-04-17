@@ -290,6 +290,7 @@ static int  fileScroll   = 0;
 static int  fileSelected    = -1;
 static bool filePreviewMode  = false;      // showing gcode preview panel
 static bool simJobRunning    = false;      // sim: job is running (show in DRO viz)
+static bool _jobSentToFluidNC = false;  // real job was sent, expect Cycle state
 static std::string simJobName;             // name of file being sim-run
 static std::vector<std::pair<float,float>> simPath;  // XY path parsed from gcode for viz
 static int  simPathIdx       = 0;          // current position along path (animation)
@@ -478,7 +479,7 @@ private:
         hline(0, NAV_Y, W, COL_BORDER);
 
         // When job running on DRO tab: show Hold and Abort instead of tab bar
-        bool jobActive = (state == Cycle || state == Hold || simJobRunning);
+        bool jobActive = (state == Cycle || (state == Hold && _jobSentToFluidNC) || simJobRunning);
         if (jobActive && _tab == 0) {
             int half = W / 2;
             bool inHold = (state == Hold);
@@ -1243,6 +1244,8 @@ public:
     void onStateChange(state_t old_state) override {
         if (state == Alarm) _alarmOpen = true;
         else _alarmOpen = false;
+        // Clear job flag when machine returns to Idle
+        if (state == Idle) _jobSentToFluidNC = false;
         reDisplay();
     }
 
@@ -1400,8 +1403,25 @@ public:
             _probeOpen = false; reDisplay(); return;
         }
 
-        // Nav bar
+        // Nav bar — Hold/Abort (when job active) or tab switch
         if (y >= NAV_Y) {
+            // Check Hold/Abort buttons first (shown when job running on DRO tab)
+            if (hit(_holdBtn, x, y)) {
+                if (state == Hold) {
+                    fnc_realtime((realtime_cmd_t)'~');  // Resume
+                    fnc_term_inject("> Resume");
+                } else {
+                    fnc_realtime((realtime_cmd_t)'!');  // Hold
+                    fnc_term_inject("> Hold");
+                }
+                reDisplay(); return;
+            }
+            if (hit(_abortBtn, x, y)) {
+                fnc_realtime((realtime_cmd_t)0x18);    // Soft Reset
+                fnc_term_inject("> Abort: Reset sent");
+                simJobRunning = false; vizPathExecuted = 0;
+                reDisplay(); return;
+            }
             for (int i = 0; i < N_TABS; i++) {
                 if (hit(_navTabs[i], x, y)) {
                     _tab = i;
@@ -1625,6 +1645,7 @@ public:
                             std::string path = filePath + "/" + fileList[fileSelected].name;
                             send_linef("$Localfs/Run=%s", path.c_str());
                             termLines.push_back({ "> Run: " + simJobName, COL_DIM2 });
+                            _jobSentToFluidNC = true;
                             // Request full file for path visualization
                             if (vizPath.empty())
                                 request_file_preview(path.c_str(), 0, 2000);
@@ -1647,6 +1668,7 @@ public:
                 std::string path = filePath + "/" + fileList[fileSelected].name;
                 send_linef("$Localfs/Run=%s", path.c_str());
                 termLines.push_back({ std::string("> Run: ") + fileList[fileSelected].name, COL_DIM2 });
+                _jobSentToFluidNC = true;
                 _tab = 3; reDisplay();
                 return;
             }

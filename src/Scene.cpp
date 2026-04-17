@@ -62,8 +62,13 @@ void dispatch_touch() {
     // Simulation mode always allows touch
     bool touchGated = !simMode_active() && tabui_touchGated();
     if (touchGated) {
-        touch.update(millis());  // keep state machine ticking, discard input
-        return;
+        // Always allow touch in the nav bar area (y >= NAV_Y) for Hold/Abort/tabs
+        touch.update(millis());
+        auto tg = touch.getDetail();
+        if (!tg.wasClicked()) return;
+        // NAV_Y is 206 on 240px screen — allow clicks below that
+        if (tg.y < 206) return;
+        // Fall through to process nav bar touch even when gated
     }
     static m5::touch_state_t last_touch_state = {};
     auto t = touch.getDetail();
