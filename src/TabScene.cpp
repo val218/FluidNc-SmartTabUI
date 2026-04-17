@@ -419,12 +419,13 @@ private:
             hdrTxt("STP", 61, 10, RED);
         }
 
-        // ── RIGHT: EN  ◄►  TX  RX  — fixed slots ────────────────────────────
-        // Slots from right edge, each ~18px:
-        // RX  = W-2  (right-aligned)
+        // ── RIGHT: MPG  EN  ◄►  TX  RX  — fixed slots ──────────────────────
+        // Slots from right edge:
+        // RX  = W-2
         // TX  = W-20
-        // ◄►  = W-38 (direction arrows slot, 16px wide)
-        // EN  = W-56
+        // ◄►  = W-38 (16px)
+        // EN  = W-58
+        // MPG = W-92 (axis+step pill, 32px, shown when enable held)
         {
             static uint32_t lastTx=0,lastRx=0,txFlash=0,rxFlash=0;
             uint32_t now2 = millis();
@@ -432,10 +433,24 @@ private:
             if (fnc_rx_count!=lastRx){lastRx=fnc_rx_count;rxFlash=now2;}
             bool txOn=(now2-txFlash)<80, rxOn=(now2-rxFlash)<80;
 
-            // EN
-            hdrTxt("EN", W-56, 10, mpgEnable?GREEN:COL_DIM, middle_right);
+            // MPG axis + step indicator — left of EN, always visible when enable held
+            if (mpgEnable && mpgAxis >= 0) {
+                static const int axCols2[] = { COL_AX_X, COL_AX_Y, COL_AX_Z, COL_AX_A };
+                static const char axNames2[] = { 'X', 'Y', 'Z', 'A' };
+                int ac2 = axCols2[mpgAxis];
+                char mpgLbl[10];
+                snprintf(mpgLbl, sizeof(mpgLbl), "%c %s",
+                         axNames2[mpgAxis], mpgStepLabels[(int)mpgStepIdx]);
+                // Small pill background
+                canvas.fillRoundRect(W-92, 2, 32, 16, 3, COL_PANEL3);
+                canvas.drawRoundRect(W-92, 2, 32, 16, 3, ac2);
+                hdrTxt(mpgLbl, W-76, 10, ac2);
+            }
 
-            // ◄► direction arrows in their own fixed slot
+            // EN
+            hdrTxt("EN", W-58, 10, mpgEnable?GREEN:COL_DIM, middle_right);
+
+            // ◄► direction arrows
             if (mpgLastDir != 0 && (millis() - mpgDirTime) < 300) {
                 static const int axCols[] = { COL_AX_X, COL_AX_Y, COL_AX_Z, COL_AX_A };
                 int ac = (mpgAxis >= 0) ? axCols[mpgAxis] : COL_WHITE2;
@@ -457,15 +472,7 @@ private:
         }
 
         // ── CENTRE: tab name or JOG label ────────────────────────────────────
-        if (mpgEnable && mpgAxis >= 0) {
-            static const int axCols[] = { COL_AX_X, COL_AX_Y, COL_AX_Z, COL_AX_A };
-            static const char axNames[] = { 'X', 'Y', 'Z', 'A' };
-            int ac = axCols[mpgAxis];
-            char jl[14]; snprintf(jl, sizeof(jl), "JOG %c %smm", axNames[mpgAxis], mpgStepLabels[(int)mpgStepIdx]);
-            canvas.fillRect(W/2-44, 2, 88, 16, 0x0000);
-            strokeR(W/2-44, 2, 88, 16, 3, ac);
-            hdrTxt(jl, W/2, 10, ac);
-        } else if (simMode_active()) {
+        if (simMode_active()) {
             hdrTxt("SIM", W/2-20, 10, ORANGE);
             hdrTxt(TAB_LABELS[_tab], W/2+12, 10, COL_WHITE2);
         } else {
@@ -698,6 +705,14 @@ private:
             char pdim[24]; snprintf(pdim,sizeof(pdim),"%.0fx%.0fmm",rangeY,rangeX);
             canvas.drawString(pdim,offXv+(int)pathScreenW-1,offYv+(int)pathScreenH-1);
 
+            // Clear [×] button — top-right corner of viz area
+            int xbx=VIZ_X+VIZ_W-16, xby=VIZ_Y+1, xbw=15, xbh=13;
+            canvas.fillRoundRect(xbx,xby,xbw,xbh,2,0x4000);
+            canvas.drawRoundRect(xbx,xby,xbw,xbh,2,COL_BORDER2);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(COL_DIM2);
+            canvas.drawString("x",xbx+xbw/2,xby+xbh/2);
+
         } else {
             // ── MODE B: Work area map with real-time position ────────────────
             int pad3=2, mapW=VIZ_W-2*pad3, mapH=VIZ_H-2*pad3;
@@ -921,13 +936,12 @@ private:
 
     // ── Homing screen ────────────────────────────────────────────────────────
     void drawHomingScreen() {
-        int pad=8, gap=4, bw=W-2*pad;
-        int y=TOP+4;
+        int pad=8, gap=4, bw=W-2*pad, y=TOP+4;
 
-        // ── Home All + Probe ─────────────────────────────────────────────
+        // ── Home All + Probe ──────────────────────────────────────────────
         int homeW=bw*58/100, probW=bw-homeW-gap;
         _homeAllBtn={pad,y,homeW,26};
-        _probeBtnR ={pad+homeW+gap,y,probW,26};
+        _probeBtnR={pad+homeW+gap,y,probW,26};
         tintStrokeR(pad,y,homeW,26,4,COL_WHITE2,COL_WHITE,50);
         canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
         canvas.setTextColor(COL_WHITE);
@@ -937,10 +951,10 @@ private:
         canvas.drawString("Probe",pad+homeW+gap+probW/2,y+13);
         y+=30;
 
-        // ── Individual axis homing ────────────────────────────────────────
+        // ── Home individual axis ──────────────────────────────────────────
         canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
         canvas.setTextDatum(middle_left);
-        canvas.drawString("Home axis:",pad,y+7); y+=14;
+        canvas.drawString("Home axis:",pad,y+6); y+=13;
         int aw=(bw-2*gap)/3;
         int axcols[3]={COL_AX_X,COL_AX_Y,COL_AX_Z};
         const char* axlet[3]={"X","Y","Z"};
@@ -948,48 +962,60 @@ private:
             int hx=pad+i*(aw+gap);
             _axisHomeBtns[i]={hx,y,aw,22};
             canvas.fillRoundRect(hx,y,aw,22,3,COL_PANEL2);
-            canvas.drawRoundRect(hx, y, aw, axH, 3, COL_BORDER2);
-            canvas.fillRect(hx, y, 3, axH, axcols[i]);  // coloured left strip
-            char lbl[12]; snprintf(lbl, sizeof(lbl), "Home %s", axlet[i]);
-            f2(lbl, hx + aw / 2 + 2, y + axH / 2, COL_WHITE);
+            canvas.drawRoundRect(hx,y,aw,22,3,axcols[i]);
+            canvas.fillRect(hx+1,y+2,3,18,axcols[i]);
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(axcols[i]);
+            canvas.drawString(axlet[i],hx+aw/2,y+11);
         }
-        y += axH + secGap;
+        y+=26;
 
         // ── Endstop status ────────────────────────────────────────────────
-        hline(pad, y, bw, COL_BORDER); y += divH + 2;
-        f2("Endstop status", pad, y + labH / 2, COL_DIM2, middle_left); y += labH;
-        int esW = (bw - 2 * gap) / 3;
-        for (int i = 0; i < 3; i++) {
-            int ex = pad + i * (esW + gap);
-            bool trig = myLimitSwitches[i];
-            // Uniform dark bg, red fill when triggered
-            canvas.fillRoundRect(ex, y, esW, esH, 3, trig ? 0x6000 : COL_PANEL2);
-            canvas.drawRoundRect(ex, y, esW, esH, 3, trig ? RED : COL_BORDER2);
-            // Status dot
-            canvas.fillCircle(ex + 10, y + esH / 2, 3, trig ? RED : COL_DIM2);
-            // Axis letter in white always
-            f2(axlet[i], ex + 20, y + esH / 2, COL_WHITE, middle_left);
-            // Status text
-            f2(trig ? "TRIG" : "open", ex + esW - 5, y + esH / 2,
-               trig ? RED : COL_DIM2, middle_right);
+        canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+        canvas.setTextDatum(middle_left);
+        canvas.drawString("Endstops:",pad,y+6); y+=13;
+        int esW=(bw-2*gap)/3, esH2=20;
+        for(int i=0;i<3;i++){
+            int ex=pad+i*(esW+gap);
+            bool trig=myLimitSwitches[i];
+            canvas.fillRoundRect(ex,y,esW,esH2,3,trig?0x6000:COL_PANEL2);
+            canvas.drawRoundRect(ex,y,esW,esH2,3,trig?RED:COL_BORDER2);
+            canvas.fillCircle(ex+8,y+esH2/2,3,trig?RED:COL_DIM2);
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
+            canvas.setTextColor(COL_WHITE);
+            canvas.drawString(axlet[i],ex+16,y+esH2/2);
+            canvas.setTextDatum(middle_right);
+            canvas.setTextColor(trig?RED:COL_DIM2);
+            canvas.drawString(trig?"TRIG":"open",ex+esW-3,y+esH2/2);
         }
-        y += esH + secGap;
+        y+=24;
 
-        // ── Zero Work Coordinate ──────────────────────────────────────────
-        hline(pad, y, bw, COL_BORDER); y += divH + 2;
-        f2("Zero Work Coordinate", pad, y + labH / 2, COL_DIM2, middle_left); y += labH;
-        const char* zla[]  = { "X", "Y", "Z", "All" };
-        int zcols[]        = { COL_AX_X, COL_AX_Y, COL_AX_Z, ORANGE };
-        int zw = (bw - 3 * gap) / 4;
-        for (int k = 0; k < 4; k++) {
-            int zx = pad + k * (zw + gap);
-            _zeroWcsBtns[k] = { zx, y, zw, zeroH };
-            canvas.fillRoundRect(zx, y, zw, zeroH, 3, COL_PANEL2);
-            canvas.drawRoundRect(zx, y, zw, zeroH, 3, COL_BORDER2);
-            canvas.fillRect(zx, y + 2, 3, zeroH - 4, zcols[k]);
-            // Single line: "0 X" / "0 Y" / "0 Z" / "0 All"
-            char zlbl[8]; snprintf(zlbl, sizeof(zlbl), "0 %s", zla[k]);
-            f2(zlbl, zx + zw / 2 + 2, y + zeroH / 2, zcols[k]);
+        // ── Zero WCS ─────────────────────────────────────────────────────
+        canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+        canvas.setTextDatum(middle_left);
+        canvas.drawString("Zero WCS:",pad,y+6); y+=13;
+        const char* zla[]={"X","Y","Z","All"};
+        int zcols[]={COL_AX_X,COL_AX_Y,COL_AX_Z,ORANGE};
+        int zw=(bw-3*gap)/4;
+        for(int k=0;k<4;k++){
+            int zx=pad+k*(zw+gap);
+            _zeroWcsBtns[k]={zx,y,zw,22};
+            canvas.fillRoundRect(zx,y,zw,22,3,COL_PANEL2);
+            canvas.drawRoundRect(zx,y,zw,22,3,zcols[k]);
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(zcols[k]);
+            char zlbl[8]; snprintf(zlbl,sizeof(zlbl),"%s=0",zla[k]);
+            canvas.drawString(zlbl,zx+zw/2,y+11);
+        }
+        y+=26;
+
+        // ── Soft reset ────────────────────────────────────────────────────
+        if(y+22<NAV_Y-4){
+            canvas.fillRoundRect(pad,y,bw,22,4,0x2000);
+            canvas.drawRoundRect(pad,y,bw,22,4,RED);
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(RED);
+            canvas.drawString("Soft Reset (Ctrl-X)",W/2,y+11);
         }
     }
 
@@ -1600,6 +1626,12 @@ public:
 
         // DRO screen
         if (_tab == 0) {
+            // Clear [×] button — top-right of viz area (clears loaded G-code path)
+            if (!vizPath.empty() && x >= VIZ_X+VIZ_W-16 && x < VIZ_X+VIZ_W
+                && y >= VIZ_Y+1 && y <= VIZ_Y+14) {
+                vizPath.clear(); vizJobName.clear(); vizPathExecuted=0;
+                reDisplay(); return;
+            }
             // Mode toggle pills: WPos/MPos and mm/in (top of viz area)
             if (y >= TOP+2 && y <= TOP+12 && x >= DROW+2) {
                 int px=DROW+2, pw=36, g=3;
