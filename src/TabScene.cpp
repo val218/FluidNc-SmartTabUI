@@ -102,7 +102,8 @@ static int  _enableMacro = 0;  // macro index for MacroBtn mode
 static bool _p6Prev      = false;  // previous P6 state for edge detection
 static volatile bool _p6MacroFire   = false;
 static volatile bool mpgJogAllowed  = false;  // jog permitted (enable gating)
-static int  _barSel = 0;  // 0=none 1=feed selected 2=spindle selected
+static int  _barSel      = 0;  // 0=none 1=feed selected 2=spindle selected
+static int  _currentTab  = 0;  // mirrors _tab for use in free functions
 static volatile bool mpgEstopActive = false;  // e-stop currently pressed
 static volatile bool _mpgChanged   = false; // set by Core0 readMpgSwitches, consumed on Core1
 
@@ -137,7 +138,7 @@ bool mpgConsumeChanged()  { if (!_mpgChanged) return false; _mpgChanged = false;
 // Touch gating: only applies to DRO tab in EnableGate/TouchOnly modes
 // All other tabs always accept touch regardless of enable button
 bool tabui_touchGated()   {
-    if (_tab != 0) return false;  // never gate non-DRO tabs
+    if (_currentTab != 0) return false;  // never gate non-DRO tabs
     return (_enableMode==0||_enableMode==1) && !mpgEnable;
 }
 void setSimMode(bool sim) { if (sim) simMode_enable(); }
@@ -1544,6 +1545,7 @@ public:
     }
 
     void reDisplay() override {
+        _currentTab = _tab;
         canvas.fillSprite(COL_BG);
         drawHeader();
         canvas.fillRect(0, TOP, W, NAV_Y - TOP, COL_BG);
