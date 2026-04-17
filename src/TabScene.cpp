@@ -884,7 +884,8 @@ private:
             int bx=pad+(zbw+gap)*i;
             tintStrokeR(bx,y,zbw,20,3,COL_BORDER2,COL_BORDER,40);
             canvas.setTextDatum(middle_center);
-            canvas.setTextColor(i<3?axCols[i]:ORANGE);
+            int pc2=(i==0)?COL_AX_X:(i==1)?COL_AX_Y:(i==2)?COL_AX_Z:ORANGE;
+            canvas.setTextColor(pc2);
             canvas.drawString(axNames[i],bx+zbw/2,y+10);
         }
         y+=26; hline(0,y,W2,COL_BORDER); y+=4;
@@ -1830,7 +1831,7 @@ public:
             int bw=(W-pad*2-4*5)/6;
             for(int i=0;i<6;i++){
                 int bx=pad+(bw+5)*i;
-                if(touchIn(x,y,bx,y,bw,16)){ _wcsNum=i+1;
+                if((x>=bx&&x<bx+bw&&y>=y&&y<y+16)){ _wcsNum=i+1;
                     char cmd[16]; snprintf(cmd,sizeof(cmd),"G%d",53+_wcsNum);
                     send_line(cmd); reDisplay(); return; }
             }
@@ -1840,7 +1841,7 @@ public:
             const char* zeroCmds[]={"G10 L20 P0 X0","G10 L20 P0 Y0","G10 L20 P0 Z0","G10 L20 P0 X0 Y0 Z0"};
             for(int i=0;i<4;i++){
                 int bx=pad+(zbw+gap)*i;
-                if(touchIn(x,y,bx,y,zbw,20)){
+                if((x>=bx&&x<bx+zbw&&y>=y&&y<y+20)){
                     send_line(zeroCmds[i]);
                     fnc_term_inject((std::string("> ")+zeroCmds[i]).c_str());
                     reDisplay(); return;
@@ -1852,7 +1853,7 @@ public:
             for(int i=0;i<6;i++){
                 int oy=y+i*25;
                 if(oy+22>NAV_Y-4) break;
-                if(touchIn(x,y,8,oy,W-16,22)){
+                if((x>=8&&x<8+W-16&&y>=oy&&y<oy+22)){
                     send_line(probeCmds[i]);
                     fnc_term_inject((std::string("> ")+probeCmds[i]).c_str());
                     reDisplay(); return;
@@ -1866,7 +1867,7 @@ public:
             int cmdY4=NAV_Y-CMD_H;
             for (int ci=0; ci<N_SPINDLE; ci++) {
                 int bx=4+ci*(scmdW+3);
-                if (touchIn(x,y,bx,cmdY4+3,scmdW,bh2)) {
+                if ((x>=bx&&x<bx+scmdW&&y>=cmdY4+3&&y<cmdY4+3+bh2)) {
                     send_line(SPINDLE_CMDS[ci]);
                     fnc_term_inject((std::string("> ")+SPINDLE_CMDS[ci]).c_str());
                     reDisplay(); return;
