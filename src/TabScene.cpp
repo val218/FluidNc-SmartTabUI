@@ -374,6 +374,9 @@ private:
     Rect _homeAllBtn, _probeBtnR;
     Rect _axisHomeBtns[3];
     Rect _zeroWcsBtns[4];
+    int  _homePressedId = -1;  // which home button was last pressed (-1=none)
+    uint32_t _homePressTime = 0;  // when it was pressed
+    bool _previewShowPath = false;  // false=gcode text, true=path viz
     Rect _unlockBtn;
     Rect _probeClose;
     Rect _probeRows[N_PROBE_OPTS];
@@ -419,13 +422,8 @@ private:
             hdrTxt("STP", 61, 10, RED);
         }
 
-        // ── RIGHT: MPG  EN  ◄►  TX  RX  — fixed slots ──────────────────────
-        // Slots from right edge:
-        // RX  = W-2
-        // TX  = W-20
-        // ◄►  = W-38 (16px)
-        // EN  = W-58
-        // MPG = W-92 (axis+step pill, 32px, shown when enable held)
+        // ── RIGHT: ◄► EN TX RX — fixed slots ────────────────────────────────
+        // RX = W-2, TX = W-20, EN = W-38, ◄► = W-56 (left of EN)
         {
             static uint32_t lastTx=0,lastRx=0,txFlash=0,rxFlash=0;
             uint32_t now2 = millis();
@@ -433,27 +431,11 @@ private:
             if (fnc_rx_count!=lastRx){lastRx=fnc_rx_count;rxFlash=now2;}
             bool txOn=(now2-txFlash)<80, rxOn=(now2-rxFlash)<80;
 
-            // MPG axis + step indicator — left of EN, always visible when enable held
-            if (mpgEnable && mpgAxis >= 0) {
-                static const int axCols2[] = { COL_AX_X, COL_AX_Y, COL_AX_Z, COL_AX_A };
-                static const char axNames2[] = { 'X', 'Y', 'Z', 'A' };
-                int ac2 = axCols2[mpgAxis];
-                char mpgLbl[10];
-                snprintf(mpgLbl, sizeof(mpgLbl), "%c %s",
-                         axNames2[mpgAxis], mpgStepLabels[(int)mpgStepIdx]);
-                // Small pill background
-                canvas.fillRoundRect(W-92, 2, 32, 16, 3, COL_PANEL3);
-                canvas.drawRoundRect(W-92, 2, 32, 16, 3, ac2);
-                hdrTxt(mpgLbl, W-76, 10, ac2);
-            }
-
-            // EN
-            hdrTxt("EN", W-58, 10, mpgEnable?GREEN:COL_DIM, middle_right);
-
-            // ◄► direction arrows
-            if (mpgLastDir != 0 && (millis() - mpgDirTime) < 300) {
+            // ◄► direction arrows — always in slot left of EN
+            {
                 static const int axCols[] = { COL_AX_X, COL_AX_Y, COL_AX_Z, COL_AX_A };
                 int ac = (mpgAxis >= 0) ? axCols[mpgAxis] : COL_WHITE2;
+                bool active = (mpgLastDir != 0 && (now2 - mpgDirTime) < 300);
                 auto drawTri = [&](int cx2, bool pr, int col) {
                     for (int r=0;r<7;r++){
                         int h=(r<4)?r:(6-r);
@@ -461,10 +443,13 @@ private:
                         if(rx2>lx) canvas.drawFastHLine(lx,3+r,rx2-lx+1,col);
                     }
                 };
-                canvas.fillRect(W-38, 2, 16, 16, COL_PANEL);
-                drawTri(W-31, false, mpgLastDir<0 ? ac : COL_DIM);
-                drawTri(W-24, true,  mpgLastDir>0 ? ac : COL_DIM);
+                canvas.fillRect(W-56, 2, 16, 16, COL_PANEL);
+                drawTri(W-49, false, active&&mpgLastDir<0 ? ac : COL_DIM);
+                drawTri(W-42, true,  active&&mpgLastDir>0 ? ac : COL_DIM);
             }
+
+            // EN
+            hdrTxt("EN", W-38, 10, mpgEnable?GREEN:COL_DIM, middle_right);
 
             // TX  RX
             hdrTxt("TX", W-20, 10, txOn?ORANGE:COL_DIM, middle_right);
@@ -472,7 +457,15 @@ private:
         }
 
         // ── CENTRE: tab name or JOG label ────────────────────────────────────
-        if (simMode_active()) {
+        if (mpgEnable && mpgAxis >= 0) {
+            static const int axCols[] = { COL_AX_X, COL_AX_Y, COL_AX_Z, COL_AX_A };
+            static const char axNames[] = { 'X', 'Y', 'Z', 'A' };
+            int ac = axCols[mpgAxis];
+            char jl[14]; snprintf(jl, sizeof(jl), "JOG %c %smm", axNames[mpgAxis], mpgStepLabels[(int)mpgStepIdx]);
+            canvas.fillRect(W/2-44, 2, 88, 16, 0x0000);
+            strokeR(W/2-44, 2, 88, 16, 3, ac);
+            hdrTxt(jl, W/2, 10, ac);
+        } else if (simMode_active()) {
             hdrTxt("SIM", W/2-20, 10, ORANGE);
             hdrTxt(TAB_LABELS[_tab], W/2+12, 10, COL_WHITE2);
         } else {
@@ -482,7 +475,7 @@ private:
 
     // ── nav bar ──────────────────────────────────────────────────────────────
     void navTxt(const char* s, int x, int y, int col) {
-        canvas.setFont(&fonts::Font2);   // 10x12 bitmap — compact, not bold
+        canvas.setFont(&fonts::Font4);   // 14x18 bitmap — larger, readable
         canvas.setTextDatum(middle_center);
         canvas.setTextColor(col);
         canvas.drawString(s, x, y);
@@ -527,11 +520,7 @@ private:
             }
             if (i > 0) vline(x, NAV_Y + 5, BOT - 10, COL_BORDER);
             int col = (i == _tab) ? COL_WHITE : COL_WHITE2;
-            // Use Font0 for 6 tabs (Font2 too wide at 53px)
-            canvas.setFont(&fonts::Font0);
-            canvas.setTextDatum(middle_center);
-            canvas.setTextColor(col);
-            canvas.drawString(TAB_LABELS[i], x + w/2, NAV_Y + BOT/2);
+            navTxt(TAB_LABELS[i], x + w/2, NAV_Y + BOT/2, col);
         }
     }
 
@@ -942,12 +931,26 @@ private:
         int homeW=bw*58/100, probW=bw-homeW-gap;
         _homeAllBtn={pad,y,homeW,26};
         _probeBtnR={pad+homeW+gap,y,probW,26};
-        tintStrokeR(pad,y,homeW,26,4,COL_WHITE2,COL_WHITE,50);
+        bool _hflash = (millis()-_homePressTime)<300;
+        // Home All button
+        if(_hflash && _homePressedId==0){
+            canvas.fillRoundRect(pad,y,homeW,26,4,COL_WHITE2);
+            canvas.setTextColor(COL_BG);
+        } else {
+            tintStrokeR(pad,y,homeW,26,4,COL_WHITE2,COL_WHITE,50);
+            canvas.setTextColor(COL_WHITE);
+        }
         canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
-        canvas.setTextColor(COL_WHITE);
         canvas.drawString("Home All ($H)",pad+homeW/2,y+13);
-        tintStrokeR(pad+homeW+gap,y,probW,26,4,ORANGE,ORANGE,40);
-        canvas.setTextColor(ORANGE);
+        // Probe button
+        if(_hflash && _homePressedId==1){
+            canvas.fillRoundRect(pad+homeW+gap,y,probW,26,4,ORANGE);
+            canvas.setTextColor(COL_BG);
+        } else {
+            tintStrokeR(pad+homeW+gap,y,probW,26,4,ORANGE,ORANGE,40);
+            canvas.setTextColor(ORANGE);
+        }
+        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
         canvas.drawString("Probe",pad+homeW+gap+probW/2,y+13);
         y+=30;
 
@@ -961,11 +964,12 @@ private:
         for(int i=0;i<3;i++){
             int hx=pad+i*(aw+gap);
             _axisHomeBtns[i]={hx,y,aw,22};
-            canvas.fillRoundRect(hx,y,aw,22,3,COL_PANEL2);
-            canvas.drawRoundRect(hx,y,aw,22,3,axcols[i]);
+            bool _axpress=(_hflash && _homePressedId==10+i);
+            if(_axpress){ canvas.fillRoundRect(hx,y,aw,22,3,axcols[i]); }
+            else { canvas.fillRoundRect(hx,y,aw,22,3,COL_PANEL2); canvas.drawRoundRect(hx,y,aw,22,3,axcols[i]); }
             canvas.fillRect(hx+1,y+2,3,18,axcols[i]);
             canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
-            canvas.setTextColor(axcols[i]);
+            canvas.setTextColor(_axpress?COL_BG:axcols[i]);
             canvas.drawString(axlet[i],hx+aw/2,y+11);
         }
         y+=26;
@@ -1000,10 +1004,11 @@ private:
         for(int k=0;k<4;k++){
             int zx=pad+k*(zw+gap);
             _zeroWcsBtns[k]={zx,y,zw,22};
-            canvas.fillRoundRect(zx,y,zw,22,3,COL_PANEL2);
-            canvas.drawRoundRect(zx,y,zw,22,3,zcols[k]);
+            bool _zpress=(_hflash && _homePressedId==20+k);
+            if(_zpress){ canvas.fillRoundRect(zx,y,zw,22,3,zcols[k]); }
+            else { canvas.fillRoundRect(zx,y,zw,22,3,COL_PANEL2); canvas.drawRoundRect(zx,y,zw,22,3,zcols[k]); }
             canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
-            canvas.setTextColor(zcols[k]);
+            canvas.setTextColor(_zpress?COL_BG:zcols[k]);
             char zlbl[8]; snprintf(zlbl,sizeof(zlbl),"%s=0",zla[k]);
             canvas.drawString(zlbl,zx+zw/2,y+11);
         }
@@ -1019,74 +1024,146 @@ private:
         }
     }
 
-    // ── G-code preview overlay (bottom sheet, ~60% height) ──────────────────
+    // ── G-code preview — full screen with viz/text toggle ───────────────────
     void drawGcodePreview() {
-        int panelY = TOP + 30;   // starts 30px below header — shows file list peeking above
-        int panelH = NAV_Y - panelY;
-        int titleH = 18;
-        int abH    = 22;
-        int listY  = panelY + titleH;
-        int listH  = panelH - titleH - abH;
-        int lh     = 13;
-        int total  = (int)previewLines.size();
-        int maxL   = listH / lh;
+        // Full-screen overlay
+        canvas.fillRect(0, TOP, W, NAV_Y-TOP, COL_BG);
 
-        // Semi-transparent dim above panel
-        canvas.fillRect(0, TOP, W, 30, 0x0000);
+        const std::string& fname = (fileSelected>=0&&fileSelected<(int)fileList.size())
+                                   ? fileList[fileSelected].name : std::string("?");
 
-        // Panel background
-        canvas.fillRect(0, panelY, W, panelH, 0x0883);
-        hline(0, panelY, W, CYAN);
-
-        // Title bar
-        canvas.fillRect(0, panelY, W, titleH, 0x10A3);
-        const std::string& fname = fileList[fileSelected].name;
-        f2s(fname, 8, panelY + titleH/2, CYAN, middle_left);
-        tintStrokeR(W-32, panelY+2, 28, 14, 3, COL_BORDER2, COL_BORDER, 60);
-        f2("X", W-18, panelY+titleH/2, COL_DIM2);
-
-        // Scroll indicator
-        if (total > maxL) {
-            int thumbH = std::max(4, listH * maxL / total);
-            int thumbY = listY + (listH-thumbH) * previewScroll / std::max(1, total-maxL);
-            canvas.fillRect(W-3, listY, 3, listH, COL_BORDER);
-            canvas.fillRect(W-3, thumbY, 3, thumbH, COL_DIM2);
+        // ── Title bar ────────────────────────────────────────────────────────
+        int titleH=18;
+        canvas.fillRect(0,TOP,W,titleH,COL_PANEL);
+        hline(0,TOP+titleH,W,COL_BORDER);
+        f2s(fname,8,TOP+titleH/2,CYAN,middle_left);
+        // Path/lines count right of title
+        if(_previewShowPath){
+            char pc[16]; snprintf(pc,sizeof(pc),"%d pts",(int)vizPath.size());
+            f2(pc,W-6,TOP+titleH/2,COL_DIM2,middle_right);
+        } else {
+            char lc[16]; snprintf(lc,sizeof(lc),"%d lines",(int)previewLines.size());
+            f2(lc,W-6,TOP+titleH/2,COL_DIM2,middle_right);
         }
 
-        // G-code lines
-        for (int i = 0; i < maxL && (previewScroll+i) < total; i++) {
-            int ly  = listY + i*lh;
-            int idx = previewScroll+i;
-            if (i%2==0) canvas.fillRect(0, ly, W-4, lh, 0x0841);
-            const std::string& ln = previewLines[idx];
-            int col = COL_DIM2;
-            if (!ln.empty()) {
-                char c = ln[0];
-                if      (c=='G'||c=='g') col = CYAN;
-                else if (c=='M'||c=='m') col = YELLOW;
-                else if (c==';'||c=='(') col = COL_DIM;
-                else if (c=='F'||c=='f') col = GREEN;
-                else                     col = COL_WHITE2;
+        // ── Content area ─────────────────────────────────────────────────────
+        int contentY=TOP+titleH, contentH=NAV_Y-titleH-TOP-28;
+
+        if (_previewShowPath && !vizPath.empty()) {
+            // ── Path visualizer — full content area ──────────────────────────
+            canvas.fillRect(0,contentY,W,contentH,COL_PANEL2);
+
+            // Bounding box
+            float pMinX=vizPath[0].first,pMaxX=pMinX;
+            float pMinY=vizPath[0].second,pMaxY=pMinY;
+            for(auto& pt:vizPath){
+                pMinX=std::min(pMinX,pt.first);pMaxX=std::max(pMaxX,pt.first);
+                pMinY=std::min(pMinY,pt.second);pMaxY=std::max(pMaxY,pt.second);
             }
-            canvas.setFont(&fonts::Font0);
-            canvas.setTextDatum(middle_right);
-            canvas.setTextColor(COL_DIM);
-            char lnum[6]; snprintf(lnum,sizeof(lnum),"%d",previewFirstLine+idx+1);
-            canvas.drawString(lnum, 26, ly+lh/2);
-            canvas.setTextDatum(middle_left);
-            canvas.setTextColor(col);
-            canvas.drawString(ln.substr(0,44).c_str(), 30, ly+lh/2);
+            float rX=std::max(pMaxX-pMinX,1.0f), rY=std::max(pMaxY-pMinY,1.0f);
+            int pad2=8;
+            float scX=(float)(W-2*pad2)/(rY*1.1f);
+            float scY=(float)(contentH-2*pad2)/(rX*1.1f);
+            float sc2=std::min(scX,scY);
+            float pW=rY*sc2, pH=rX*sc2;
+            int ox=(int)(pad2+(W-2*pad2-pW)/2.0f);
+            int oy=(int)(contentY+pad2+(contentH-2*pad2-pH)/2.0f);
+
+            // Background rect
+            canvas.fillRect(ox,oy,(int)pW,(int)pH,COL_PANEL3);
+            canvas.drawRect(ox,oy,(int)pW,(int)pH,COL_BORDER2);
+
+            // Draw all path lines in cyan
+            for(int pi=1;pi<(int)vizPath.size();pi++){
+                int x1=ox+(int)((vizPath[pi-1].second-pMinY)*sc2);
+                int y1=oy+(int)(pH-(vizPath[pi-1].first-pMinX)*sc2);
+                int x2=ox+(int)((vizPath[pi].second-pMinY)*sc2);
+                int y2=oy+(int)(pH-(vizPath[pi].first-pMinX)*sc2);
+                canvas.drawLine(x1,y1,x2,y2,CYAN);
+            }
+
+            // Start dot (green) and end dot (red)
+            if(vizPath.size()>0){
+                int sx=ox+(int)((vizPath[0].second-pMinY)*sc2);
+                int sy=oy+(int)(pH-(vizPath[0].first-pMinX)*sc2);
+                canvas.fillCircle(sx,sy,3,GREEN);
+            }
+            if(vizPath.size()>1){
+                int ex2=ox+(int)((vizPath.back().second-pMinY)*sc2);
+                int ey2=oy+(int)(pH-(vizPath.back().first-pMinX)*sc2);
+                canvas.fillCircle(ex2,ey2,3,RED);
+            }
+
+            // Dimensions label
+            canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+            canvas.setTextDatum(bottom_right);
+            char pdim[24]; snprintf(pdim,sizeof(pdim),"%.0fx%.0fmm",rY,rX);
+            canvas.drawString(pdim,ox+(int)pW-1,oy+(int)pH-1);
+
+        } else {
+            // ── G-code text view ─────────────────────────────────────────────
+            int lh=13, maxL=contentH/lh;
+            int total=(int)previewLines.size();
+
+            // Scroll bar
+            if(total>maxL){
+                int thumbH=std::max(4,contentH*maxL/total);
+                int thumbY=contentY+(contentH-thumbH)*previewScroll/std::max(1,total-maxL);
+                canvas.fillRect(W-3,contentY,3,contentH,COL_BORDER);
+                canvas.fillRect(W-3,thumbY,3,thumbH,COL_DIM2);
+            }
+            for(int i=0;i<maxL&&(previewScroll+i)<total;i++){
+                int ly=contentY+i*lh;
+                int idx=previewScroll+i;
+                if(i%2==0) canvas.fillRect(0,ly,W-4,lh,0x0841);
+                const std::string& ln=previewLines[idx];
+                int col=COL_DIM2;
+                if(!ln.empty()){
+                    char c=ln[0];
+                    if(c=='G'||c=='g') col=CYAN;
+                    else if(c=='M'||c=='m') col=YELLOW;
+                    else if(c==';'||c=='(') col=COL_DIM;
+                    else if(c=='T'||c=='t') col=ORANGE;
+                    else col=COL_WHITE2;
+                }
+                canvas.setFont(&fonts::Font0);
+                canvas.setTextDatum(middle_right);
+                canvas.setTextColor(COL_DIM);
+                char lnum[6]; snprintf(lnum,sizeof(lnum),"%d",idx+1);
+                canvas.drawString(lnum,26,ly+lh/2);
+                canvas.setTextDatum(middle_left);
+                canvas.setTextColor(col);
+                canvas.drawString(ln.substr(0,44).c_str(),30,ly+lh/2);
+            }
         }
 
-        // Action bar
-        int abY = NAV_Y - abH;
-        canvas.fillRect(0, abY, W, abH, 0x10A3);
-        hline(0, abY, W, COL_BORDER);
-        char info[20]; snprintf(info,sizeof(info),"%d lines", total);
-        f2(info, 8, abY+abH/2, COL_DIM2, middle_left);
-        int rbw=70, rbh=16;
-        tintStrokeR(W-rbw-4, abY+3, rbw, rbh, 3, GREEN, GREEN, 40);
-        f2(simMode_active() ? "Sim Run" : "Run", W-4-rbw/2, abY+abH/2, GREEN, middle_center);
+        // ── Action bar: [Exit] [G-code|Path] [Run] ───────────────────────────
+        int abY=NAV_Y-28, abH2=28;
+        canvas.fillRect(0,abY,W,abH2,COL_PANEL);
+        hline(0,abY,W,COL_BORDER);
+
+        int bw3=(W-16)/3, bh3=22, by3=abY+3;
+
+        // Exit — left
+        tintStrokeR(4,by3,bw3,bh3,3,COL_BORDER2,COL_BORDER,40);
+        f2("Exit",4+bw3/2,abY+abH2/2,COL_DIM2,middle_center);
+
+        // Toggle G-code / Path — centre
+        bool hasPath=!vizPath.empty();
+        int togCol=hasPath?YELLOW:COL_DIM;
+        if(_previewShowPath){
+            canvas.fillRoundRect(8+bw3,by3,bw3,bh3,3,0x0019);
+            canvas.drawRoundRect(8+bw3,by3,bw3,bh3,3,togCol);
+            f2("G-code",8+bw3+bw3/2,abY+abH2/2,togCol,middle_center);
+        } else {
+            tintStrokeR(8+bw3,by3,bw3,bh3,3,togCol,togCol,hasPath?30:15);
+            f2("Path",8+bw3+bw3/2,abY+abH2/2,togCol,middle_center);
+        }
+
+        // Run — right
+        canvas.fillRoundRect(12+2*bw3,by3,bw3,bh3,3,0x0440);
+        canvas.drawRoundRect(12+2*bw3,by3,bw3,bh3,3,GREEN);
+        f2(simMode_active()?"Sim Run":"Run",12+2*bw3+bw3/2,abY+abH2/2,GREEN,middle_center);
     }
 
     // ── Files screen ─────────────────────────────────────────────────────────
@@ -1435,14 +1512,17 @@ public:
     }
 
     void onFileLines(int firstLine, const std::vector<std::string>& lines) override {
-        // Always parse for viz path (works for both 60-line preview and 2000-line full)
+        // Parse all lines into viz path (regardless of how many lines received)
         if (fileSelected>=0 && fileSelected<(int)fileList.size()) {
             if ((int)lines.size() > (int)vizPath.size() || vizPath.empty())
                 parseGcodeToVizPath(lines, fileList[fileSelected].name);
         }
-        // Only update text preview for small requests (first 60 lines)
+        // Use first 60 lines for the text preview panel
         if (firstLine == 0) {
-            previewLines = lines;
+            previewLines.clear();
+            int previewCount = std::min((int)lines.size(), 60);
+            for (int i = 0; i < previewCount; i++)
+                previewLines.push_back(lines[i]);
             previewFirstLine = 0;
             previewScroll = 0;
             filePreviewMode = true;
@@ -1662,30 +1742,30 @@ public:
         // Homing screen
         if (_tab == 1) {
             if (hit(_homeAllBtn, x, y)) {
-                send_line("$H");
-                fnc_term_inject("> $H");
+                _homePressedId=0; _homePressTime=millis();
+                send_line("$H"); fnc_term_inject("> $H");
                 reDisplay(); return;
             }
             if (hit(_probeBtnR, x, y)) {
-                _probeOpen = true; reDisplay(); return;
+                _homePressedId=1; _homePressTime=millis();
+                _probeOpen=true; reDisplay(); return;
             }
-            const char* axcmds[] = { "$HX", "$HY", "$HZ" };
-            for (int i = 0; i < 3; i++) {
-                if (hit(_axisHomeBtns[i], x, y)) {
+            const char* axcmds[]={"$HX","$HY","$HZ"};
+            for(int i=0;i<3;i++){
+                if(hit(_axisHomeBtns[i],x,y)){
+                    _homePressedId=10+i; _homePressTime=millis();
                     send_line(axcmds[i]);
-                    fnc_term_inject((std::string("> ") + axcmds[i]).c_str());
+                    fnc_term_inject((std::string("> ")+axcmds[i]).c_str());
                     reDisplay(); return;
                 }
             }
-            const char* zcmds[] = {
-                "G10 L20 P1 X0", "G10 L20 P1 Y0",
-                "G10 L20 P1 Z0", "G10 L20 P1 X0 Y0 Z0"
-            };
-            for (int k = 0; k < 4; k++) {
-                if (hit(_zeroWcsBtns[k], x, y)) {
+            const char* zcmds[]={"G10 L20 P1 X0","G10 L20 P1 Y0","G10 L20 P1 Z0","G10 L20 P1 X0 Y0 Z0"};
+            for(int k=0;k<4;k++){
+                if(hit(_zeroWcsBtns[k],x,y)){
+                    _homePressedId=20+k; _homePressTime=millis();
                     send_line(zcmds[k]);
-                    fnc_term_inject((std::string("> ") + zcmds[k]).c_str());
-                    termLines.push_back({ "ok", GREEN });
+                    fnc_term_inject((std::string("> ")+zcmds[k]).c_str());
+                    termLines.push_back({"ok",GREEN});
                     reDisplay(); return;
                 }
             }
@@ -1803,11 +1883,8 @@ public:
                             parseGcodeToVizPath(previewLines, fileList[fi].name);
                         } else {
                             std::string path = filePath + "/" + fileList[fi].name;
-                            // Request small block for text preview display
-                            request_file_preview(path.c_str(), 0, 60);
-                            // Request large block for path visualization
-                            // onFileLines will be called with whichever arrives
-                            // We set the name now so viz shows immediately on Run
+                            // Request full file for both text preview and path viz
+                            request_file_preview(path.c_str(), 0, 5000);
                             vizJobName = fileList[fi].name;
                             vizPathExecuted = 0;
                         }
@@ -1816,22 +1893,22 @@ public:
                 }
                 return;
             }
-            // G-code preview overlay touches
+            // G-code preview overlay touches (full screen)
             if (filePreviewMode) {
-                int panelTop = TOP + 30;
-                if (y < panelTop) {
-                    // Touch above panel → close overlay, fall through to file list tap
-                    filePreviewMode = false;
-                    reDisplay();
-                    // intentional fall-through to file list handler below
-                } else {
-                    // Touch inside panel
-                    int abH = 22;
-                    // X close button
-                    if (y <= panelTop + 18 && x >= W - 32) {
-                        filePreviewMode = false; reDisplay(); return;
+                // Action bar at bottom: [Exit] [Path/G-code] [Run]
+                int abY=NAV_Y-28, abH2=28, bw3=(W-16)/3, by3=abY+3, bh3=22;
+                if (y >= abY) {
+                    if (x < 4+bw3) {
+                        // Exit → back to file list
+                        filePreviewMode=false; _previewShowPath=false;
+                        reDisplay(); return;
                     }
-                    // Run button in action bar
+                    if (x < 8+2*bw3) {
+                        // Toggle G-code / Path
+                        if (!vizPath.empty()) { _previewShowPath=!_previewShowPath; reDisplay(); return; }
+                        return;
+                    }
+                    // Run button
                     if (y >= NAV_Y - abH && x >= W - 74) {
                         // Parse gcode XY path
                         simPath.clear(); simPathIdx = 0;
@@ -1843,9 +1920,7 @@ public:
                             send_linef("$Localfs/Run=%s", path.c_str());
                             termLines.push_back({ "> Run: " + simJobName, COL_DIM2 });
                             _jobSentToFluidNC = true;
-                            // Request full file for path visualization
-                            if (vizPath.empty())
-                                request_file_preview(path.c_str(), 0, 2000);
+
                         } else {
                             simJobRunning = true; simPathIdx = 0;
                             if (!simPath.empty()) {
@@ -1854,11 +1929,13 @@ public:
                             }
                             termLines.push_back({ "> [SIM] Run: " + simJobName, ORANGE });
                         }
-                        filePreviewMode = false;
+                        filePreviewMode = false; _previewShowPath=false;
                         _tab = 0; reDisplay(); return;
                     }
-                    return;  // consume all other panel touches
+                    return;
                 }
+                // Scroll in content area (swipe handled by flick, tap scrolls 1 line here)
+                return;  // consume all touches inside preview
             }
             // Run button (action bar in list mode)
             if (fileSelected >= 0 && y >= NAV_Y - 20 && x >= W - 42) {
