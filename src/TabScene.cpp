@@ -617,8 +617,12 @@ private:
             //   screenX = offX + machY * sc  (Y goes left→right)
             //   screenY = offY + drawnH - machX * sc  (X inverted: 0=bottom)
             // Adjusted for home corner:
-            float machX = simMode_active()?(float)simMode_getPos(0):(float)myAxes[0];
-            float machY = simMode_active()?(float)simMode_getPos(1):(float)myAxes[1];
+            // myAxes is e4 fixed-point (mm × 10000) when E4_POS_T defined
+            // simMode positions are plain mm floats
+            float machX = simMode_active() ? (float)simMode_getPos(0)
+                                           : (float)myAxes[0] / 10000.0f;
+            float machY = simMode_active() ? (float)simMode_getPos(1)
+                                           : (float)myAxes[1] / 10000.0f;
             // Clamp to work area
             machX=std::max(0.0f,std::min(machX,(float)_workX));
             machY=std::max(0.0f,std::min(machY,(float)_workY));
