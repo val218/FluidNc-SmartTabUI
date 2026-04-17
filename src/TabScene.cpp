@@ -294,6 +294,9 @@ static std::string simJobName;             // name of file being sim-run
 static std::vector<std::pair<float,float>> simPath;  // XY path parsed from gcode for viz
 static int  simPathIdx       = 0;          // current position along path (animation)
 static std::vector<std::string> previewLines; // loaded gcode lines
+static std::vector<std::pair<float,float>> vizPath;   // path for DRO viz overlay
+static std::string vizJobName;              // filename shown on DRO viz
+static int  vizPathExecuted  = 0;           // segments drawn as "executed" (green)
 static int  previewScroll   = 0;           // first visible preview line
 static int  previewFirstLine = 0;           // line offset in file
 static std::string filePath = "/sd";
@@ -651,45 +654,81 @@ private:
             canvas.drawString(wdim,offX+drawnW-1,offY+drawnH-1);
         }
 
-        // Tool path overlay (when job running)
-        if (simJobRunning || (!simPath.empty() && simPathIdx > 0)) {
-            // Draw tool path
-            float minX=simPath[0].first, maxX=minX;
-            float minY=simPath[0].second, maxY=minY;
-            for (auto& pt : simPath) {
-                minX=std::min(minX,pt.first); maxX=std::max(maxX,pt.first);
-                minY=std::min(minY,pt.second); maxY=std::max(maxY,pt.second);
-            }
-            float rx=maxX-minX, ry=maxY-minY;
-            if (rx<1.0f) rx=1.0f; if (ry<1.0f) ry=1.0f;
-            // Shrink bottom 10px to leave room for progress bar
-            int vizH2 = VIZ_H - 12;
-            float scale = std::min((VIZ_W-8)/(float)rx, (float)vizH2/(float)ry);
-            float ox = VIZ_X+4 + (VIZ_W-8 - rx*scale)/2.0f;
-            float oy = VIZ_Y+4 + ((float)vizH2 - ry*scale)/2.0f + ry*scale;
+        // Tool path overlay — uses same work-area coordinate system
+        // vizPath is populated when a file is selected/run from Files tab
+        if (!vizPath.empty()) {
+            // Recompute the same offsets as the work area map above
+            int pad3v=2, mapWv=VIZ_W-2*pad3v, mapHv=VIZ_H-2*pad3v;
+            float scHv=(float)mapWv/_workY, scVv=(float)mapHv/_workX;
+            float scv=std::min(scHv,scVv);
+            int drawnWv=(int)(_workY*scv), drawnHv=(int)(_workX*scv);
+            int offXv=(VIZ_X+pad3v)+(mapWv-drawnWv)/2;
+            int offYv=(VIZ_Y+pad3v)+(mapHv-drawnHv)/2;
 
-            auto toVX = [&](float vx){ return (int)(ox + (vx-minX)*scale); };
-            auto toVY = [&](float vy){ return (int)(oy - (vy-minY)*scale); };
+            // Map machine coords to screen using same landscape transform as work area dot
+            auto pathToScreen = [&](float mx, float my, int& sx, int& sy) {
+                float sXv = my * scv;
+                float sYv = mx * scv;
+                if (_homeCorner==0) { sx=offXv+(int)sXv; sy=offYv+drawnHv-(int)sYv; }
+                else if (_homeCorner==1) { sx=offXv+drawnWv-(int)sXv; sy=offYv+drawnHv-(int)sYv; }
+                else if (_homeCorner==2) { sx=offXv+(int)sXv; sy=offYv+(int)sYv; }
+                else { sx=offXv+drawnWv-(int)sXv; sy=offYv+(int)sYv; }
+            };
 
-            int drawn = std::min(simPathIdx, (int)simPath.size()-1);
-            for (int pi=1; pi<(int)simPath.size(); pi++) {
-                int x1=toVX(simPath[pi-1].first), y1=toVY(simPath[pi-1].second);
-                int x2=toVX(simPath[pi].first),   y2=toVY(simPath[pi].second);
-                canvas.drawLine(x1,y1,x2,y2, pi<=drawn ? CYAN : COL_DIM);
+            // Update executed segment count from myPercent (real job) or simPathIdx (sim)
+            if (simJobRunning) {
+                vizPathExecuted = simPathIdx;
+            } else if (myPercent > 0) {
+                vizPathExecuted = (int)vizPath.size() * (int)myPercent / 100;
             }
-            if (drawn < (int)simPath.size()) {
-                canvas.fillCircle(toVX(simPath[drawn].first), toVY(simPath[drawn].second), 3, GREEN);
+            int executed = std::min(vizPathExecuted, (int)vizPath.size()-1);
+
+            // Draw path: dim = not yet executed, cyan = executed
+            for (int pi=1; pi<(int)vizPath.size(); pi++) {
+                int x1,y1,x2,y2;
+                pathToScreen(vizPath[pi-1].first, vizPath[pi-1].second, x1, y1);
+                pathToScreen(vizPath[pi].first,   vizPath[pi].second,   x2, y2);
+                int col = (pi <= executed) ? CYAN : COL_DIM;
+                canvas.drawLine(x1,y1,x2,y2,col);
             }
 
-            // Progress bar at bottom of viz area
-            int pbY = VIZ_Y + VIZ_H - 10;
-            int pct = simPath.size()>1 ? simPathIdx*100/((int)simPath.size()-1) : 100;
-            int pbW = (VIZ_W-4) * pct / 100;
-            canvas.fillRect(VIZ_X+2, pbY, VIZ_W-4, 7, COL_BORDER);
-            if (pbW>0) canvas.fillRect(VIZ_X+2, pbY, pbW, 7, CYAN);
-            // Job name top-left
-            if (!simJobName.empty())
-                hdrTxt(simJobName.c_str(), VIZ_X+3, VIZ_Y+6, COL_DIM2, middle_left);
+            // Current position marker on path
+            if (executed > 0 && executed < (int)vizPath.size()) {
+                int dx,dy;
+                pathToScreen(vizPath[executed].first, vizPath[executed].second, dx, dy);
+                canvas.fillCircle(dx, dy, 2, GREEN);
+            }
+
+            // Filename — scrolling marquee at top of viz area (max 26 chars fit)
+            if (!vizJobName.empty()) {
+                static int _nameScroll = 0;
+                static uint32_t _nameTime = 0;
+                if (millis() - _nameTime > 300) { _nameTime = millis(); _nameScroll++; }
+                std::string display_name = vizJobName;
+                if ((int)display_name.size() > 26) {
+                    int pos = _nameScroll % (int)(display_name.size() + 4);
+                    std::string padded = display_name + "    " + display_name;
+                    display_name = padded.substr(pos, 26);
+                }
+                canvas.setFont(&fonts::Font0);
+                canvas.setTextDatum(middle_left);
+                canvas.setTextColor(CYAN);
+                canvas.drawString(display_name.c_str(), offXv+2, offYv+5);
+            }
+
+            // Progress bar — 5px tall, at bottom of work area
+            int pbY = offYv + drawnHv - 6;
+            int pbPct = vizPath.size()>1 ? executed*100/((int)vizPath.size()-1) : 0;
+            if (myPercent > 0) pbPct = (int)myPercent;
+            int pbW = drawnWv * pbPct / 100;
+            canvas.fillRect(offXv, pbY, drawnWv, 5, COL_BORDER);
+            if (pbW > 0) canvas.fillRect(offXv, pbY, pbW, 5, CYAN);
+            // Percentage text
+            char pctStr[8]; snprintf(pctStr, sizeof(pctStr), "%d%%", pbPct);
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_right);
+            canvas.setTextColor(pbPct>0 ? CYAN : COL_DIM);
+            canvas.drawString(pctStr, offXv+drawnWv-1, pbY-4);
 
 
         // File progress bar
@@ -1252,6 +1291,9 @@ public:
         previewFirstLine = firstLine;
         previewScroll  = 0;
         filePreviewMode = true;
+        // Parse path for DRO viz
+        if (fileSelected>=0 && fileSelected<(int)fileList.size())
+            parseGcodeToVizPath(lines, fileList[fileSelected].name);
         if (_tab == 2) reDisplay();
     }
 
@@ -1330,6 +1372,30 @@ public:
             macroScroll = std::max(0, macroScroll + delta);
         }
         reDisplay();  // always redraw so header arrow is immediate on any tab
+    }
+
+    // Parse G-code lines into vizPath (machine mm XY coords)
+    void parseGcodeToVizPath(const std::vector<std::string>& lines, const std::string& name) {
+        vizPath.clear(); vizPathExecuted = 0; vizJobName = name;
+        float cx=0, cy=0; bool isAbs=true;
+        for (const auto& ln : lines) {
+            const char* p = ln.c_str();
+            while (*p==' ') p++;
+            if (!*p || *p==';' || *p=='(') continue;
+            if ((*p=='G'||*p=='g') && p[1]=='9') {
+                if (p[2]=='0') isAbs=true;
+                else if (p[2]=='1') isAbs=false;
+                continue;
+            }
+            float nx=cx, ny=cy; bool mv=false;
+            for (const char* q=p; *q; q++) {
+                char c=*q;
+                bool atWord=(q==p||*(q-1)==' '||*(q-1)=='	');
+                if ((c=='X'||c=='x')&&atWord){nx=isAbs?strtof(q+1,nullptr):cx+strtof(q+1,nullptr);mv=true;}
+                if ((c=='Y'||c=='y')&&atWord){ny=isAbs?strtof(q+1,nullptr):cy+strtof(q+1,nullptr);mv=true;}
+            }
+            if (mv && (nx!=cx || ny!=cy)) { vizPath.push_back({nx,ny}); cx=nx; cy=ny; }
+        }
     }
 
     void onTouchClick() override {
@@ -1571,20 +1637,9 @@ public:
                     if (y >= NAV_Y - abH && x >= W - 74) {
                         // Parse gcode XY path
                         simPath.clear(); simPathIdx = 0;
-                        float _cx=0, _cy=0; bool _abs=true;
-                        for (auto& ln : previewLines) {
-                            const char* p = ln.c_str();
-                            while (*p==' ') p++;
-                            if (!*p||*p==';'||*p=='(') continue;
-                            if ((*p=='G'||*p=='g')&&p[1]=='9') { if(p[2]=='0')_abs=true; if(p[2]=='1')_abs=false; }
-                            float nx=_cx, ny=_cy; bool mv=false;
-                            for (const char* q=p; *q; q++) {
-                                if ((*q=='X'||*q=='x')&&(q==p||*(q-1)==' '||*(q-1)=='	')) { nx=_abs?strtof(q+1,nullptr):_cx+strtof(q+1,nullptr); mv=true; }
-                                if ((*q=='Y'||*q=='y')&&(q==p||*(q-1)==' '||*(q-1)=='	')) { ny=_abs?strtof(q+1,nullptr):_cy+strtof(q+1,nullptr); mv=true; }
-                            }
-                            if (mv&&(nx!=_cx||ny!=_cy)) { simPath.push_back({nx,ny}); _cx=nx; _cy=ny; }
-                        }
-                        simJobName = fileList[fileSelected].name;
+                        parseGcodeToVizPath(previewLines, fileList[fileSelected].name);
+                        simPath = vizPath;  // share for sim animation
+                                                simJobName = fileList[fileSelected].name;
                         if (!simMode_active()) {
                             std::string path = filePath + "/" + fileList[fileSelected].name;
                             send_linef("$Localfs/Run=%s", path.c_str());
