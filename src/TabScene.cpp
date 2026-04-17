@@ -55,7 +55,7 @@ static const int TAB_W   = 22;
 static const int VIZ_X   = DROW;
 static const int VIZ_Y   = TOP;
 static const int VIZ_W   = W - DROW;        // full width to right edge
-static const int VIZ_H   = NAV_Y - FEED_H - VIZ_Y - 8;  // 8px for progress strip below
+static const int VIZ_H   = NAV_Y - FEED_H - VIZ_Y - 14; // 14px for filename+bar strip below
 static const int TAB_X   = W;               // tabs gone — pushed off screen
 static const int DRO_ROW = (NAV_Y - TOP - FEED_H) / 4;
 static const int N_TABS  = 5;
@@ -359,6 +359,7 @@ private:
     }
 
     Rect _navTabs[N_TABS];
+    Rect _holdBtn, _abortBtn;
     Rect _vizTabs[3];
     Rect _feedMinus, _feedPlus;
     Rect _spndMinus, _spndPlus, _spndPill, _spdPill;
@@ -475,6 +476,31 @@ private:
     void drawNav() {
         canvas.fillRect(0, NAV_Y, W, BOT, 0x0841);
         hline(0, NAV_Y, W, COL_BORDER);
+
+        // When job running on DRO tab: show Hold and Abort instead of tab bar
+        bool jobActive = (state == Cycle || state == Hold || simJobRunning);
+        if (jobActive && _tab == 0) {
+            int half = W / 2;
+            bool inHold = (state == Hold);
+
+            // Hold / Resume button (left half)
+            _holdBtn = { 0, NAV_Y, half, BOT };
+            int hCol = inHold ? GREEN : YELLOW;
+            tintStrokeR(2, NAV_Y+3, half-4, BOT-6, 4, hCol, hCol, 40);
+            navTxt(inHold ? "Resume (~)" : "Hold (!)", half/2, NAV_Y+BOT/2, hCol);
+
+            // Abort button (right half)
+            _abortBtn = { half, NAV_Y, half, BOT };
+            tintStrokeR(half+2, NAV_Y+3, half-4, BOT-6, 4, RED, RED, 40);
+            navTxt("Abort (x)", half + half/2, NAV_Y+BOT/2, RED);
+
+            // Invalidate nav tabs so normal tab touch doesn't fire
+            for (int i = 0; i < N_TABS; i++) _navTabs[i] = {0,0,0,0};
+            return;
+        }
+
+        // Normal tab bar
+        _holdBtn = {0,0,0,0}; _abortBtn = {0,0,0,0};
         int tw = W / N_TABS;
         for (int i = 0; i < N_TABS; i++) {
             int x = i * tw;
@@ -552,184 +578,170 @@ private:
             }
         }
 
-        // Visualizer area — simple blank until job running
+        // ── Visualizer: shows path (auto-scaled) OR work area map ────────────
         canvas.fillRect(VIZ_X, VIZ_Y, VIZ_W, VIZ_H, COL_PANEL2);
 
-        // Work area map — landscape orientation: workY (long axis) runs horizontally
-        // Screen X = machine Y axis (0..workY left→right)
-        // Screen Y = machine X axis (0..workX top→bottom, inverted for Y-up)
-        {
+        if (!vizPath.empty()) {
+            // ── MODE A: Auto-scaled path view ────────────────────────────────
+            // Path fills the viz area; work area grid not shown (different scale)
+            int pad3v=6, mapWv=VIZ_W-2*pad3v, mapHv=VIZ_H-2*pad3v;
+
+            // Bounding box of path in machine coords
+            float pMinX=vizPath[0].first, pMaxX=pMinX;
+            float pMinY=vizPath[0].second, pMaxY=pMinY;
+            for (auto& pt : vizPath) {
+                pMinX=std::min(pMinX,pt.first); pMaxX=std::max(pMaxX,pt.first);
+                pMinY=std::min(pMinY,pt.second); pMaxY=std::max(pMaxY,pt.second);
+            }
+            float rangeX=std::max(pMaxX-pMinX, 1.0f);
+            float rangeY=std::max(pMaxY-pMinY, 1.0f);
+
+            // Scale to fill viz with 10% padding
+            float scvX=(float)mapWv / (rangeY*1.2f);
+            float scvY=(float)mapHv / (rangeX*1.2f);
+            float scv=std::min(scvX,scvY);
+
+            float pathScreenW=rangeY*scv, pathScreenH=rangeX*scv;
+            int offXv=VIZ_X+pad3v+(int)((mapWv-pathScreenW)/2.0f);
+            int offYv=VIZ_Y+pad3v+(int)((mapHv-pathScreenH)/2.0f);
+
+            // Path background
+            canvas.fillRect(offXv, offYv, (int)pathScreenW, (int)pathScreenH, COL_PANEL3);
+            canvas.drawRect(offXv, offYv, (int)pathScreenW, (int)pathScreenH, COL_BORDER2);
+
+            // Map machine coords → screen (landscape: Y→X, X→Y inverted)
+            auto pathToScreen = [&](float mx, float my, int& sx, int& sy) {
+                sx = offXv + (int)((my - pMinY) * scv);
+                sy = offYv + (int)(pathScreenH - (mx - pMinX) * scv);
+            };
+
+            // Update executed count
+            if (simJobRunning) vizPathExecuted = simPathIdx;
+            else if (myPercent > 0) vizPathExecuted = (int)vizPath.size() * (int)myPercent / 100;
+            int executed = std::min(vizPathExecuted, (int)vizPath.size()-1);
+
+            // Draw path lines: dim=pending, cyan=done
+            for (int pi=1; pi<(int)vizPath.size(); pi++) {
+                int x1,y1,x2,y2;
+                pathToScreen(vizPath[pi-1].first,vizPath[pi-1].second,x1,y1);
+                pathToScreen(vizPath[pi].first,  vizPath[pi].second,  x2,y2);
+                canvas.drawLine(x1,y1,x2,y2, pi<=executed ? CYAN : COL_DIM);
+            }
+
+            // Current position marker on path
+            if (executed>0 && executed<(int)vizPath.size()) {
+                int dx,dy; pathToScreen(vizPath[executed].first,vizPath[executed].second,dx,dy);
+                canvas.fillCircle(dx,dy,2,GREEN);
+            }
+
+            // Real machine position dot — mapped to same auto-scale
+            float machX=simMode_active()?(float)simMode_getPos(0):(float)myAxes[0]/10000.0f;
+            float machY=simMode_active()?(float)simMode_getPos(1):(float)myAxes[1]/10000.0f;
+            int dotX,dotY; pathToScreen(machX,machY,dotX,dotY);
+            // Only draw if within the scaled view
+            if (dotX>=offXv && dotX<offXv+(int)pathScreenW && dotY>=offYv && dotY<offYv+(int)pathScreenH) {
+                canvas.fillCircle(dotX,dotY,2,ORANGE);
+                canvas.drawCircle(dotX,dotY,2,COL_WHITE);
+            }
+
+            // Bounding box label
+            canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+            canvas.setTextDatum(bottom_right);
+            char pdim[24]; snprintf(pdim,sizeof(pdim),"%.0fx%.0fmm",rangeY,rangeX);
+            canvas.drawString(pdim,offXv+(int)pathScreenW-1,offYv+(int)pathScreenH-1);
+
+        } else {
+            // ── MODE B: Work area map with real-time position ────────────────
             int pad3=2, mapW=VIZ_W-2*pad3, mapH=VIZ_H-2*pad3;
             int mapX=VIZ_X+pad3, mapY=VIZ_Y+pad3;
+            float scH=(float)mapW/_workY, scV=(float)mapH/_workX;
+            float sc=std::min(scH,scV);
+            int drawnW=(int)(_workY*sc), drawnH=(int)(_workX*sc);
+            int offX=mapX+(mapW-drawnW)/2, offY=mapY+(mapH-drawnH)/2;
 
-            // Scale: workY along screen-X, workX along screen-Y (landscape)
-            // Use the SAME scale for both axes so distances are proportional
-            float scH=(float)mapW/_workY;  // px/mm horizontal (for Y machine axis)
-            float scV=(float)mapH/_workX;  // px/mm vertical   (for X machine axis)
-            float sc=std::min(scH,scV);    // limiting scale preserves proportions
-
-            // Drawn area size in pixels
-            int drawnW=(int)(_workY*sc);  // machine Y → screen width
-            int drawnH=(int)(_workX*sc);  // machine X → screen height
-
-            // Centre the work area in the viz panel
-            int offX=mapX+(mapW-drawnW)/2;
-            int offY=mapY+(mapH-drawnH)/2;
-
-            // Background and border
             canvas.fillRect(offX,offY,drawnW,drawnH,COL_PANEL3);
             canvas.drawRect(offX,offY,drawnW,drawnH,COL_BORDER2);
-
-            // Grid lines (every 25%)
             for(int gi=1;gi<4;gi++){
                 canvas.drawFastVLine(offX+drawnW*gi/4,offY,drawnH,COL_BORDER);
                 canvas.drawFastHLine(offX,offY+drawnH*gi/4,drawnW,COL_BORDER);
             }
 
-            // Home corner position (green dot)
-            // homeCorner: 0=BL 1=BR 2=TL 3=TR
-            // In landscape: BL = screen bottom-left (Y=0 left, X=0 bottom)
+            // Home corner dot + XY arrows
             int hx=(_homeCorner==1||_homeCorner==3)?offX+drawnW:offX;
             int hy=(_homeCorner==0||_homeCorner==1)?offY+drawnH:offY;
             canvas.fillCircle(hx,hy,2,GREEN);
-
-            // XY reference arrows from home corner (thin, 20px)
-            // X arrow: points in machine-X+ direction → screen upward (machine X = screen Y inverted)
-            // Y arrow: points in machine-Y+ direction → screen rightward
-            int arrowLen=18;
-            // Determine arrow directions based on home corner
-            int xDir = (_homeCorner==0||_homeCorner==1) ? -1 : 1;  // X+ → screen up(-1) or down(+1)
-            int yDir = (_homeCorner==1||_homeCorner==3) ? -1 : 1;  // Y+ → screen left(-1) or right(+1)
-            // Y axis arrow (horizontal) — green, points in machine Y+ direction
-            int yax0 = (yDir>0) ? hx : hx+yDir*arrowLen;
-            canvas.drawFastHLine(yax0, hy,   arrowLen, GREEN);
-            canvas.drawFastHLine(yax0, hy+1, arrowLen, GREEN);  // 2px thick
-            canvas.setFont(&fonts::Font0);
-            canvas.setTextDatum(middle_center);
+            int xDir=(_homeCorner==0||_homeCorner==1)?-1:1;
+            int yDir=(_homeCorner==1||_homeCorner==3)?-1:1;
+            int al=16;
+            int yax0=(yDir>0)?hx:hx+yDir*al;
+            canvas.drawFastHLine(yax0,hy,  al,GREEN);
+            canvas.drawFastHLine(yax0,hy+1,al,GREEN);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
             canvas.setTextColor(GREEN);
-            canvas.drawString("Y", hx+yDir*(arrowLen+5), hy);
-            // X axis arrow (vertical) — red, points in machine X+ direction
-            int xax0 = (xDir>0) ? hy : hy+xDir*arrowLen;
-            canvas.drawFastVLine(hx,   xax0, arrowLen, RED);
-            canvas.drawFastVLine(hx+1, xax0, arrowLen, RED);    // 2px thick
+            canvas.drawString("Y",hx+yDir*(al+5),hy);
+            int xax0=(xDir>0)?hy:hy+xDir*al;
+            canvas.drawFastVLine(hx,  xax0,al,RED);
+            canvas.drawFastVLine(hx+1,xax0,al,RED);
             canvas.setTextColor(RED);
-            canvas.drawString("X", hx, hy+xDir*(arrowLen+5));
+            canvas.drawString("X",hx,hy+xDir*(al+5));
 
-            // Real-time position dot
-            // Machine coords → screen coords:
-            //   screenX = offX + machY * sc  (Y goes left→right)
-            //   screenY = offY + drawnH - machX * sc  (X inverted: 0=bottom)
-            // Adjusted for home corner:
-            // myAxes is e4 fixed-point (mm × 10000) when E4_POS_T defined
-            // simMode positions are plain mm floats
-            float machX = simMode_active() ? (float)simMode_getPos(0)
-                                           : (float)myAxes[0] / 10000.0f;
-            float machY = simMode_active() ? (float)simMode_getPos(1)
-                                           : (float)myAxes[1] / 10000.0f;
-            // Clamp to work area
+            // Real-time position dot (machine scale)
+            float machX=simMode_active()?(float)simMode_getPos(0):(float)myAxes[0]/10000.0f;
+            float machY=simMode_active()?(float)simMode_getPos(1):(float)myAxes[1]/10000.0f;
             machX=std::max(0.0f,std::min(machX,(float)_workX));
             machY=std::max(0.0f,std::min(machY,(float)_workY));
-
             int dotX,dotY;
-            // Map machine Y → screen X, machine X → screen Y (landscape)
-            float sX = machY * sc;  // screen offset in X direction (from home Y edge)
-            float sY = machX * sc;  // screen offset in Y direction (from home X edge)
-            if(_homeCorner==0){      // BL: Y→right, X→up
-                dotX=offX+(int)sX; dotY=offY+drawnH-(int)sY;
-            } else if(_homeCorner==1){ // BR: Y→left, X→up
-                dotX=offX+drawnW-(int)sX; dotY=offY+drawnH-(int)sY;
-            } else if(_homeCorner==2){ // TL: Y→right, X→down
-                dotX=offX+(int)sX; dotY=offY+(int)sY;
-            } else {                  // TR: Y→left, X→down
-                dotX=offX+drawnW-(int)sX; dotY=offY+(int)sY;
-            }
+            if(_homeCorner==0){dotX=offX+(int)(machY*sc);dotY=offY+drawnH-(int)(machX*sc);}
+            else if(_homeCorner==1){dotX=offX+drawnW-(int)(machY*sc);dotY=offY+drawnH-(int)(machX*sc);}
+            else if(_homeCorner==2){dotX=offX+(int)(machY*sc);dotY=offY+(int)(machX*sc);}
+            else{dotX=offX+drawnW-(int)(machY*sc);dotY=offY+(int)(machX*sc);}
             canvas.fillCircle(dotX,dotY,2,ORANGE);
             canvas.drawCircle(dotX,dotY,2,COL_WHITE);
 
-            // Scale label bottom-right of work area
-            canvas.setFont(&fonts::Font0);
-            canvas.setTextColor(COL_DIM);
+            canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
             canvas.setTextDatum(bottom_right);
             char wdim[24]; snprintf(wdim,sizeof(wdim),"%dx%dmm",_workY,_workX);
             canvas.drawString(wdim,offX+drawnW-1,offY+drawnH-1);
         }
 
-        // Tool path overlay — uses same work-area coordinate system
-        // vizPath is populated when a file is selected/run from Files tab
-        if (!vizPath.empty()) {
-            // Recompute the same offsets as the work area map above
-            int pad3v=2, mapWv=VIZ_W-2*pad3v, mapHv=VIZ_H-2*pad3v;
-            float scHv=(float)mapWv/_workY, scVv=(float)mapHv/_workX;
-            float scv=std::min(scHv,scVv);
-            int drawnWv=(int)(_workY*scv), drawnHv=(int)(_workX*scv);
-            int offXv=(VIZ_X+pad3v)+(mapWv-drawnWv)/2;
-            int offYv=(VIZ_Y+pad3v)+(mapHv-drawnHv)/2;
-
-            // Map machine coords to screen using same landscape transform as work area dot
-            auto pathToScreen = [&](float mx, float my, int& sx, int& sy) {
-                float sXv = my * scv;
-                float sYv = mx * scv;
-                if (_homeCorner==0) { sx=offXv+(int)sXv; sy=offYv+drawnHv-(int)sYv; }
-                else if (_homeCorner==1) { sx=offXv+drawnWv-(int)sXv; sy=offYv+drawnHv-(int)sYv; }
-                else if (_homeCorner==2) { sx=offXv+(int)sXv; sy=offYv+(int)sYv; }
-                else { sx=offXv+drawnWv-(int)sXv; sy=offYv+(int)sYv; }
-            };
-
-            // Update executed segment count from myPercent (real job) or simPathIdx (sim)
-            if (simJobRunning) {
-                vizPathExecuted = simPathIdx;
-            } else if (myPercent > 0) {
-                vizPathExecuted = (int)vizPath.size() * (int)myPercent / 100;
-            }
-            int executed = std::min(vizPathExecuted, (int)vizPath.size()-1);
-
-            // Draw path: dim = not yet executed, cyan = executed
-            for (int pi=1; pi<(int)vizPath.size(); pi++) {
-                int x1,y1,x2,y2;
-                pathToScreen(vizPath[pi-1].first, vizPath[pi-1].second, x1, y1);
-                pathToScreen(vizPath[pi].first,   vizPath[pi].second,   x2, y2);
-                int col = (pi <= executed) ? CYAN : COL_DIM;
-                canvas.drawLine(x1,y1,x2,y2,col);
-            }
-
-            // Current position marker on path
-            if (executed > 0 && executed < (int)vizPath.size()) {
-                int dx,dy;
-                pathToScreen(vizPath[executed].first, vizPath[executed].second, dx, dy);
-                canvas.fillCircle(dx, dy, 2, GREEN);
-            }
-
-
-        }  // end vizPath overlay
-
-        // ── G-code progress bar — strip between viz area and feed bar ────────
-        // Sits in the 6px gap between VIZ bottom and FEED bar top
+        // ── G-code info strip: filename above, progress bar below ─────────────
         if (!vizJobName.empty()) {
-            int pbStripY = VIZ_Y + VIZ_H + 1;  // 1px gap then strip
-            int pbStripH = 6;  // fits in 8px gap
+            int stripY = VIZ_Y + VIZ_H + 1;  // 1px gap below viz area
+            int nameH  = 8;   // filename row height
+            int barH   = 5;   // progress bar height
+            // Background
+            canvas.fillRect(VIZ_X, stripY, VIZ_W, nameH + barH, COL_PANEL2);
+
+            // Filename — scrolling, above the bar
+            static int _ns=0; static uint32_t _nt=0;
+            if (millis()-_nt>350){_nt=millis();_ns++;}
+            std::string dn=vizJobName;
+            int maxChars = (VIZ_W - 4) / 6;  // Font0 is ~6px wide
+            if ((int)dn.size() > maxChars) {
+                int p = _ns % (int)(dn.size() + 4);
+                std::string pd = dn + "    " + dn;
+                dn = pd.substr(p, maxChars);
+            }
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_left);
+            canvas.setTextColor(CYAN);
+            canvas.drawString(dn.c_str(), VIZ_X + 2, stripY + nameH/2);
+
+            // Progress bar — below filename
             int pbPct = 0;
             if (simJobRunning && !vizPath.empty())
                 pbPct = vizPathExecuted * 100 / std::max(1, (int)vizPath.size()-1);
             else if (myPercent > 0)
                 pbPct = (int)myPercent;
-            // Background strip
-            canvas.fillRect(VIZ_X, pbStripY, VIZ_W, pbStripH, COL_BORDER);
-            // Fill
+            int pbY = stripY + nameH;
+            canvas.fillRect(VIZ_X, pbY, VIZ_W, barH, COL_BORDER);
             int pbFill = VIZ_W * pbPct / 100;
-            if (pbFill > 0) canvas.fillRect(VIZ_X, pbStripY, pbFill, pbStripH, CYAN);
-            // Filename left, percentage right — in the strip itself
-            canvas.setFont(&fonts::Font0);
-            canvas.setTextDatum(middle_left);
-            canvas.setTextColor(pbPct>0 ? CYAN : COL_DIM);
-            // Scrolling filename
-            static int _ns=0; static uint32_t _nt=0;
-            if (millis()-_nt>300){_nt=millis();_ns++;}
-            std::string dn=vizJobName;
-            if((int)dn.size()>22){int p=_ns%(int)(dn.size()+4);std::string pd=dn+"    "+dn;dn=pd.substr(p,22);}
-            canvas.drawString(dn.c_str(), VIZ_X+2, pbStripY+pbStripH/2);
+            if (pbFill > 0) canvas.fillRect(VIZ_X, pbY, pbFill, barH, CYAN);
+            // Percentage right-aligned on filename row
             char pctS[8]; snprintf(pctS,sizeof(pctS),"%d%%",pbPct);
             canvas.setTextDatum(middle_right);
-            canvas.drawString(pctS, VIZ_X+VIZ_W-1, pbStripY+pbStripH/2);
+            canvas.setTextColor(pbPct>0 ? CYAN : COL_DIM);
+            canvas.drawString(pctS, VIZ_X+VIZ_W-1, stripY + nameH/2);
         }
 
         // ── Feed / Speed / Spindle bar — tap to select, MPG adjusts ──────────
@@ -1243,13 +1255,18 @@ public:
     }
 
     void onFileLines(int firstLine, const std::vector<std::string>& lines) override {
-        previewLines   = lines;
-        previewFirstLine = firstLine;
-        previewScroll  = 0;
-        filePreviewMode = true;
-        // Parse path for DRO viz
-        if (fileSelected>=0 && fileSelected<(int)fileList.size())
-            parseGcodeToVizPath(lines, fileList[fileSelected].name);
+        // Always parse for viz path (works for both 60-line preview and 2000-line full)
+        if (fileSelected>=0 && fileSelected<(int)fileList.size()) {
+            if ((int)lines.size() > (int)vizPath.size() || vizPath.empty())
+                parseGcodeToVizPath(lines, fileList[fileSelected].name);
+        }
+        // Only update text preview for small requests (first 60 lines)
+        if (firstLine == 0) {
+            previewLines = lines;
+            previewFirstLine = 0;
+            previewScroll = 0;
+            filePreviewMode = true;
+        }
         if (_tab == 2) reDisplay();
     }
 
@@ -1569,7 +1586,13 @@ public:
                             parseGcodeToVizPath(previewLines, fileList[fi].name);
                         } else {
                             std::string path = filePath + "/" + fileList[fi].name;
+                            // Request small block for text preview display
                             request_file_preview(path.c_str(), 0, 60);
+                            // Request large block for path visualization
+                            // onFileLines will be called with whichever arrives
+                            // We set the name now so viz shows immediately on Run
+                            vizJobName = fileList[fi].name;
+                            vizPathExecuted = 0;
                         }
                         reDisplay();
                     }
@@ -1602,6 +1625,9 @@ public:
                             std::string path = filePath + "/" + fileList[fileSelected].name;
                             send_linef("$Localfs/Run=%s", path.c_str());
                             termLines.push_back({ "> Run: " + simJobName, COL_DIM2 });
+                            // Request full file for path visualization
+                            if (vizPath.empty())
+                                request_file_preview(path.c_str(), 0, 2000);
                         } else {
                             simJobRunning = true; simPathIdx = 0;
                             if (!simPath.empty()) {
