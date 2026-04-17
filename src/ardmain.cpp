@@ -54,7 +54,8 @@ static bool readEnableNow() {
 // ── Settings menu ─────────────────────────────────────────────────────────────
 static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
     display.fillScreen(S_BG);
-    int cx = display.width() / 2;
+    int W  = display.width();
+    int cx = W / 2;
 
     // Title
     display.setFont(&fonts::Font2);
@@ -129,9 +130,9 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
         char mname[24];
         // We can't access MACROS vector here, just show index
         snprintf(mname, sizeof(mname), "Macro %d", s.enableMacro + 1);
-        sBtn(enx0, y+5, 120, optH, S_PANEL, S_BORDER, mname, S_DIM2);
-        sBtn(enx0 + 124, y+5, 30, optH, S_PANEL, S_BORDER, "-", S_WHITE);
-        sBtn(enx0 + 158, y+5, 30, optH, S_PANEL, S_BORDER, "+", S_WHITE);
+        sBtn(bx0,       y+4, 100, optH, S_PANEL, S_BORDER, mname, S_DIM2);
+        sBtn(bx0 + 104, y+4,  28, optH, S_PANEL, S_BORDER, "-", S_WHITE);
+        sBtn(bx0 + 136, y+4,  28, optH, S_PANEL, S_BORDER, "+", S_WHITE);
         y += rowH;
     }
 
