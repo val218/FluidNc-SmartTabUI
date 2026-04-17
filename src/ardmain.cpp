@@ -66,61 +66,56 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
     display.setTextColor(S_DIM);
     display.drawString(mpgOk ? "MPG: Connected" : "MPG: Not detected", cx, 30);
 
-    int y = 44, rowH = 30, pad = 8, optW = 80, optH = 22;
+    int y = 44, rowH = 30, pad = 8, optH = 22;
+    int bx0 = 72;           // all button rows start here
+    int bW  = W - bx0 - 4; // available width for buttons (244px)
 
-    // ── Mode ─────────────────────────────────────────────────────────────────
-    display.setFont(&fonts::Font0);
-    display.setTextDatum(middle_left);
-    display.setTextColor(S_DIM);
-    display.drawString("MODE", pad, y + rowH/2);
+    // Label helper
+    auto lbl = [&](const char* t) {
+        display.setFont(&fonts::Font0);
+        display.setTextDatum(middle_left);
+        display.setTextColor(S_DIM);
+        display.drawString(t, pad, y + rowH/2);
+    };
 
-    sBtn(80,  y+5, optW, optH, s.simMode ? S_PANEL : 0x0019, s.simMode ? S_BORDER : S_BLUE,  "Normal",     s.simMode ? S_DIM : S_WHITE);
-    sBtn(168, y+5, optW, optH, s.simMode ? 0x2800  : S_PANEL, s.simMode ? S_ORANGE : S_BORDER, "Simulation", s.simMode ? S_ORANGE : S_DIM);
-    y += rowH;
-
-    // ── Theme ────────────────────────────────────────────────────────────────
-    display.setTextDatum(middle_left);
-    display.setTextColor(S_DIM);
-    display.setFont(&fonts::Font0);
-    display.drawString("THEME", pad, y + rowH/2);
-
-    const char* themes[] = { "Dark", "Neutral", "Light" };
-    int tw = 72, tx0 = 76;
-    for (int i = 0; i < 3; i++) {
-        bool sel = ((int)s.theme == i);
-        int bc = sel ? S_CYAN : S_BORDER;
-        int bg = sel ? 0x0019 : S_PANEL;
-        sBtn(tx0 + i*(tw+4), y+5, tw, optH, bg, bc, themes[i], sel ? S_WHITE : S_DIM);
+    // ── Mode (2 buttons) ─────────────────────────────────────────────────────
+    lbl("MODE");
+    { int mw=(bW-8)/2;
+      sBtn(bx0,        y+4, mw, optH, s.simMode?S_PANEL:0x0019, s.simMode?S_BORDER:S_BLUE,   "Normal",     s.simMode?S_DIM:S_WHITE);
+      sBtn(bx0+mw+8,   y+4, mw, optH, s.simMode?0x2800:S_PANEL,  s.simMode?S_ORANGE:S_BORDER, "Simulation", s.simMode?S_ORANGE:S_DIM);
     }
     y += rowH;
 
-    // ── DRO Axes ─────────────────────────────────────────────────────────────
-    display.setTextDatum(middle_left);
-    display.setTextColor(S_DIM);
-    display.setFont(&fonts::Font0);
-    display.drawString("AXES", pad, y + rowH/2);
-
-    const char* axOpts[] = { "XYZ", "XYZA", "XY", "XYYZ" };
-    int aw = 66, ax0 = 76;
-    for (int i = 0; i < 4; i++) {
-        bool sel = ((int)s.axes == i);
-        sBtn(ax0 + i*(aw+3), y+5, aw, optH, sel ? 0x0019 : S_PANEL,
-             sel ? S_GREEN : S_BORDER, axOpts[i], sel ? S_WHITE : S_DIM);
+    // ── Theme (3 buttons) ────────────────────────────────────────────────────
+    lbl("THEME");
+    { int tw=(bW-8)/3;
+      const char* th[]={"Dark","Neutral","Light"};
+      for(int i=0;i<3;i++) {
+        bool s2=((int)s.theme==i);
+        sBtn(bx0+i*(tw+4), y+4, tw, optH, s2?0x0019:S_PANEL, s2?S_CYAN:S_BORDER, th[i], s2?S_WHITE:S_DIM);
+      }
     }
     y += rowH;
 
-    // ── P6 Enable button mode ────────────────────────────────────────────────
-    display.setTextDatum(middle_left);
-    display.setTextColor(S_DIM);
-    display.setFont(&fonts::Font0);
-    display.drawString("P6 BTN", pad, y + rowH/2);
+    // ── Axes (4 buttons) ─────────────────────────────────────────────────────
+    lbl("AXES");
+    { int aw=(bW-12)/4;
+      const char* ax[]={"XYZ","XYZA","XY","XYYZ"};
+      for(int i=0;i<4;i++) {
+        bool s2=((int)s.axes==i);
+        sBtn(bx0+i*(aw+4), y+4, aw, optH, s2?0x0019:S_PANEL, s2?S_GREEN:S_BORDER, ax[i], s2?S_WHITE:S_DIM);
+      }
+    }
+    y += rowH;
 
-    const char* enOpts[] = { "Gate All", "Touch", "Jog", "Macro", "Off" };
-    int enw = 52, enx0 = 76;
-    for (int i = 0; i < 5; i++) {
-        bool sel = ((int)s.enableMode == i);
-        sBtn(enx0 + i*(enw+2), y+5, enw, optH, sel ? 0x0019 : S_PANEL,
-             sel ? S_CYAN : S_BORDER, enOpts[i], sel ? S_WHITE : S_DIM);
+    // ── P6 button mode (5 buttons) ───────────────────────────────────────────
+    lbl("P6 BTN");
+    { int enw=(bW-12)/5;
+      const char* en[]={"Gate All","Touch","Jog","Macro","Off"};
+      for(int i=0;i<5;i++) {
+        bool s2=((int)s.enableMode==i);
+        sBtn(bx0+i*(enw+3), y+4, enw, optH, s2?0x0019:S_PANEL, s2?S_CYAN:S_BORDER, en[i], s2?S_WHITE:S_DIM);
+      }
     }
     y += rowH;
 
@@ -401,11 +396,12 @@ static void runInputMonitor() {
             estopHeldSince = 0;
         }
 
-        delay(80);
+        delay(150);
     }
 }
 
 static void runSettingsMenu(AppSettings& s) {
+    int W = display.width();
     uint8_t pcfVal = 0xFF;
     bool mpgOk = (i2c_master_read_from_device(
         I2C_NUM_1, 0x20, &pcfVal, 1, pdMS_TO_TICKS(20)) == ESP_OK);
@@ -434,29 +430,34 @@ static void runSettingsMenu(AppSettings& s) {
         if (!t.wasClicked()) { delay(20); continue; }
         int tx = t.x, ty = t.y;
 
-        int y = 44, rowH = 30, optW = 80, optH = 22;
-        int tw = 72, tx0 = 76;
-        int aw = 66, ax0 = 76;
+        int y = 44, rowH = 30, optH = 22;
+        int bx0 = 72, bW = W - bx0 - 4;
 
         // Mode row
-        if (touchIn(tx,ty, 80, y+5, optW, optH))  { s.simMode = false; }
-        if (touchIn(tx,ty, 168,y+5, optW, optH))  { s.simMode = true;  }
+        { int mw=(bW-8)/2;
+          if (touchIn(tx,ty,bx0,      y+4,mw,optH)) s.simMode=false;
+          if (touchIn(tx,ty,bx0+mw+8, y+4,mw,optH)) s.simMode=true;
+        }
         y += rowH;
 
         // Theme row
-        for (int i=0;i<3;i++)
-            if (touchIn(tx,ty, tx0+i*(tw+4), y+5, tw, optH)) s.theme = (Theme)i;
+        { int tw=(bW-8)/3;
+          for(int i=0;i<3;i++)
+            if (touchIn(tx,ty,bx0+i*(tw+4),y+4,tw,optH)) s.theme=(Theme)i;
+        }
         y += rowH;
 
         // Axes row
-        for (int i=0;i<4;i++)
-            if (touchIn(tx,ty, ax0+i*(aw+3), y+5, aw, optH)) s.axes = (DROAxes)i;
+        { int aw=(bW-12)/4;
+          for(int i=0;i<4;i++)
+            if (touchIn(tx,ty,bx0+i*(aw+4),y+4,aw,optH)) s.axes=(DROAxes)i;
+        }
         y += rowH;
 
         // P6 enable mode row
-        { int enw=52, enx0b=76;
-          for (int i=0;i<5;i++)
-            if (touchIn(tx,ty, enx0b+i*(enw+2), y+5, enw, optH)) s.enableMode=(EnableMode)i;
+        { int enw=(bW-12)/5;
+          for(int i=0;i<5;i++)
+            if (touchIn(tx,ty,bx0+i*(enw+3),y+4,enw,optH)) s.enableMode=(EnableMode)i;
         }
         y += rowH;
 
