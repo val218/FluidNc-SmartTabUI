@@ -552,51 +552,99 @@ private:
         // Visualizer area — simple blank until job running
         canvas.fillRect(VIZ_X, VIZ_Y, VIZ_W, VIZ_H, COL_PANEL2);
 
-        // Always draw work area map as base layer
-        // Standard CNC top-down view: X=horizontal, Y=vertical (Y=0 at bottom)
+        // Work area map — landscape orientation: workY (long axis) runs horizontally
+        // Screen X = machine Y axis (0..workY left→right)
+        // Screen Y = machine X axis (0..workX top→bottom, inverted for Y-up)
         {
-            int pad3=4, mapW=VIZ_W-2*pad3, mapH=VIZ_H-2*pad3;
+            int pad3=2, mapW=VIZ_W-2*pad3, mapH=VIZ_H-2*pad3;
             int mapX=VIZ_X+pad3, mapY=VIZ_Y+pad3;
-            // Scale to fit work area preserving aspect ratio
-            float scaleX=(float)mapW/_workX, scaleY=(float)mapH/_workY;
-            float sc=std::min(scaleX,scaleY);
-            int drawnW=(int)(_workX*sc), drawnH=(int)(_workY*sc);
-            int offX=mapX+(mapW-drawnW)/2, offY=mapY+(mapH-drawnH)/2;
+
+            // Scale: workY along screen-X, workX along screen-Y (landscape)
+            // Use the SAME scale for both axes so distances are proportional
+            float scH=(float)mapW/_workY;  // px/mm horizontal (for Y machine axis)
+            float scV=(float)mapH/_workX;  // px/mm vertical   (for X machine axis)
+            float sc=std::min(scH,scV);    // limiting scale preserves proportions
+
+            // Drawn area size in pixels
+            int drawnW=(int)(_workY*sc);  // machine Y → screen width
+            int drawnH=(int)(_workX*sc);  // machine X → screen height
+
+            // Centre the work area in the viz panel
+            int offX=mapX+(mapW-drawnW)/2;
+            int offY=mapY+(mapH-drawnH)/2;
+
+            // Background and border
             canvas.fillRect(offX,offY,drawnW,drawnH,COL_PANEL3);
             canvas.drawRect(offX,offY,drawnW,drawnH,COL_BORDER2);
-            // Grid every 25%
+
+            // Grid lines (every 25%)
             for(int gi=1;gi<4;gi++){
                 canvas.drawFastVLine(offX+drawnW*gi/4,offY,drawnH,COL_BORDER);
                 canvas.drawFastHLine(offX,offY+drawnH*gi/4,drawnW,COL_BORDER);
             }
-            // Home corner dot — homeCorner: 0=BL(X0,Y0 at bottom-left), 1=BR, 2=TL, 3=TR
+
+            // Home corner position (green dot)
+            // homeCorner: 0=BL 1=BR 2=TL 3=TR
+            // In landscape: BL = screen bottom-left (Y=0 left, X=0 bottom)
             int hx=(_homeCorner==1||_homeCorner==3)?offX+drawnW:offX;
             int hy=(_homeCorner==0||_homeCorner==1)?offY+drawnH:offY;
             canvas.fillCircle(hx,hy,2,GREEN);
-            // Real-time position dot using standard CNC coordinate mapping
-            float mx=simMode_active()?(float)simMode_getPos(0):(float)myAxes[0];
-            float my=simMode_active()?(float)simMode_getPos(1):(float)myAxes[1];
-            mx=std::max(0.0f,std::min(mx,(float)_workX));
-            my=std::max(0.0f,std::min(my,(float)_workY));
-            // X increases right on screen, Y increases upward (invert screen Y)
-            // homeCorner adjusts origin
+
+            // XY reference arrows from home corner (thin, 20px)
+            // X arrow: points in machine-X+ direction → screen upward (machine X = screen Y inverted)
+            // Y arrow: points in machine-Y+ direction → screen rightward
+            int arrowLen=18;
+            // Determine arrow directions based on home corner
+            int xDir = (_homeCorner==0||_homeCorner==1) ? -1 : 1;  // X+ → screen up(-1) or down(+1)
+            int yDir = (_homeCorner==1||_homeCorner==3) ? -1 : 1;  // Y+ → screen left(-1) or right(+1)
+            // Y axis arrow (horizontal) — green, points in machine Y+ direction
+            int yax0 = (yDir>0) ? hx : hx+yDir*arrowLen;
+            canvas.drawFastHLine(yax0, hy,   arrowLen, GREEN);
+            canvas.drawFastHLine(yax0, hy+1, arrowLen, GREEN);  // 2px thick
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_center);
+            canvas.setTextColor(GREEN);
+            canvas.drawString("Y", hx+yDir*(arrowLen+5), hy);
+            // X axis arrow (vertical) — red, points in machine X+ direction
+            int xax0 = (xDir>0) ? hy : hy+xDir*arrowLen;
+            canvas.drawFastVLine(hx,   xax0, arrowLen, RED);
+            canvas.drawFastVLine(hx+1, xax0, arrowLen, RED);    // 2px thick
+            canvas.setTextColor(RED);
+            canvas.drawString("X", hx, hy+xDir*(arrowLen+5));
+
+            // Real-time position dot
+            // Machine coords → screen coords:
+            //   screenX = offX + machY * sc  (Y goes left→right)
+            //   screenY = offY + drawnH - machX * sc  (X inverted: 0=bottom)
+            // Adjusted for home corner:
+            float machX = simMode_active()?(float)simMode_getPos(0):(float)myAxes[0];
+            float machY = simMode_active()?(float)simMode_getPos(1):(float)myAxes[1];
+            // Clamp to work area
+            machX=std::max(0.0f,std::min(machX,(float)_workX));
+            machY=std::max(0.0f,std::min(machY,(float)_workY));
+
             int dotX,dotY;
-            if(_homeCorner==0){      // BL: X+ right, Y+ up
-                dotX=offX+(int)(mx*sc); dotY=offY+drawnH-(int)(my*sc);
-            } else if(_homeCorner==1){ // BR: X+ left, Y+ up
-                dotX=offX+drawnW-(int)(mx*sc); dotY=offY+drawnH-(int)(my*sc);
-            } else if(_homeCorner==2){ // TL: X+ right, Y+ down
-                dotX=offX+(int)(mx*sc); dotY=offY+(int)(my*sc);
-            } else {                  // TR: X+ left, Y+ down
-                dotX=offX+drawnW-(int)(mx*sc); dotY=offY+(int)(my*sc);
+            // Map machine Y → screen X, machine X → screen Y (landscape)
+            float sX = machY * sc;  // screen offset in X direction (from home Y edge)
+            float sY = machX * sc;  // screen offset in Y direction (from home X edge)
+            if(_homeCorner==0){      // BL: Y→right, X→up
+                dotX=offX+(int)sX; dotY=offY+drawnH-(int)sY;
+            } else if(_homeCorner==1){ // BR: Y→left, X→up
+                dotX=offX+drawnW-(int)sX; dotY=offY+drawnH-(int)sY;
+            } else if(_homeCorner==2){ // TL: Y→right, X→down
+                dotX=offX+(int)sX; dotY=offY+(int)sY;
+            } else {                  // TR: Y→left, X→down
+                dotX=offX+drawnW-(int)sX; dotY=offY+(int)sY;
             }
-            canvas.fillCircle(dotX,dotY,3,ORANGE);
-            canvas.fillCircle(dotX,dotY,1,COL_WHITE);
-            // Dimension label
-            canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+            canvas.fillCircle(dotX,dotY,2,ORANGE);
+            canvas.drawCircle(dotX,dotY,2,COL_WHITE);
+
+            // Scale label bottom-right of work area
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextColor(COL_DIM);
             canvas.setTextDatum(bottom_right);
-            char wdim[20]; snprintf(wdim,sizeof(wdim),"%dx%d",_workX,_workY);
-            canvas.drawString(wdim,offX+drawnW-2,offY+drawnH-1);
+            char wdim[24]; snprintf(wdim,sizeof(wdim),"%dx%dmm",_workY,_workX);
+            canvas.drawString(wdim,offX+drawnW-1,offY+drawnH-1);
         }
 
         // Tool path overlay (when job running)
@@ -1243,9 +1291,11 @@ public:
                 // Rapid override: only 3 fixed levels — 100%(0x95), 50%(0x96), 25%(0x97)
                 // Cycle through them: CW = lower, CCW = higher
                 uint8_t rapid_cmd;
-                if (myRro >= 100)      rapid_cmd = delta>0 ? 0x96 : 0x95;  // at 100%: CW→50, CCW→stays
-                else if (myRro >= 50)  rapid_cmd = delta>0 ? 0x97 : 0x95;  // at 50%:  CW→25, CCW→100
-                else                   rapid_cmd = delta>0 ? 0x97 : 0x96;  // at 25%:  CW→stays, CCW→50
+                // CW (delta>0) = faster (higher %), CCW (delta<0) = slower (lower %)
+                // Levels: 0x95=100%, 0x96=50%, 0x97=25%
+                if (myRro >= 100)     rapid_cmd = delta>0 ? 0x95 : 0x96;  // at 100%: CW→stays, CCW→50%
+                else if (myRro >= 50) rapid_cmd = delta>0 ? 0x95 : 0x97;  // at 50%:  CW→100%, CCW→25%
+                else                  rapid_cmd = delta>0 ? 0x96 : 0x97;  // at 25%:  CW→50%,  CCW→stays
                 fnc_realtime((realtime_cmd_t)rapid_cmd);
             } else {
                 // Spindle override: coarse ±10% per detent
