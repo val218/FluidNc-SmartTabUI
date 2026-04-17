@@ -732,8 +732,6 @@ private:
             canvas.drawString(pctS, VIZ_X+VIZ_W-1, pbStripY+pbStripH/2);
         }
 
-    }  // end drawDROScreen
-
         // ── Feed / Speed / Spindle bar — tap to select, MPG adjusts ──────────
         int fy  = NAV_Y - FEED_H;
         canvas.fillRect(0, fy, W, FEED_H, COL_PANEL2);
