@@ -320,6 +320,8 @@ static bool _loadingDone  = false;          // all batches received
 // Key: /viz/XXXXXXXX.bin where X = CRC32 of (name + size)
 // Format: uint32 count, then count * (float x, float y)
 static bool _vizCacheReady = false;
+static bool _vizFullscreen = false;  // DRO viz double-tap fullscreen
+static uint32_t _lastVizTap = 0;    // for double-tap detection
 
 static uint32_t vizCacheKey(const std::string& name, int size) {
     uint32_t crc = 0xFFFFFFFF;
@@ -682,9 +684,82 @@ private:
         // ── Visualizer: shows path (auto-scaled) OR work area map ────────────
         canvas.fillRect(VIZ_X, VIZ_Y, VIZ_W, VIZ_H, COL_PANEL2);
 
-        if (!vizPath.empty()) {
-            // ── MODE A: Auto-scaled path view ────────────────────────────────
-            // Path fills the viz area; work area grid not shown (different scale)
+        if (_vizFullscreen && !vizPath.empty()) {
+            // ── WORK AREA MODE (double-tap): path placed in machine work area grid ──
+            // Same VIZ area, but scale = work area scale, path positioned at real coords
+            int pad3=2, mapW=VIZ_W-2*pad3, mapH=VIZ_H-2*pad3;
+            int mapX=VIZ_X+pad3, mapY=VIZ_Y+pad3;
+            // Scale work area to fit viz box (landscape: workY→screen X, workX→screen Y)
+            float scH=(float)mapW/_workY, scV=(float)mapH/_workX;
+            float sc=std::min(scH,scV);
+            int drawnW=(int)(_workY*sc), drawnH=(int)(_workX*sc);
+            int offX=mapX+(mapW-drawnW)/2, offY=mapY+(mapH-drawnH)/2;
+
+            // Work area background + grid
+            canvas.fillRect(offX,offY,drawnW,drawnH,COL_PANEL3);
+            canvas.drawRect(offX,offY,drawnW,drawnH,COL_BORDER2);
+            for(int gi=1;gi<4;gi++){
+                canvas.drawFastVLine(offX+drawnW*gi/4,offY,drawnH,COL_BORDER);
+                canvas.drawFastHLine(offX,offY+drawnH*gi/4,drawnW,COL_BORDER);
+            }
+
+            // Home corner marker
+            int hx=(_homeCorner==1||_homeCorner==3)?offX+drawnW:offX;
+            int hy=(_homeCorner==0||_homeCorner==1)?offY+drawnH:offY;
+            canvas.fillCircle(hx,hy,2,GREEN);
+
+            // Map machine coords → screen using WORK AREA scale
+            // Same orientation as MODE B (landscape: machY→screenX, machX→screenY)
+            auto waToScreen=[&](float mx,float my,int& sx,int& sy){
+                if(_homeCorner==0){sx=offX+(int)(my*sc);sy=offY+drawnH-(int)(mx*sc);}
+                else if(_homeCorner==1){sx=offX+drawnW-(int)(my*sc);sy=offY+drawnH-(int)(mx*sc);}
+                else if(_homeCorner==2){sx=offX+(int)(my*sc);sy=offY+(int)(mx*sc);}
+                else{sx=offX+drawnW-(int)(my*sc);sy=offY+(int)(mx*sc);}
+            };
+
+            // Draw tool path at work area scale (shows where path sits in work area)
+            if(myPercent>0) vizPathExecuted=(int)vizPath.size()*(int)myPercent/100;
+            int exec=std::min(vizPathExecuted,(int)vizPath.size()-1);
+            int step=std::max(1,(int)vizPath.size()/2000);
+            for(int pi=1;pi<(int)vizPath.size();pi+=step){
+                int x1,y1,x2,y2;
+                waToScreen(vizPath[pi-1].first,vizPath[pi-1].second,x1,y1);
+                waToScreen(vizPath[pi].first,vizPath[pi].second,x2,y2);
+                // Clip to work area rect
+                if(x1>=offX&&x1<offX+drawnW&&y1>=offY&&y1<offY+drawnH)
+                    canvas.drawLine(x1,y1,x2,y2,pi<=exec?CYAN:0x2104);
+            }
+
+            // Executed position dot
+            if(exec>0&&exec<(int)vizPath.size()){
+                int dx,dy;waToScreen(vizPath[exec].first,vizPath[exec].second,dx,dy);
+                canvas.fillCircle(dx,dy,2,GREEN);
+            }
+
+            // Real machine position
+            float machX=(float)myAxes[0]/10000.0f,machY=(float)myAxes[1]/10000.0f;
+            int dotX,dotY; waToScreen(machX,machY,dotX,dotY);
+            canvas.fillCircle(dotX,dotY,2,ORANGE);
+            canvas.drawCircle(dotX,dotY,2,COL_WHITE);
+
+            // Work area dimensions label
+            canvas.setFont(&fonts::Font0);canvas.setTextColor(COL_DIM);
+            canvas.setTextDatum(bottom_right);
+            char wdim[24];snprintf(wdim,sizeof(wdim),"%dx%dmm",_workY,_workX);
+            canvas.drawString(wdim,offX+drawnW-1,offY+drawnH-1);
+
+            // Mode indicator top-left
+            canvas.setTextDatum(top_left);canvas.setTextColor(CYAN);
+            canvas.drawString("WA",VIZ_X+2,VIZ_Y+2);
+
+            // [×] clear button — top-right of viz
+            canvas.fillRoundRect(VIZ_X+VIZ_W-25,VIZ_Y+2,24,18,3,0x6000);
+            canvas.drawRoundRect(VIZ_X+VIZ_W-25,VIZ_Y+2,24,18,3,RED);
+            canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_center);canvas.setTextColor(RED);
+            canvas.drawString("X",VIZ_X+VIZ_W-13,VIZ_Y+11);
+
+        } else if (!vizPath.empty()) {
+            // ── MODE A: Normal path in VIZ area (auto-scaled) ────────────────
             int pad3v=6, mapWv=VIZ_W-2*pad3v, mapHv=VIZ_H-2*pad3v;
 
             // Bounding box of path in machine coords
@@ -752,13 +827,11 @@ private:
             char pdim[24]; snprintf(pdim,sizeof(pdim),"%.0fx%.0fmm",rangeY,rangeX);
             canvas.drawString(pdim,offXv+(int)pathScreenW-1,offYv+(int)pathScreenH-1);
 
-            // Clear [×] button — top-right corner of viz area
-            int xbx=VIZ_X+VIZ_W-16, xby=VIZ_Y+1, xbw=15, xbh=13;
-            canvas.fillRoundRect(xbx,xby,xbw,xbh,2,0x4000);
-            canvas.drawRoundRect(xbx,xby,xbw,xbh,2,COL_BORDER2);
-            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
-            canvas.setTextColor(COL_DIM2);
-            canvas.drawString("x",xbx+xbw/2,xby+xbh/2);
+            // [×] clear button — top-right of viz
+            canvas.fillRoundRect(VIZ_X+VIZ_W-25,VIZ_Y+2,24,18,3,0x6000);
+            canvas.drawRoundRect(VIZ_X+VIZ_W-25,VIZ_Y+2,24,18,3,RED);
+            canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_center);canvas.setTextColor(RED);
+            canvas.drawString("X",VIZ_X+VIZ_W-13,VIZ_Y+11);
 
         } else {
             // ── MODE B: Work area map with real-time position ────────────────
@@ -1847,25 +1920,34 @@ public:
         float cx=0, cy=0; bool isAbs=true;
         for (const auto& ln : lines) {
             const char* p = ln.c_str();
-            while (*p==' ') p++;
-            if (!*p || *p==';' || *p=='(' || *p=='%' || *p=='N' || *p=='n') {
-                // Check for G90/G91 after line number N
-                if (*p=='N'||*p=='n') { while(*p && *p!=' ') p++; while(*p==' ') p++; }
-                else continue;
-            }
-            if ((*p=='G'||*p=='g') && p[1]=='9') {
-                if (p[2]=='0') isAbs=true;
-                else if (p[2]=='1') isAbs=false;
-                continue;
-            }
-            float nx=cx, ny=cy; bool mv=false;
-            for (const char* q=p; *q; q++) {
+            // Skip whitespace, comments, empty lines, line numbers
+            while (*p==' '||*p=='	') p++;
+            if (!*p || *p==';' || *p=='(' || *p=='%') continue;
+            if (*p=='N'||*p=='n') { while(*p&&!isspace(*p)) p++; while(*p==' ') p++; }
+            if (!*p) continue;
+            // Scan all words in line (handles compact: G0X10Y20 and spaced: G0 X10 Y20)
+            float nx=cx, ny=cy; bool hasX=false, hasY=false;
+            const char* q=p;
+            while (*q) {
                 char c=*q;
-                bool atWord=(q==p||*(q-1)==' '||*(q-1)=='	');
-                if ((c=='X'||c=='x')&&atWord){nx=isAbs?strtof(q+1,nullptr):cx+strtof(q+1,nullptr);mv=true;}
-                if ((c=='Y'||c=='y')&&atWord){ny=isAbs?strtof(q+1,nullptr):cy+strtof(q+1,nullptr);mv=true;}
+                if (c=='G'||c=='g') {
+                    int gn=(int)strtol(q+1,nullptr,10);
+                    if (gn==90) isAbs=true;
+                    else if (gn==91) isAbs=false;
+                }
+                if (c=='X'||c=='x') {
+                    char* end; float v=strtof(q+1,&end);
+                    if (end>q+1) { nx=isAbs?v:cx+v; hasX=true; q=end; continue; }
+                }
+                if (c=='Y'||c=='y') {
+                    char* end; float v=strtof(q+1,&end);
+                    if (end>q+1) { ny=isAbs?v:cy+v; hasY=true; q=end; continue; }
+                }
+                q++;
             }
-            if (mv && (nx!=cx || ny!=cy)) { vizPath.push_back({nx,ny}); cx=nx; cy=ny; }
+            if ((hasX||hasY) && (nx!=cx||ny!=cy)) {
+                vizPath.push_back({nx,ny}); cx=nx; cy=ny;
+            }
         }
     }
 
@@ -1932,10 +2014,16 @@ public:
         // DRO screen
         if (_tab == 0) {
             // Clear [×] button — top-right of viz area (clears loaded G-code path)
-            if (!vizPath.empty() && x >= VIZ_X+VIZ_W-16 && x < VIZ_X+VIZ_W
-                && y >= VIZ_Y+1 && y <= VIZ_Y+14) {
-                vizPath.clear(); vizJobName.clear(); vizPathExecuted=0;
-                reDisplay(); return;
+            // Viz area: double-tap = fullscreen toggle, [×] corner = clear path
+            if (x >= VIZ_X && x < VIZ_X+VIZ_W && y >= VIZ_Y && y < VIZ_Y+VIZ_H) {
+                if (!vizPath.empty() && x >= VIZ_X+VIZ_W-26 && y <= VIZ_Y+21) {
+                    vizPath.clear(); vizJobName.clear(); vizPathExecuted=0;
+                    _vizFullscreen=false; markDirty(); return;
+                }
+                uint32_t now2=millis();
+                if (now2-_lastVizTap < 400) { _vizFullscreen=!_vizFullscreen; _lastVizTap=0; }
+                else { _lastVizTap=now2; }
+                markDirty(); return;
             }
             // Mode toggle pills: WPos/MPos and mm/in (top of viz area)
             if (y >= TOP+2 && y <= TOP+12 && x >= DROW+2) {
@@ -2076,40 +2164,30 @@ public:
             }
             // G-code preview overlay touches (full screen)
             if (filePreviewMode) {
-                // Action bar at bottom: [Exit] [Path/G-code] [Run]
-                int abY=NAV_Y-28, abH2=28, bw3=(W-16)/3, by3=abY+3, bh3=22;
+                int abY=NAV_Y-28, bw3=(W-16)/3;
                 if (y >= abY) {
                     if (x < 4+bw3) {
-                        // Exit → back to file list
+                        // Exit
                         filePreviewMode=false; _previewShowPath=false;
-                        reDisplay(); return;
+                        markDirty(); return;
                     }
                     if (x < 8+2*bw3) {
                         // Toggle G-code / Path
-                        if (!vizPath.empty()) { _previewShowPath=!_previewShowPath; reDisplay(); return; }
+                        if (!vizPath.empty()) { _previewShowPath=!_previewShowPath; markDirty(); }
                         return;
                     }
-                    // Run button
+                    // Run
                     {
-                        // Parse gcode XY path
-                        simPath.clear(); simPathIdx = 0;
-                        parseGcodeToVizPath(previewLines, fileList[fileSelected].name);
-                        simPath = vizPath;  // share for sim animation
-                                                simJobName = fileList[fileSelected].name;
-                        if (true) {
-                            std::string path = filePath + "/" + fileList[fileSelected].name;
-                            send_linef("$Localfs/Run=%s", path.c_str());
-                            termLines.push_back({ "> Run: " + simJobName, COL_DIM2 });
-                            _jobSentToFluidNC = true;
-
-
+                        std::string path = filePath + "/" + fileList[fileSelected].name;
+                        simJobName = fileList[fileSelected].name;
+                        send_linef("$Localfs/Run=%s", path.c_str());
+                        termLines.push_back({ "> Run: " + simJobName, COL_DIM2 });
+                        _jobSentToFluidNC = true;
                         filePreviewMode = false; _previewShowPath=false;
-                        _tab = 0; reDisplay(); return;
+                        _tab = 0; markDirty(); return;
                     }
-                    return;
                 }
-                // Scroll in content area (swipe handled by flick, tap scrolls 1 line here)
-                return;  // consume all touches inside preview
+                return;  // consume all touches in preview area
             }
             // (Run handled above in action bar section)
             if (false && fileSelected >= 0 && y >= NAV_Y - 20 && x >= W - 42) {
@@ -2176,7 +2254,6 @@ public:
                 }
             }
         }
-    }  // closes onTouchClick body
     }  // end onTouchClick
 
     void onLeftFlick()  override {}
