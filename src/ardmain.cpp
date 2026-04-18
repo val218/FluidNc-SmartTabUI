@@ -646,87 +646,74 @@ void setup() {
     AppSettings s;
     settings_load(s);
 
-    // Step 2b: Wait for FluidNC connection (65-80%)
-    // Poll fnc_is_connected() — it returns true once status reports arrive
+    // Step 2b: Check FluidNC connection (65-80%)
+    // Poll for up to 3s; if not connected, show status screen but proceed into UI
     {
         drawProgress(66, "Connecting to FluidNC...", 0x065F);
-        // Flush UART and request a status report to trigger connection detection
         update_events();
         request_status_report();
 
         uint32_t connStart = millis();
         bool connected = false;
-        bool shownDisconnect = false;
-        int dotCount = 0;
 
-        while (millis() - connStart < 4000) {
+        while (millis() - connStart < 3000) {
             update_events();
-            dispatch_events();
-
-            if (fnc_is_connected()) {
-                connected = true;
-                break;
+            // Only process UART/model events, NOT dispatch_events (avoids canvas draw)
+            {
+                extern volatile int fnc_term_gen;
+                static int lastGen = -1;
+                if (fnc_term_gen != lastGen) lastGen = fnc_term_gen;
             }
 
+            if (fnc_is_connected()) { connected = true; break; }
+
             uint32_t elapsed = millis() - connStart;
-            int pct = 66 + (int)(elapsed * 14 / 4000);  // 66→80% over 4s
-
-            // Animated dots
-            dotCount = (millis() / 400) % 4;
-            char connLabel[40];
+            int pct = 66 + (int)(elapsed * 14 / 3000);
+            int dotCount = (millis() / 400) % 4;
             const char* dots[] = {"", ".", "..", "..."};
+            char connLabel[40];
             snprintf(connLabel, sizeof(connLabel), "Connecting to FluidNC%s", dots[dotCount]);
-
             drawProgress(pct, connLabel, 0x065F);
-            delay(100);
+            delay(80);
         }
 
         if (!connected) {
-            // Show disconnected screen — keep polling until connected
-            display.fillScreen(0x0000);
-            display.fillRoundRect(20, 60, W-40, 120, 8, 0x2104);
-            display.drawRoundRect(20, 60, W-40, 120, 8, 0xF800);
-
-            // Warning icon
-            display.fillTriangle(W/2, 72, W/2-20, 108, W/2+20, 108, 0xFD20);
-            display.fillRect(W/2-2, 80, 4, 16, 0x0000);
-            display.fillRect(W/2-2, 100, 4, 4, 0x0000);
-
+            // Show disconnected overlay on logo — loop until connected
+            display.fillRoundRect(20, 70, W-40, 100, 8, 0x1082);
+            display.drawRoundRect(20, 70, W-40, 100, 8, 0xF800);
             display.setFont(&fonts::Font2);
             display.setTextDatum(middle_center);
             display.setTextColor(0xF800);
-            display.drawString("NOT CONNECTED", W/2, 122);
-
+            display.drawString("NOT CONNECTED", W/2, 95);
             display.setFont(&fonts::Font0);
             display.setTextColor(0x9D17);
-            display.drawString("FluidNC not responding", W/2, 142);
-            display.drawString("Check UART / power", W/2, 154);
-            display.drawString("Retrying...", W/2, 166);
+            display.drawString("FluidNC not responding", W/2, 114);
+            display.drawString("Check UART connection", W/2, 126);
+            display.drawString("Waiting for FluidNC...", W/2, 140);
 
-            // Keep retrying until connected
+            // Spin until connected — blink dot indicator
             uint32_t retryStart = millis();
             while (!fnc_is_connected()) {
                 update_events();
-                dispatch_events();
                 request_status_report();
-
-                // Blink the "Retrying..." text
-                uint32_t t = millis() - retryStart;
+                // Blink indicator
+                int dot = (millis() / 500) % 4;
+                const char* dots[] = {"   ", ".  ", ".. ", "..."};
                 display.setFont(&fonts::Font0);
                 display.setTextDatum(middle_center);
-                display.setTextColor((t/500)%2 ? 0xFD20 : 0x3186);
-                display.fillRect(W/2-60, 160, 120, 12, 0x0000);
-                display.drawString("Retrying...", W/2, 166);
-                delay(100);
+                display.fillRect(W/2-30, 148, 60, 10, 0x1082);
+                display.setTextColor(0xFD20);
+                display.drawString(dots[dot], W/2, 153);
+                delay(80);
             }
-
-            // Connected! Show brief confirmation
-            display.fillRect(20, 155, W-40, 20, 0x0000);
+            // Connected — show brief success
+            display.fillRoundRect(20, 70, W-40, 100, 8, 0x0841);
+            display.drawRoundRect(20, 70, W-40, 100, 8, 0x07E0);
             display.setFont(&fonts::Font2);
             display.setTextDatum(middle_center);
             display.setTextColor(0x07E0);
-            display.drawString("Connected!", W/2, 165);
-            delay(600);
+            display.drawString("Connected!", W/2, 115);
+            delay(500);
         }
     }
 

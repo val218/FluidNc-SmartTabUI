@@ -1494,6 +1494,43 @@ private:
         for(int vi=drawn;vi<8;vi++) _macroBtns[vi]={0,0,0,0};
     }
 
+    // ── Disconnected overlay ─────────────────────────────────────────────────
+    void drawDisconnectedOverlay() {
+        // Semi-transparent dark overlay
+        for (int y2 = TOP; y2 < NAV_Y; y2 += 2)
+            canvas.drawFastHLine(0, y2, W, 0x0000);
+
+        // Central panel
+        int px=20, py=70, pw=W-40, ph=90;
+        canvas.fillRoundRect(px, py, pw, ph, 8, 0x1082);
+        canvas.drawRoundRect(px, py, pw, ph, 8, 0xF800);
+
+        // Warning triangle
+        canvas.fillTriangle(W/2, py+8, W/2-14, py+34, W/2+14, py+34, 0xFD20);
+        canvas.fillRect(W/2-2, py+13, 4, 11, 0x1082);
+        canvas.fillRect(W/2-2, py+27, 4, 4,  0x1082);
+
+        // Text
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextDatum(middle_center);
+        canvas.setTextColor(0xF800);
+        canvas.drawString("DISCONNECTED", W/2, py+46);
+
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextColor(0x9D17);
+        canvas.drawString("FluidNC not responding", W/2, py+62);
+        canvas.drawString("Check UART connection", W/2, py+74);
+
+        // Blink indicator
+        static uint32_t _blinkT = 0;
+        static bool _blinkOn = true;
+        if (millis() - _blinkT > 500) { _blinkT = millis(); _blinkOn = !_blinkOn; }
+        if (_blinkOn) {
+            canvas.setTextColor(0xFD20);
+            canvas.drawString("Reconnecting...", W/2, py+86);
+        }
+    }
+
     // ── Probe overlay ─────────────────────────────────────────────────────────
     void drawProbeOverlay() {
         canvas.fillRect(0, TOP, W, NAV_Y - TOP, COL_BG);
@@ -1607,6 +1644,14 @@ public:
         if (state == Alarm) _alarmOpen = true;
         else _alarmOpen = false;
         if (state == Idle) { _jobSentToFluidNC = false; }
+        // Reconnection: re-request axis config when coming back online
+        if (old_state == Disconnected && state != Disconnected) {
+            send_line("$axes/count");
+            for (int i=0;i<6;i++) {
+                char cmd[24]; snprintf(cmd,sizeof(cmd),"$axes/%d/name",i);
+                send_line(cmd);
+            }
+        }
         // Job timer
         if (state == Cycle && old_state != Cycle) {
             // Started or resumed
@@ -2175,6 +2220,7 @@ public:
         }
         if (_probeOpen)              drawProbeOverlay();
         if (_alarmOpen || _forceAlarm) drawAlarmOverlay();
+        if (state == Disconnected)    drawDisconnectedOverlay();
         drawNav();
         refreshDisplay();
     }
