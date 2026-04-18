@@ -85,6 +85,7 @@ struct TermLine { std::string txt; int col; };
 static std::vector<TermLine> termLines;
 static int termScroll   = 0;  // 0 = pinned to bottom, >0 = scrolled up by N lines
 static int macroScroll  = 0;  // first visible macro index
+static int _homeScroll  = 0;  // home screen scroll offset
 
 // ── MPG handwheel state ───────────────────────────────────────────────────────
 // Step size switch: gpio16=1mm, gpio4=10mm, neither=0.1mm
