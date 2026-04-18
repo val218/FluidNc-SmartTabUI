@@ -314,6 +314,62 @@ static std::vector<std::string> allFileLines;  // accumulated lines across batch
 static std::string _loadingPath;            // path being batch-loaded
 static int  _loadingBatch = 0;              // next batch start line
 static bool _loadingDone  = false;          // all batches received
+
+// ── LittleFS viz path cache ───────────────────────────────────────────────────
+// Key: /viz/XXXXXXXX.bin where X = CRC32 of (name + size)
+// Format: uint32 count, then count * (float x, float y)
+static bool _vizCacheReady = false;
+
+static uint32_t vizCacheKey(const std::string& name, int size) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (char c : name)  { crc ^= (uint8_t)c; for(int j=0;j<8;j++) crc=(crc>>1)^(0xEDB88320&-(crc&1)); }
+    crc ^= (uint32_t)size;            for(int j=0;j<8;j++) crc=(crc>>1)^(0xEDB88320&-(crc&1));
+    return crc ^ 0xFFFFFFFF;
+}
+
+static bool vizCacheLoad(const std::string& name, int fsize,
+                          std::vector<std::pair<float,float>>& out) {
+    if (!_vizCacheReady) return false;
+    char path[32]; snprintf(path,sizeof(path),"/viz/%08X.bin",vizCacheKey(name,fsize));
+    File f = LittleFS.open(path,"r"); if(!f) return false;
+    uint32_t cnt=0; f.read((uint8_t*)&cnt,4);
+    if(cnt==0||cnt>20000){f.close();return false;}
+    out.clear(); out.reserve(cnt);
+    for(uint32_t i=0;i<cnt;i++){
+        float x,y; f.read((uint8_t*)&x,4); f.read((uint8_t*)&y,4);
+        out.push_back({x,y});
+    }
+    f.close(); return true;
+}
+
+static void vizCacheSave(const std::string& name, int fsize,
+                          const std::vector<std::pair<float,float>>& pts) {
+    if (!_vizCacheReady || pts.empty()) return;
+    LittleFS.mkdir("/viz");
+    char path[32]; snprintf(path,sizeof(path),"/viz/%08X.bin",vizCacheKey(name,fsize));
+    File f = LittleFS.open(path,"w"); if(!f) return;
+    uint32_t cnt=pts.size(); f.write((uint8_t*)&cnt,4);
+    for(auto& p:pts){ f.write((uint8_t*)&p.first,4); f.write((uint8_t*)&p.second,4); }
+    f.close();
+}
+
+static void vizCacheInit() {
+    _vizCacheReady = LittleFS.begin(false);
+    if(!_vizCacheReady) _vizCacheReady = LittleFS.begin(true); // format if needed
+}
+
+// Evict old cache entries if LittleFS >80% full
+static void vizCacheEvictOld() {
+    if(!_vizCacheReady) return;
+    size_t used=LittleFS.usedBytes(), total=LittleFS.totalBytes();
+    if(used < total*8/10) return; // <80% full, ok
+    // Delete oldest file in /viz
+    File dir=LittleFS.open("/viz"); if(!dir) return;
+    File oldest; uint32_t oldTime=UINT32_MAX;
+    File entry=dir.openNextFile();
+    while(entry){ if(!entry.isDirectory()&&entry.getLastWrite()<oldTime){oldTime=entry.getLastWrite();oldest=entry;} entry=dir.openNextFile(); }
+    if(oldest) LittleFS.remove(oldest.path());
+}
 static std::string filePath = "/sd";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1505,6 +1561,7 @@ public:
     void onEntry(void* arg = nullptr) override {
         sprite_offset = { 0, 0 };
         termLines.clear();
+        vizCacheInit();
         // Default axis letters XYZABC
         const char* defLetters = "XYZABC";
         for (int i=0;i<6;i++) _axisLetters[i] = defLetters[i];
@@ -1587,7 +1644,7 @@ public:
     }
 
     void onFileLines(int firstLine, const std::vector<std::string>& lines) override {
-        static const int BATCH = 60;  // FluidNC ShowSome limit per request
+        static const int BATCH = 500; // Try large batch; FluidNC may truncate to its limit
 
         if (firstLine == 0) {
             // First batch — reset accumulator
@@ -1603,7 +1660,7 @@ public:
         // Accumulate into allFileLines
         for (auto& l : lines) allFileLines.push_back(l);
 
-        if ((int)lines.size() >= BATCH && !_loadingPath.empty()) {
+        if ((int)lines.size() >= 60 && !_loadingPath.empty()) {
             // More lines likely available — request next batch
             _loadingBatch = firstLine + (int)lines.size();
             request_file_preview(_loadingPath.c_str(), _loadingBatch, BATCH);
@@ -1613,6 +1670,10 @@ public:
             _loadingBatch = 0;
             if (fileSelected>=0 && fileSelected<(int)fileList.size()) {
                 parseGcodeToVizPath(allFileLines, fileList[fileSelected].name);
+                // Save to LittleFS cache for instant load next time
+                vizCacheEvictOld();
+                vizCacheSave(fileList[fileSelected].name,
+                             fileList[fileSelected].size, vizPath);
             }
         }
 
@@ -1998,13 +2059,22 @@ public:
                             parseGcodeToVizPath(previewLines, fileList[fi].name);
                         } else {
                             std::string path = filePath + "/" + fileList[fi].name;
-                            _loadingPath = path;
-                            _loadingBatch = 0;
-                            allFileLines.clear();
                             vizJobName = fileList[fi].name;
                             vizPathExecuted = 0;
-                            // Request first batch — onFileLines will chain next batches
-                            request_file_preview(path.c_str(), 0, 60);
+                            // Try LittleFS cache first (instant)
+                            int fsize = fileList[fi].size;
+                            if (vizCacheLoad(fileList[fi].name, fsize, vizPath)) {
+                                // Cache hit — viz ready immediately, just need text preview
+                                _loadingPath = "";
+                                _loadingDone = true;
+                                request_file_preview(path.c_str(), 0, 60); // text preview only
+                            } else {
+                                // Cache miss — chain-load from SD
+                                _loadingPath = path;
+                                _loadingBatch = 0;
+                                allFileLines.clear();
+                                request_file_preview(path.c_str(), 0, 500);
+                            }
                         }
                         reDisplay();
                     }
