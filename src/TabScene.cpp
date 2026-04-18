@@ -134,19 +134,19 @@ void tabui_setTheme(int t) {
             COL_AX_X=0x06BF; COL_AX_Y=0x0771; COL_AX_Z=0xFEE8; COL_AX_A=0xDB3F; break;
         case 2:  // Light — white bg, pure black text, vivid dark accents
             COL_BG     = 0xFFFF;  // pure white
-            COL_PANEL  = 0xDF5F;  // light blue  (even rows, panels)
-            COL_PANEL2 = 0xBEBE;  // medium blue (buttons)
-            COL_PANEL3 = 0xEFBF;  // near-white  (odd rows)
-            COL_BORDER = 0x5416;  // dark blue border
-            COL_BORDER2= 0x2AD2;  // darker blue border
+            COL_PANEL  = 0xC71F;  // medium blue-grey (even rows, tint base)
+            COL_PANEL2 = 0xAEBE;  // stronger blue (buttons)
+            COL_PANEL3 = 0xE75F;  // light blue (odd rows)
+            COL_BORDER = 0x4C59;  // strong dark blue border
+            COL_BORDER2= 0x2196;  // darker blue border
             COL_WHITE  = 0x0000;  // pure black  (primary text)
-            COL_WHITE2 = 0x114A;  // very dark blue (secondary text)
-            COL_DIM    = 0x2A2D;  // dark slate  (dim labels)
-            COL_DIM2   = 0x3AF0;  // medium dark (minor text)
+            COL_WHITE2 = 0x0D0D;  // very dark blue-grey (secondary text)
+            COL_DIM    = 0x2104;  // dark grey (dim labels)
+            COL_DIM2   = 0x31A6;  // medium dark (minor text)
             COL_AX_X   = 0xC800;  // dark red    X
-            COL_AX_Y   = 0x04A0;  // dark green  Y
-            COL_AX_Z   = 0xCB20;  // dark orange Z
-            COL_AX_A   = 0x8819;  // dark purple A
+            COL_AX_Y   = 0x0480;  // dark green  Y
+            COL_AX_Z   = 0xCA80;  // dark orange Z
+            COL_AX_A   = 0x780F;  // dark purple A
             break;
         default: // Dark — original deep blue-grey
             COL_BG=0x0862; COL_PANEL=0x0883; COL_PANEL2=0x10A3; COL_PANEL3=0x0863;
@@ -404,14 +404,14 @@ static void strokeR(int x, int y, int w, int h, int r, int col) {
 static void tintStrokeR(int x, int y, int w, int h, int r, int fillCol, int strokeCol, int alpha = 30) {
     int tint;
     if (_currentTheme == 2) {
-        // Light theme: blend colour toward COL_BG (light) instead of toward black
-        int br = (COL_BG >> 11) & 0x1F;
-        int bg = (COL_BG >> 5)  & 0x3F;
-        int bb2= (COL_BG >> 0)  & 0x1F;
+        // Light theme: blend colour toward COL_PANEL (medium blue-grey) for visible tints
+        int br = (COL_PANEL >> 11) & 0x1F;
+        int bg = (COL_PANEL >> 5)  & 0x3F;
+        int bb2= (COL_PANEL >> 0)  & 0x1F;
         int fr = (fillCol >> 11) & 0x1F;
         int fg = (fillCol >> 5)  & 0x3F;
         int fb = (fillCol >> 0)  & 0x1F;
-        int a = alpha * 6;  // boost alpha so tints are clearly visible on white bg
+        int a = alpha * 5;
         if (a > 255) a = 255;
         int rr = br + (fr - br) * a / 255;
         int gg = bg + (fg - bg) * a / 255;
