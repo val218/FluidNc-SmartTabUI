@@ -571,8 +571,6 @@ static void mpgTask(void*) {
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
-    // Disable task watchdog during setup to prevent spurious resets
-    esp_task_wdt_init(30, false);  // 30s timeout, no panic
     init_system();
     force_landscape();
 
