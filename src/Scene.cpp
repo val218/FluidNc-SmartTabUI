@@ -57,50 +57,51 @@ void dispatch_button(bool pressed, int button) {
 }
 
 void dispatch_touch() {
-    // P6 enable button touch gating (modes: 0=EnableGate, 1=TouchOnly, 2=JogOnly, 3=MacroBtn, 4=Disabled)
-    // Gates touch in EnableGate(0) and TouchOnly(1) modes only
-    // Simulation mode always allows touch
-    bool touchGated = !simMode_active() && tabui_touchGated();
-    if (touchGated) {
-        // Always allow touch in the nav bar area (y >= NAV_Y) for Hold/Abort/tabs
-        touch.update(millis());
-        auto tg = touch.getDetail();
-        if (!tg.wasClicked()) return;
-        // NAV_Y is 206 on 240px screen — allow clicks below that
-        if (tg.y < 206) return;
-        // Fall through to process nav bar touch even when gated
-    }
-    static m5::touch_state_t last_touch_state = {};
     auto t = touch.getDetail();
-    if (t.state != last_touch_state) {
-        last_touch_state = t.state;
-        touchX = t.x - sprite_offset.x;
-        touchY = t.y - sprite_offset.y;
-        int delta;
-        if (screen_encoder(t.x, t.y, delta) && t.state == m5::touch_state_t::touch) {
-            current_scene->onEncoder(delta);
-            return;
+
+    // Always capture coordinates
+    touchX = t.x - sprite_offset.x;
+    touchY = t.y - sprite_offset.y;
+
+    // P6 enable button touch gating — allow nav bar (y>=206) through regardless
+    bool touchGated = !simMode_active() && tabui_touchGated();
+    if (touchGated && touchY < 206) {
+        // Gated area: only process clicks, not press/release/flick
+        if (t.wasClicked()) {
+            current_scene->onTouchClick();
         }
-        int button;
-        if (screen_button_touched(t.state == m5::touch_state_t::touch, t.x, t.y, button)) {
-            if (t.state == m5::touch_state_t::touch)       dispatch_button(true,  button);
-            else if (t.state == m5::touch_state_t::none)   dispatch_button(false, button);
-            return;
-        }
-        if (touchX < 0) return;
-        if (t.state == m5::touch_state_t::touch)         current_scene->onTouchPress();
-        else if (t.state == m5::touch_state_t::none)     current_scene->onTouchRelease();
-        if (t.wasClicked())      current_scene->onTouchClick();
-        else if (t.wasHold())    current_scene->onTouchHold();
-        else if (t.state == m5::touch_state_t::flick_end) {
-            touchDeltaX = t.distanceX();
-            touchDeltaY = t.distanceY();
-            int absX = abs(touchDeltaX), absY = abs(touchDeltaY);
-            if      (absY > 60 && absX < absY * 2)  touchDeltaY > 0 ? current_scene->onDownFlick()  : current_scene->onUpFlick();
-            else if (absX > 60 && absY < absX * 2)  touchDeltaX > 0 ? current_scene->onRightFlick() : current_scene->onLeftFlick();
-            else current_scene->onTouchFlick();
-        }
+        return;
     }
+
+    // Process all touch events without state-change guard
+    // wasClicked/wasHold/flick_end are edge-triggered by the M5 touch library
+    if (touchX < 0) return;
+
+    int delta;
+    if (screen_encoder(t.x, t.y, delta) && t.state == m5::touch_state_t::touch) {
+        current_scene->onEncoder(delta);
+        return;
+    }
+    int button;
+    if (screen_button_touched(t.state == m5::touch_state_t::touch, t.x, t.y, button)) {
+        if (t.state == m5::touch_state_t::touch)     dispatch_button(true,  button);
+        else if (t.state == m5::touch_state_t::none) dispatch_button(false, button);
+        return;
+    }
+
+    if (t.wasClicked())   { current_scene->onTouchClick();   return; }
+    if (t.wasHold())      { current_scene->onTouchHold();    return; }
+    if (t.state == m5::touch_state_t::flick_end) {
+        touchDeltaX = t.distanceX();
+        touchDeltaY = t.distanceY();
+        int absX = abs(touchDeltaX), absY = abs(touchDeltaY);
+        if      (absY > 40 && absX < absY * 2)  touchDeltaY > 0 ? current_scene->onDownFlick()  : current_scene->onUpFlick();
+        else if (absX > 40 && absY < absX * 2)  touchDeltaX > 0 ? current_scene->onRightFlick() : current_scene->onLeftFlick();
+        else current_scene->onTouchFlick();
+        return;
+    }
+    if (t.state == m5::touch_state_t::touch)     current_scene->onTouchPress();
+    else if (t.state == m5::touch_state_t::none) current_scene->onTouchRelease();
 }
 
 ActionHandler action = nullptr;

@@ -475,7 +475,7 @@ private:
 
     // ── nav bar ──────────────────────────────────────────────────────────────
     void navTxt(const char* s, int x, int y, int col) {
-        canvas.setFont(&fonts::Font4);   // 14x18 bitmap — larger, readable
+        canvas.setFont(&fonts::Font2);   // 10x12 bitmap — compact, not bold
         canvas.setTextDatum(middle_center);
         canvas.setTextColor(col);
         canvas.drawString(s, x, y);
