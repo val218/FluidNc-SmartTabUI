@@ -2134,7 +2134,8 @@ public:
                 }
             }
         }
-    }
+    }  // closes onTouchClick body
+    }  // end onTouchClick
 
     void onLeftFlick()  override {}
     void onRightFlick() override {}
