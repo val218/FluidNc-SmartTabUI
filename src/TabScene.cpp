@@ -132,21 +132,21 @@ void tabui_setTheme(int t) {
             COL_BORDER=0x5B2E; COL_BORDER2=0x73D1; COL_DIM=0x94D5; COL_DIM2=0xB5D9;
             COL_WHITE=0xE75E; COL_WHITE2=0xC65A;
             COL_AX_X=0x06BF; COL_AX_Y=0x0771; COL_AX_Z=0xFEE8; COL_AX_A=0xDB3F; break;
-        case 2:  // Light — clean whites, dark vibrant accents
-            COL_BG     = 0xF7BF;  // near-white with blue tint
-            COL_PANEL  = 0xD71E;  // light blue-grey  (alternating even rows)
-            COL_PANEL2 = 0xBE9D;  // medium blue-grey (buttons, headers)
-            COL_PANEL3 = 0xE75E;  // pale blue         (alternating odd rows)
-            COL_BORDER = 0x7D19;  // clear blue border
-            COL_BORDER2= 0x43D6;  // strong dark blue border
-            COL_DIM    = 0x3ACF;  // dark slate  (dim labels)
-            COL_DIM2   = 0x1926;  // very dark   (secondary text)
-            COL_WHITE  = 0x0063;  // near-black  (primary text)
-            COL_WHITE2 = 0x19EB;  // dark blue-grey (secondary text)
-            COL_AX_X   = 0xC800;  // vivid red   X
-            COL_AX_Y   = 0x0500;  // vivid green Y
-            COL_AX_Z   = 0xB2C0;  // vivid orange Z
-            COL_AX_A   = 0x7816;  // vivid purple A
+        case 2:  // Light — white bg, pure black text, vivid dark accents
+            COL_BG     = 0xFFFF;  // pure white
+            COL_PANEL  = 0xDF5F;  // light blue  (even rows, panels)
+            COL_PANEL2 = 0xBEBE;  // medium blue (buttons)
+            COL_PANEL3 = 0xEFBF;  // near-white  (odd rows)
+            COL_BORDER = 0x5416;  // dark blue border
+            COL_BORDER2= 0x2AD2;  // darker blue border
+            COL_WHITE  = 0x0000;  // pure black  (primary text)
+            COL_WHITE2 = 0x114A;  // very dark blue (secondary text)
+            COL_DIM    = 0x2A2D;  // dark slate  (dim labels)
+            COL_DIM2   = 0x3AF0;  // medium dark (minor text)
+            COL_AX_X   = 0xC800;  // dark red    X
+            COL_AX_Y   = 0x04A0;  // dark green  Y
+            COL_AX_Z   = 0xCB20;  // dark orange Z
+            COL_AX_A   = 0x8819;  // dark purple A
             break;
         default: // Dark — original deep blue-grey
             COL_BG=0x0862; COL_PANEL=0x0883; COL_PANEL2=0x10A3; COL_PANEL3=0x0863;
@@ -411,7 +411,7 @@ static void tintStrokeR(int x, int y, int w, int h, int r, int fillCol, int stro
         int fr = (fillCol >> 11) & 0x1F;
         int fg = (fillCol >> 5)  & 0x3F;
         int fb = (fillCol >> 0)  & 0x1F;
-        int a = alpha * 5;  // boost alpha so tints are clearly visible on light bg
+        int a = alpha * 6;  // boost alpha so tints are clearly visible on white bg
         if (a > 255) a = 255;
         int rr = br + (fr - br) * a / 255;
         int gg = bg + (fg - bg) * a / 255;
@@ -1538,9 +1538,9 @@ private:
             int col = COL_DIM2;
             // Use theme-aware colours — light theme needs darker text on light bg
             bool lightTheme = (_currentTheme == 2);
-            int tGreen  = lightTheme ? 0x0320 : GREEN;   // dark green on light
-            int tCyan   = lightTheme ? 0x0290 : CYAN;    // dark cyan on light
-            int tYellow = lightTheme ? 0x8400 : YELLOW;  // dark yellow/brown on light
+            int tGreen  = lightTheme ? 0x0400 : GREEN;   // dark green on white
+            int tCyan   = lightTheme ? 0x0212 : CYAN;    // dark teal on white
+            int tYellow = lightTheme ? 0x8200 : YELLOW;  // dark gold on white
             if (line[0]=='<') col=tGreen;
             else if (line[0]=='[') col=tCyan;
             else if (line[0]=='e'||line[0]=='E'||line[0]=='A') col=RED;
