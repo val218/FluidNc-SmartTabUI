@@ -310,6 +310,10 @@ static std::string vizJobName;              // filename shown on DRO viz
 static int  vizPathExecuted  = 0;           // segments drawn as "executed" (green)
 static int  previewScroll   = 0;           // first visible preview line
 static int  previewFirstLine = 0;           // line offset in file
+static std::vector<std::string> allFileLines;  // accumulated lines across batches
+static std::string _loadingPath;            // path being batch-loaded
+static int  _loadingBatch = 0;              // next batch start line
+static bool _loadingDone  = false;          // all batches received
 static std::string filePath = "/sd";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1583,21 +1587,41 @@ public:
     }
 
     void onFileLines(int firstLine, const std::vector<std::string>& lines) override {
-        // Parse all lines into viz path (regardless of how many lines received)
-        if (fileSelected>=0 && fileSelected<(int)fileList.size()) {
-            if ((int)lines.size() > (int)vizPath.size() || vizPath.empty())
-                parseGcodeToVizPath(lines, fileList[fileSelected].name);
-        }
-        // Use first 60 lines for the text preview panel
+        static const int BATCH = 60;  // FluidNC ShowSome limit per request
+
         if (firstLine == 0) {
-            previewLines.clear();
-            int previewCount = std::min((int)lines.size(), 60);
-            for (int i = 0; i < previewCount; i++)
-                previewLines.push_back(lines[i]);
+            // First batch — reset accumulator
+            allFileLines.clear();
+            _loadingDone = false;
+            // Set text preview from first batch
+            previewLines = lines;
             previewFirstLine = 0;
             previewScroll = 0;
             filePreviewMode = true;
         }
+
+        // Accumulate into allFileLines
+        for (auto& l : lines) allFileLines.push_back(l);
+
+        if ((int)lines.size() >= BATCH && !_loadingPath.empty()) {
+            // More lines likely available — request next batch
+            _loadingBatch = firstLine + (int)lines.size();
+            request_file_preview(_loadingPath.c_str(), _loadingBatch, BATCH);
+        } else {
+            // End of file reached — parse full accumulated path
+            _loadingDone = true;
+            _loadingBatch = 0;
+            if (fileSelected>=0 && fileSelected<(int)fileList.size()) {
+                parseGcodeToVizPath(allFileLines, fileList[fileSelected].name);
+            }
+        }
+
+        // Update viz path as we accumulate (progressive)
+        if (!allFileLines.empty() && fileSelected>=0 && fileSelected<(int)fileList.size()) {
+            if ((int)allFileLines.size() > (int)vizPath.size())
+                parseGcodeToVizPath(allFileLines, fileList[fileSelected].name);
+        }
+
         if (_tab == 2) reDisplay();
     }
 
@@ -1689,15 +1713,11 @@ public:
             } else {
                 fileScroll = std::max(0, fileScroll + delta);
             }
-        } else if (_tab == 2) {
+        } else if (_tab == 3) {
             termScroll = std::max(0, termScroll - delta);
-            int cmdY      = NAV_Y - CMD_H;
-            int outH      = cmdY - TOP - 4;
-            int lh2       = 12;
-            int maxL      = (outH - 4) / lh2;
-            int maxScroll = std::max(0, fnc_term_count() - maxL);
+            int maxScroll = std::max(0, fnc_term_count() - ((NAV_Y-CMD_H-TOP-4-2)/13));
             termScroll    = std::min(termScroll, maxScroll);
-        } else if (_tab == 2) {
+        } else if (_tab == 4) {
             macroScroll = std::max(0, macroScroll + delta);
         }
         reDisplay();  // always redraw so header arrow is immediate on any tab
@@ -1978,10 +1998,13 @@ public:
                             parseGcodeToVizPath(previewLines, fileList[fi].name);
                         } else {
                             std::string path = filePath + "/" + fileList[fi].name;
-                            // Request full file for both text preview and path viz
-                            request_file_preview(path.c_str(), 0, 5000);
+                            _loadingPath = path;
+                            _loadingBatch = 0;
+                            allFileLines.clear();
                             vizJobName = fileList[fi].name;
                             vizPathExecuted = 0;
+                            // Request first batch — onFileLines will chain next batches
+                            request_file_preview(path.c_str(), 0, 60);
                         }
                         reDisplay();
                     }
@@ -2045,43 +2068,8 @@ public:
 
         // Terminal screen
         // Probe screen touches (tab 2)
-        if (_tab == 2) {
-            int pad=8, gap=6, y=TOP+4;
-            // WCS selector
-            int bw=(W-pad*2-4*5)/6;
-            for(int i=0;i<6;i++){
-                int bx=pad+(bw+5)*i;
-                if((x>=bx&&x<bx+bw&&y>=y&&y<y+16)){ _wcsNum=i+1;
-                    char cmd[16]; snprintf(cmd,sizeof(cmd),"G%d",53+_wcsNum);
-                    send_line(cmd); reDisplay(); return; }
-            }
-            y+=26;
-            // Axis zero buttons
-            int zbw=(W-pad*2-3*gap)/4;
-            const char* zeroCmds[]={"G10 L20 P0 X0","G10 L20 P0 Y0","G10 L20 P0 Z0","G10 L20 P0 X0 Y0 Z0"};
-            for(int i=0;i<4;i++){
-                int bx=pad+(zbw+gap)*i;
-                if((x>=bx&&x<bx+zbw&&y>=y&&y<y+20)){
-                    send_line(zeroCmds[i]);
-                    fnc_term_inject((std::string("> ")+zeroCmds[i]).c_str());
-                    reDisplay(); return;
-                }
-            }
-            y+=30;
-            // Probe operations
-            const char* probeCmds[]={"G38.2 Z-50 F100","G38.2 Z-50 F100","G38.2 X-50 F100","G38.2 Y-50 F100","G38.2 X-25 F100","G38.2 X-25 F100"};
-            for(int i=0;i<6;i++){
-                int oy=y+i*25;
-                if(oy+22>NAV_Y-4) break;
-                if((x>=8&&x<8+W-16&&y>=oy&&y<oy+22)){
-                    send_line(probeCmds[i]);
-                    fnc_term_inject((std::string("> ")+probeCmds[i]).c_str());
-                    reDisplay(); return;
-                }
-            }
-        }
 
-        if (_tab == 2) {
+        if (_tab == 3) {
             // Top row: Soft Reset
             if (y>=TOP && y<TOP+22) {
                 fnc_realtime((realtime_cmd_t)0x18);
@@ -2100,16 +2088,35 @@ public:
         }
 
         // Macros screen — _macroBtns maps visible slots to MACROS[macroScroll+vi]
-        if (_tab == 2) {
+        if (_tab == 4) {
+            // Spindle sub-menu open
+            if (_spindleMenuOpen) {
+                int sy=TOP+20, sbh=26, spad=6, sbw=W-12;
+                for(int ci=0;ci<N_SPINDLE;ci++){
+                    if(y>=sy&&y<sy+sbh&&x>=spad&&x<spad+sbw){
+                        send_line(SPINDLE_CMDS[ci]);
+                        fnc_term_inject((std::string("> ")+SPINDLE_CMDS[ci]).c_str());
+                        _spindleMenuOpen=false; reDisplay(); return;
+                    }
+                    sy+=sbh+4;
+                }
+                _spindleMenuOpen=false; reDisplay(); return;
+            }
+            // Main macro list
             for (int vi = 0; vi < 8; vi++) {
                 if (_macroBtns[vi].w == 0) break;
                 if (hit(_macroBtns[vi], x, y)) {
-                    int mi = macroScroll + vi;
+                    int itemIdx = macroScroll + vi;
+                    if (itemIdx == 0) {
+                        _spindleMenuOpen=true; reDisplay(); return;
+                    }
+                    int mi = itemIdx - 1;
                     if (mi < (int)MACROS.size() && !MACROS[mi].cmd.empty()) {
                         send_line(MACROS[mi].cmd.c_str());
-                        fnc_term_inject((std::string("> ") + MACROS[mi].cmd).c_str());
-                        reDisplay(); return;
+                        fnc_term_inject((std::string("> ")+MACROS[mi].cmd).c_str());
+                        reDisplay();
                     }
+                    return;
                 }
             }
         }
@@ -2120,13 +2127,13 @@ public:
     void onUpFlick() override {
         if (_tab == 1) { _homeScroll = std::max(0, _homeScroll - 20); reDisplay(); }
         if (_tab == 2 && filePreviewMode) { previewScroll = std::max(0, previewScroll - 5); reDisplay(); }
-        if (_tab == 2) { termScroll = std::max(0, termScroll - 5); reDisplay(); }
+        if (_tab == 3) { termScroll = std::max(0, termScroll - 5); reDisplay(); }
         if (_tab == 4) { if(_spindleMenuOpen){_spindleMenuOpen=false;}else{macroScroll=std::max(0,macroScroll-2);} reDisplay(); }
     }
     void onDownFlick() override {
         if (_tab == 1) { _homeScroll += 20; reDisplay(); }
         if (_tab == 2 && filePreviewMode) { previewScroll += 5; reDisplay(); }
-        if (_tab == 2) {
+        if (_tab == 3) {
             termScroll += 5;
             int cmdY  = NAV_Y - CMD_H;
             int outH  = cmdY - TOP - 4;
