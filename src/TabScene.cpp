@@ -377,6 +377,7 @@ private:
     int  _homePressedId = -1;  // which home button was last pressed (-1=none)
     uint32_t _homePressTime = 0;  // when it was pressed
     bool _previewShowPath = false;  // false=gcode text, true=path viz
+    bool _spindleMenuOpen = false;  // spindle sub-menu open in macros tab
     Rect _unlockBtn;
     Rect _probeClose;
     Rect _probeRows[N_PROBE_OPTS];
@@ -422,16 +423,20 @@ private:
             hdrTxt("STP", 61, 10, RED);
         }
 
-        // ── RIGHT: ◄► EN TX RX — fixed slots ────────────────────────────────
-        // RX = W-2, TX = W-20, EN = W-38, ◄► = W-56 (left of EN)
+        // ── RIGHT: EN ◄► TX RX — EN leftmost, arrows next to it right side ──
+        // Slots: EN=W-74, ◄►=W-56..W-40, TX=W-34, RX=W-18
         {
             static uint32_t lastTx=0,lastRx=0,txFlash=0,rxFlash=0;
             uint32_t now2 = millis();
-            if (fnc_tx_count!=lastTx){lastTx=fnc_tx_count;txFlash=now2;}
-            if (fnc_rx_count!=lastRx){lastRx=fnc_rx_count;rxFlash=now2;}
-            bool txOn=(now2-txFlash)<80, rxOn=(now2-rxFlash)<80;
+            bool txAct=(fnc_tx_count!=lastTx); if(txAct){lastTx=fnc_tx_count;txFlash=now2;}
+            bool rxAct=(fnc_rx_count!=lastRx); if(rxAct){lastRx=fnc_rx_count;rxFlash=now2;}
+            // Flash: bright for 120ms then off — blink effect
+            bool txOn=((now2-txFlash)<120), rxOn=((now2-rxFlash)<120);
 
-            // ◄► direction arrows — always in slot left of EN
+            // EN — leftmost of the right cluster
+            hdrTxt("EN", W-74, 10, mpgEnable?GREEN:COL_DIM, middle_right);
+
+            // ◄► direction arrows — immediately right of EN
             {
                 static const int axCols[] = { COL_AX_X, COL_AX_Y, COL_AX_Z, COL_AX_A };
                 int ac = (mpgAxis >= 0) ? axCols[mpgAxis] : COL_WHITE2;
@@ -448,12 +453,16 @@ private:
                 drawTri(W-42, true,  active&&mpgLastDir>0 ? ac : COL_DIM);
             }
 
-            // EN
-            hdrTxt("EN", W-38, 10, mpgEnable?GREEN:COL_DIM, middle_right);
+            // TX — flashes orange when data sent
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_right);
+            if(txOn){ canvas.fillRoundRect(W-36,3,16,14,2,0x3200); }
+            canvas.setTextColor(txOn?ORANGE:COL_DIM);
+            canvas.drawString("TX", W-28, 10);
 
-            // TX  RX
-            hdrTxt("TX", W-20, 10, txOn?ORANGE:COL_DIM, middle_right);
-            hdrTxt("RX", W-2,  10, rxOn?GREEN:COL_DIM,  middle_right);
+            // RX — flashes green when data received
+            if(rxOn){ canvas.fillRoundRect(W-20,3,18,14,2,0x0320); }
+            canvas.setTextColor(rxOn?GREEN:COL_DIM);
+            canvas.drawString("RX", W-10, 10);
         }
 
         // ── CENTRE: tab name or JOG label ────────────────────────────────────
@@ -518,7 +527,7 @@ private:
                 canvas.fillRect(x, NAV_Y, w, BOT, 0x0019);
                 canvas.fillRect(x, NAV_Y, w, 3, BLUE);
             }
-            if (i > 0) vline(x, NAV_Y + 5, BOT - 10, COL_BORDER);
+            if (i > 0 && i < N_TABS) vline(x, NAV_Y + 5, BOT - 10, COL_BORDER);
             int col = (i == _tab) ? COL_WHITE : COL_WHITE2;
             navTxt(TAB_LABELS[i], x + w/2, NAV_Y + BOT/2, col);
         }
@@ -1240,18 +1249,13 @@ private:
         int outY  = sRowY + sRowH + 1;
         int outH  = qRowY - outY - 1;
 
-        // ── Top row: Spindle + Coolant ───────────────────────────────────────
+        // ── Top row: Soft Reset button ───────────────────────────────────────
         canvas.fillRect(0, sRowY, W, sRowH, COL_PANEL2);
         hline(0, sRowY + sRowH, W, COL_BORDER);
-        int scmdW = (W - 8 - (N_SPINDLE-1)*3) / N_SPINDLE;
-        for (int ci = 0; ci < N_SPINDLE; ci++) {
-            int bx = 4 + ci*(scmdW+3);
-            int col2 = (ci<2)?GREEN:(ci==2)?RED:(ci==3)?CYAN:COL_DIM2;
-            tintStrokeR(bx, sRowY+2, scmdW, sRowH-4, 3, col2, col2, 25);
-            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
-            canvas.setTextColor(col2);
-            canvas.drawString(SPINDLE_LBLS[ci], bx+scmdW/2, sRowY+sRowH/2);
-        }
+        tintStrokeR(4, sRowY+2, W-8, sRowH-4, 3, RED, RED, 25);
+        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(RED);
+        canvas.drawString("Soft Reset (Ctrl-X)", W/2, sRowY+sRowH/2);
 
         // ── Terminal output area ─────────────────────────────────────────────
         canvas.fillRect(0, outY, W, outH, COL_PANEL3);
@@ -1303,80 +1307,97 @@ private:
 
     // ── Macros screen ─────────────────────────────────────────────────────────
     void drawMacrosScreen() {
-        int pad=6, gap=4, bh=38;
+        // Spindle sub-menu overlay
+        if (_spindleMenuOpen) {
+            canvas.fillRect(0,TOP,W,NAV_Y-TOP,COL_BG);
+            canvas.fillRect(0,TOP,W,16,COL_PANEL);
+            hline(0,TOP+16,W,COL_BORDER);
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(0xF81F);
+            canvas.drawString("Spindle / Coolant",W/2,TOP+8);
+            int sy=TOP+20, sbh=26, sbw=W-12, spad=6;
+            for(int ci=0;ci<N_SPINDLE;ci++){
+                int col2=(ci<2)?GREEN:(ci==2)?RED:(ci==3)?CYAN:COL_DIM2;
+                tintStrokeR(spad,sy,sbw,sbh,3,col2,col2,25);
+                canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+                canvas.setTextColor(col2);
+                canvas.drawString(SPINDLE_LBLS[ci],W/2,sy+sbh/2);
+                sy+=sbh+4;
+            }
+            // Close button
+            tintStrokeR(spad,sy+4,sbw,sbh,3,COL_BORDER2,COL_BORDER,40);
+            canvas.setTextColor(COL_DIM2);
+            canvas.drawString("Close",W/2,sy+4+sbh/2);
+            return;
+        }
+
+        int pad=6, gap=3, bh=40;
         int avH=NAV_Y-TOP-pad;
-        int visible=std::min((int)MACROS.size(), avH/(bh+gap));
-        int maxScroll=std::max(0,(int)MACROS.size()-visible);
+
+        // Total items = 1 (spindle) + MACROS.size()
+        int totalItems=1+(int)MACROS.size();
+        int visible=avH/(bh+gap);
+        int maxScroll=std::max(0,totalItems-visible);
         macroScroll=std::max(0,std::min(macroScroll,maxScroll));
 
         // Scroll bar
-        if((int)MACROS.size()>visible){
+        if(totalItems>visible){
             int trackH=avH;
-            int thumbH=std::max(8,trackH*visible/(int)MACROS.size());
+            int thumbH=std::max(8,trackH*visible/totalItems);
             int thumbY=TOP+pad+(trackH-thumbH)*macroScroll/std::max(1,maxScroll);
             canvas.fillRect(W-4,TOP+pad,4,trackH,COL_BORDER);
             canvas.fillRect(W-4,thumbY,4,thumbH,COL_DIM2);
         }
 
         int bw=W-2*pad-6;
-        for(int vi=0;vi<visible;vi++){
-            int mi=macroScroll+vi;
+        int drawn=0;
+        for(int vi=0;vi<visible&&(macroScroll+vi)<totalItems;vi++){
+            int itemIdx=macroScroll+vi;
             int by=TOP+pad+vi*(bh+gap);
             int rh=std::min(bh,NAV_Y-by-2);
             if(rh<12) break;
             _macroBtns[vi]={pad,by,bw,rh};
+            drawn++;
 
-            bool empty=MACROS[mi].cmd.empty();
-            int mcol=empty?COL_DIM:MACROS[mi].col;
-
-            // Background — lit up if this is the P6 macro
-            bool isP6macro=(_enableMode==3 && mi==_enableMacro);
-            if(isP6macro){
-                canvas.fillRoundRect(pad,by,bw,rh,4,0x0019);
-                canvas.drawRoundRect(pad,by,bw,rh,4,mcol);
-            } else {
+            if(itemIdx==0){
+                // Spindle entry
                 canvas.fillRoundRect(pad,by,bw,rh,4,COL_PANEL2);
-                canvas.drawRoundRect(pad,by,bw,rh,4,COL_BORDER2);
-            }
-
-            // Left colour bar
-            canvas.fillRect(pad+1,by+2,5,rh-4,mcol);
-
-            // Index number
-            char idx2[4]; snprintf(idx2,sizeof(idx2),"%d",mi+1);
-            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
-            canvas.setTextColor(mcol);
-            canvas.drawString(idx2,pad+16,by+rh/2);
-
-            // Macro name — Font2 for readability
-            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
-            canvas.setTextColor(empty?COL_DIM:COL_WHITE);
-            canvas.drawString(MACROS[mi].name.c_str(),pad+28,by+rh*36/100);
-
-            // Command preview — Font0 below name
-            if(!empty){
-                std::string preview=MACROS[mi].cmd.substr(0,32);
+                canvas.drawRoundRect(pad,by,bw,rh,4,0xF81F);
+                canvas.fillRect(pad+1,by+2,5,rh-4,0xF81F);
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+                canvas.setTextColor(0xF81F);
+                canvas.drawString("S",pad+16,by+rh/2);
+                canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
+                canvas.setTextColor(COL_WHITE);
+                canvas.drawString("Spindle / Coolant",pad+28,by+rh*36/100);
                 canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
                 canvas.setTextColor(COL_DIM2);
-                canvas.drawString(preview.c_str(),pad+28,by+rh*70/100);
+                canvas.drawString("CW / CCW / Stop / Flood / M-off",pad+28,by+rh*70/100);
+                canvas.setTextDatum(middle_right);
+                canvas.setTextColor(0xF81F);
+                canvas.drawString("▶",pad+bw-4,by+rh/2);
             } else {
+                int mi=itemIdx-1;
+                bool empty=MACROS[mi].cmd.empty();
+                int mcol=empty?COL_DIM:MACROS[mi].col;
+                bool isP6=(_enableMode==3&&mi==_enableMacro);
+                if(isP6){ canvas.fillRoundRect(pad,by,bw,rh,4,0x0019); canvas.drawRoundRect(pad,by,bw,rh,4,mcol);}
+                else{ canvas.fillRoundRect(pad,by,bw,rh,4,COL_PANEL2); canvas.drawRoundRect(pad,by,bw,rh,4,COL_BORDER2);}
+                canvas.fillRect(pad+1,by+2,5,rh-4,mcol);
+                char idx2[4]; snprintf(idx2,sizeof(idx2),"%d",mi+1);
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+                canvas.setTextColor(mcol);
+                canvas.drawString(idx2,pad+16,by+rh/2);
+                canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
+                canvas.setTextColor(empty?COL_DIM:COL_WHITE);
+                canvas.drawString(MACROS[mi].name.c_str(),pad+28,by+rh*36/100);
                 canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
-                canvas.setTextColor(COL_DIM);
-                canvas.drawString("(empty)",pad+28,by+rh*70/100);
-            }
-
-            // State badge right side
-            if(state==Cycle && _p6MacroFire && mi==_enableMacro){
-                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_right);
-                canvas.setTextColor(GREEN);
-                canvas.drawString("RUNNING",pad+bw-4,by+rh/2);
-            } else if(isP6macro){
-                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_right);
-                canvas.setTextColor(CYAN);
-                canvas.drawString("P6 BTN",pad+bw-4,by+rh/2);
+                canvas.setTextColor(empty?COL_DIM:COL_DIM2);
+                canvas.drawString(empty?"(empty)":MACROS[mi].cmd.substr(0,30).c_str(),pad+28,by+rh*70/100);
+                if(isP6){ canvas.setTextDatum(middle_right); canvas.setTextColor(CYAN); canvas.drawString("P6",pad+bw-4,by+rh/2);}
             }
         }
-        for(int vi=visible;vi<8;vi++) _macroBtns[vi]={0,0,0,0};
+        for(int vi=drawn;vi<8;vi++) _macroBtns[vi]={0,0,0,0};
     }
 
     // ── Probe overlay ─────────────────────────────────────────────────────────
@@ -1619,7 +1640,11 @@ public:
         for (const auto& ln : lines) {
             const char* p = ln.c_str();
             while (*p==' ') p++;
-            if (!*p || *p==';' || *p=='(') continue;
+            if (!*p || *p==';' || *p=='(' || *p=='%' || *p=='N' || *p=='n') {
+                // Check for G90/G91 after line number N
+                if (*p=='N'||*p=='n') { while(*p && *p!=' ') p++; while(*p==' ') p++; }
+                else continue;
+            }
             if ((*p=='G'||*p=='g') && p[1]=='9') {
                 if (p[2]=='0') isAbs=true;
                 else if (p[2]=='1') isAbs=false;
@@ -1987,16 +2012,12 @@ public:
         }
 
         if (_tab == 2) {
-            // Spindle/coolant top row (at TOP)
-            { int sRowHt=22, scmdWt=(W-8-(N_SPINDLE-1)*3)/N_SPINDLE;
-            for (int ci=0; ci<N_SPINDLE; ci++) {
-                int bx=4+ci*(scmdWt+3);
-                if ((x>=bx&&x<bx+scmdWt&&y>=TOP&&y<TOP+sRowHt)) {
-                    send_line(SPINDLE_CMDS[ci]);
-                    fnc_term_inject((std::string("> ")+SPINDLE_CMDS[ci]).c_str());
-                    reDisplay(); return;
-                }
-            }}
+            // Top row: Soft Reset
+            if (y>=TOP && y<TOP+22) {
+                fnc_realtime((realtime_cmd_t)0x18);
+                fnc_term_inject("> Soft Reset (Ctrl-X)");
+                reDisplay(); return;
+            }
             for (int ci = 0; ci < N_QUICK_CMDS; ci++) {
                 if (hit(_cmdBtns[ci], x, y)) {
                     char _echo[68];
@@ -2027,11 +2048,13 @@ public:
     void onLeftFlick()  override {}
     void onRightFlick() override {}
     void onUpFlick() override {
+        if (_tab == 1) { _homeScroll = std::max(0, _homeScroll - 20); reDisplay(); }
         if (_tab == 2 && filePreviewMode) { previewScroll = std::max(0, previewScroll - 5); reDisplay(); }
         if (_tab == 2) { termScroll = std::max(0, termScroll - 5); reDisplay(); }
         if (_tab == 2) { macroScroll = std::max(0, macroScroll - 3); reDisplay(); }
     }
     void onDownFlick() override {
+        if (_tab == 1) { _homeScroll += 20; reDisplay(); }
         if (_tab == 2 && filePreviewMode) { previewScroll += 5; reDisplay(); }
         if (_tab == 2) {
             termScroll += 5;
