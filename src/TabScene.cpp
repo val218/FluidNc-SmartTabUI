@@ -2008,7 +2008,7 @@ public:
                         previewLines.clear();
                         previewScroll    = 0;
                         // Load file: chain-load for viz, first batch for preview
-                        {} else {
+                        {
                             std::string path = filePath + "/" + fileList[fi].name;
                             vizJobName = fileList[fi].name;
                             vizPathExecuted = 0;
