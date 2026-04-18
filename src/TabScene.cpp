@@ -2117,17 +2117,20 @@ public:
                 int pAbY=NAV_Y-28, bw3=(W-16)/3;
                 if (y >= pAbY) {
                     // Action bar: [Exit] [G-code/Path] [Run]
-                    _confirmRun = false;
                     if (x < 4+bw3) {
+                        // Exit — cancel any pending confirm
+                        _confirmRun=false;
                         filePreviewMode=false; _previewShowPath=false;
                         markDirty(); return;
                     }
                     if (x < 8+2*bw3) {
+                        // Toggle — cancel any pending confirm
+                        _confirmRun=false;
                         if (!vizPath.empty()) _previewShowPath=!_previewShowPath;
                         else _previewShowPath=false;
                         markDirty(); return;
                     }
-                    // Run
+                    // Run button — two-tap confirm
                     if (!_confirmRun) { _confirmRun=true; markDirty(); return; }
                     _confirmRun=false;
                     simJobName=fileList[fileSelected].name;
@@ -2165,7 +2168,7 @@ public:
                         previewScroll=0; _previewShowPath=false;
                         filePreviewMode=true; markDirty(); return;
                     } else if (x>=8+btnW) {
-                        // Run — confirm
+                        // Run — two-tap confirm
                         if (!_confirmRun) { _confirmRun=true; markDirty(); return; }
                         _confirmRun=false;
                         simJobName=fileList[fileSelected].name;
