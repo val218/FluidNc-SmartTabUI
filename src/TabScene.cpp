@@ -1802,41 +1802,41 @@ public:
         if (firstLine == 0) {
             // First batch — reset accumulator
             allFileLines.clear();
+            previewLines.clear();
             _loadingDone = false;
-            // Store first batch for text preview (shown when user taps View)
-            previewLines = lines;
             previewFirstLine = 0;
             previewScroll = 0;
-            // Do NOT auto-open preview — user must tap View explicitly
         }
 
-        // Accumulate into allFileLines
-        for (auto& l : lines) allFileLines.push_back(l);
+        // Accumulate into both allFileLines and previewLines (unlimited)
+        for (auto& l : lines) {
+            allFileLines.push_back(l);
+            previewLines.push_back(l);
+        }
 
         if ((int)lines.size() >= 60 && !_loadingPath.empty()) {
-            // More lines likely available — request next batch
+            // More lines available — request next batch
             _loadingBatch = firstLine + (int)lines.size();
             request_file_preview(_loadingPath.c_str(), _loadingBatch, BATCH);
         } else {
-            // End of file reached — parse full accumulated path
+            // End of file — parse full path and cache
             _loadingDone = true;
             _loadingBatch = 0;
             if (fileSelected>=0 && fileSelected<(int)fileList.size()) {
                 parseGcodeToVizPath(allFileLines, fileList[fileSelected].name);
-                // Save to LittleFS cache for instant load next time
                 vizCacheEvictOld();
                 vizCacheSave(fileList[fileSelected].name,
                              fileList[fileSelected].size, vizPath);
             }
         }
 
-        // Update viz path as we accumulate (progressive)
+        // Progressive viz path update as batches arrive
         if (!allFileLines.empty() && fileSelected>=0 && fileSelected<(int)fileList.size()) {
             if ((int)allFileLines.size() > (int)vizPath.size())
                 parseGcodeToVizPath(allFileLines, fileList[fileSelected].name);
         }
 
-        if (_tab == 2) reDisplay();
+        if (_tab == 2) markDirty();
     }
 
     void onFilesList() override {
