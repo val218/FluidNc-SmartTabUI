@@ -648,38 +648,65 @@ void setup() {
     }
 
     // ── Step 3: Connect to FluidNC (65→100%) ──────────────────────────────────
-    // Progress bar fills while waiting. Label shows connecting/connected/disconnected.
-    // Never shows "Ready" until actually connected.
+    // Bar stays at 65% saying "Connecting..." until FluidNC responds.
+    // After 1.5s with no response: label turns red "Not connected".
+    // Enters UI only when state leaves Disconnected.
     {
         request_status_report();
         uint32_t connStart = millis();
-        bool disconnectedWarning = false;
+        bool warningShown = false;
+        int lastDot = -1;
+        int lastPct = -1;
+
+        // Draw the static bar frame once
+        drawProgress(65, "Connecting...", 0x065F);
 
         while (state == Disconnected) {
-            update_events();
+            // fnc_poll() reads UART bytes and calls show_state/show_dro
+            // This is what actually updates `state` out of Disconnected
+            fnc_poll();
+
             uint32_t el = millis() - connStart;
+            int dot = (el / 350) % 4;
 
-            if (!disconnectedWarning && el < 1500) {
-                // Grace period: fill bar 65→80%, label "Connecting..."
-                int pct = 65 + (int)(el * 15 / 1500);
-                const char* dots[] = {"Connecting.  ", "Connecting.. ", "Connecting...", "Connecting.  "};
-                drawProgress(pct, dots[(el/300)%4], 0x065F);
+            if (el < 1500) {
+                // Grace period — animate dots, fill bar slowly 65→78%
+                int pct = 65 + (int)(el * 13 / 1500);
+                if (pct != lastPct || dot != lastDot) {
+                    lastPct = pct; lastDot = dot;
+                    const char* dots[] = {"Connecting   ", "Connecting.  ", "Connecting.. ", "Connecting..."};
+                    drawProgress(pct, dots[dot], 0x065F);
+                }
             } else {
-                // No response — show NOT CONNECTED in bar label, bar turns red, stays at 80%
-                disconnectedWarning = true;
-                const char* rdots[] = {"Not connected.  ", "Not connected.. ", "Not connected...", "Not connected.  "};
-                drawProgress(80, rdots[(el/400)%4], 0xF800);
+                // No response — red warning, bar fixed at 78%
+                if (!warningShown) {
+                    warningShown = true;
+                    lastDot = -1;
+                }
+                if (dot != lastDot) {
+                    lastDot = dot;
+                    const char* rdots[] = {"Not connected   ", "Not connected.  ", "Not connected.. ", "Not connected..."};
+                    // Only redraw the label text area — no flicker
+                    display.fillRect(barX, barY - 14, barW, 12, 0x0000);
+                    display.setFont(&fonts::Font0);
+                    display.setTextDatum(middle_left);
+                    display.setTextColor(0xF800);
+                    display.drawString(rdots[dot], barX, barY - 8);
+                    // Draw red bar at 78% (once, on first warning — warningShown set just above)
+                    if (warningShown) {
+                        display.fillRoundRect(barX, barY, barW, barH, barR, 0x2104);
+                        int fw = barW * 78 / 100;
+                        display.fillRoundRect(barX, barY, fw, barH, barR, 0xF800);
+                        warningShown = false;  // prevent redraw on next iterations
+                    }
+                }
             }
-            delay(40);
+            delay(20);
         }
 
-        // Connected! Fill bar to 100% green
-        if (disconnectedWarning) {
-            drawProgress(95, "Connected!", 0x07E0);
-            delay(300);
-        }
+        // Connected — fill to 100% green
         drawProgress(100, "Connected!", 0x07E0);
-        delay(200);
+        delay(300);
     }
 
     // Create canvas — no fillScreen to avoid black flash
