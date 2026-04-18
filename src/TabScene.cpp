@@ -421,6 +421,8 @@ static void f2s(const std::string& s, int x, int y, int col, int datum = middle_
 // ─────────────────────────────────────────────────────────────────────────────
 // TabScene
 // ─────────────────────────────────────────────────────────────────────────────
+uint32_t g_pressExpiryMs = 0;
+
 class TabScene : public Scene {
 private:
     int  _tab      = 0;
