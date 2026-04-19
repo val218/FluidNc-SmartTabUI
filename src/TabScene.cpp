@@ -504,7 +504,13 @@ private:
     void hdrTxt(const char* s, int x, int y, int col, int datum = middle_center) {
         canvas.setFont(&fonts::Font0);
         canvas.setTextDatum(datum);
-        canvas.setTextColor(col);
+        // Light theme: override most header text to black for readability
+        // Keep status-critical colours (RED for alarm/STP, GREEN/YELLOW for state)
+        int fc = col;
+        if (_currentTheme == 2 && col != RED && col != 0xF800 && col != GREEN && col != YELLOW) {
+            fc = 0x0000;
+        }
+        canvas.setTextColor(fc);
         canvas.drawString(s, x, y);
     }
 
@@ -661,7 +667,9 @@ private:
                 canvas.fillRect(x, NAV_Y, w, 3, COL_AX_X);   // accent bar from theme
             }
             if (i > 0 && i < N_TABS) vline(x, NAV_Y + 5, BOT - 10, COL_BORDER);
-            int col = (i == _tab) ? COL_WHITE : COL_WHITE2;
+            int col;
+            if (_currentTheme == 2) col = 0x0000;  // black text on light theme
+            else col = (i == _tab) ? COL_WHITE : COL_WHITE2;
             navTxt(TAB_LABELS[i], x + w/2, NAV_Y + BOT/2, col);
         }
     }
@@ -687,7 +695,22 @@ private:
             // Axis letter centred in row
             const char* axLetter = (_droAxesMode == 3 && i == 3) ? "Y2" : AX_STYLES[i].letter;
             int midY = ry + droRow / 2;
-            txt(axLetter, 8, midY, isMpg ? COL_WHITE : axcol, TINY, middle_left);
+            if (_currentTheme == 2) {
+                // Light theme: black outline + dark axis colour for bold readable letters
+                canvas.setFont(&fonts::Font2);
+                canvas.setTextDatum(middle_left);
+                // Outline (draw offset in 4 directions)
+                canvas.setTextColor(0x0000);
+                canvas.drawString(axLetter, 7, midY-1);
+                canvas.drawString(axLetter, 9, midY-1);
+                canvas.drawString(axLetter, 7, midY+1);
+                canvas.drawString(axLetter, 9, midY+1);
+                // Fill with dark axis colour
+                canvas.setTextColor(isMpg ? 0x0000 : axcol);
+                canvas.drawString(axLetter, 8, midY);
+            } else {
+                txt(axLetter, 8, midY, isMpg ? COL_WHITE : axcol, TINY, middle_left);
+            }
 
             // Position value right-aligned
             int ndig = inInches ? 4 : 3;
@@ -703,8 +726,9 @@ private:
                 int sw = canvas.textWidth(sl);
                 int bx = 6, by2 = ry + droRow - 11;
                 canvas.fillRoundRect(bx, by2, sw + 8, 9, 2, axcol);
+                if (_currentTheme == 2) canvas.drawRoundRect(bx, by2, sw+8, 9, 2, 0x0000);
                 canvas.setTextDatum(middle_center);
-                canvas.setTextColor(COL_BG);
+                canvas.setTextColor(_currentTheme == 2 ? 0x0000 : COL_BG);
                 canvas.drawString(sl, bx + (sw + 8) / 2, by2 + 5);
             }
         }
@@ -1445,7 +1469,7 @@ private:
                 canvas.drawString("NC",12,ry+rowH/2);
                 // Filename
                 canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
-                canvas.setTextColor(sel?COL_WHITE:COL_WHITE2);
+                canvas.setTextColor(sel?COL_WHITE:(_currentTheme==2?0x0000:COL_WHITE2));
                 // Truncate long names
                 std::string fname=fe.name;
                 if((int)fname.size()>22) fname=fname.substr(0,19)+"...";
