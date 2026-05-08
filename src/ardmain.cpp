@@ -456,7 +456,11 @@ static void runSettingsMenu(AppSettings& s) {
     bool mpgOk = (i2c_master_read_from_device(
         I2C_NUM_1, 0x20, &pcfVal, 1, pdMS_TO_TICKS(20)) == ESP_OK);
 
-    drawSettingsMenu(s, mpgOk);
+    int _settingsScroll = 0;
+    auto drawSettings = [&]() {
+        drawSettingsMenu(s, mpgOk, _settingsScroll);
+    };
+    drawSettings();
 
     int cx = display.width() / 2;
     for (;;) {
@@ -532,13 +536,13 @@ static void runSettingsMenu(AppSettings& s) {
         // Input Monitor
         if (touchIn(tx,ty, cx-156, 36+7*rowH+4, 96, 28)) {
             runInputMonitor();
-            drawSettingsMenu(s, mpgOk);
+            drawSettings();
             continue;
         }
         // UART Monitor
         if (touchIn(tx,ty, cx-54, 36+7*rowH+4, 96, 28)) {
             runUartMonitor();
-            drawSettingsMenu(s, mpgOk);
+            drawSettings();
             continue;
         }
         // Save & Boot
