@@ -183,129 +183,6 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
         display.fillRect(W-4, tY, 4, tH, S_DIM);
     }
 }
-    int bx0 = 68;           // all button rows start here
-    int bW  = W - bx0 - 4; // available width for buttons
-
-    // Label helper
-    auto lbl = [&](const char* t) {
-        display.setFont(&fonts::Font0);
-        display.setTextDatum(middle_left);
-        display.setTextColor(S_DIM);
-        display.drawString(t, pad, y + rowH/2);
-    };
-
-    // ── Sim Mode toggle ──────────────────────────────────────────────────────
-    lbl("SIM");
-    { int bw2=(bW-4)/2;
-      sBtn(bx0,        y+4, bw2, optH, s.simMode?S_PANEL:0x0400, s.simMode?S_BORDER:GREEN, "OFF", s.simMode?S_DIM:S_WHITE);
-      sBtn(bx0+bw2+4,  y+4, bw2, optH, s.simMode?0x0019:S_PANEL, s.simMode?S_CYAN:S_BORDER, "SIM ON", s.simMode?S_WHITE:S_DIM);
-    }
-    y += rowH;
-
-    // ── Theme (3 buttons) ────────────────────────────────────────────────────
-    lbl("THEME");
-    { int tw=(bW-8)/3;
-      const char* th[]={"Dark","Neutral","Light"};
-      for(int i=0;i<3;i++) {
-        bool s2=((int)s.theme==i);
-        sBtn(bx0+i*(tw+4), y+4, tw, optH, s2?0x0019:S_PANEL, s2?S_CYAN:S_BORDER, th[i], s2?S_WHITE:S_DIM);
-      }
-    }
-    y += rowH;
-
-    // ── P6 button mode (5 buttons) ───────────────────────────────────────────
-    lbl("P6 BTN");
-    { int enw=(bW-12)/5;
-      const char* en[]={"Gate All","Touch","Jog","Macro","Off"};
-      for(int i=0;i<5;i++) {
-        bool s2=((int)s.enableMode==i);
-        sBtn(bx0+i*(enw+3), y+4, enw, optH, s2?0x0019:S_PANEL, s2?S_CYAN:S_BORDER, en[i], s2?S_WHITE:S_DIM);
-      }
-    }
-    y += rowH;
-
-
-
-    // ── Work area ────────────────────────────────────────────────────────────
-    display.setFont(&fonts::Font0);
-    display.setTextDatum(middle_left);
-    display.setTextColor(S_DIM);
-    display.drawString("WORK", pad, y + rowH/2);
-    // X and Y numeric display with +/- buttons
-    { int bw2=22, lx=bx0;
-      display.setTextDatum(middle_left);
-      display.setTextColor(S_DIM2);
-      display.drawString("X:", lx, y+rowH/2); lx+=14;
-      sBtn(lx,   y+4, bw2, optH, S_PANEL, S_BORDER, "-", S_WHITE); lx+=bw2+2;
-      char xbuf[8]; snprintf(xbuf,sizeof(xbuf),"%d",s.workX);
-      display.setTextDatum(middle_left); display.setTextColor(S_WHITE);
-      display.drawString(xbuf, lx, y+rowH/2); lx+=38;
-      sBtn(lx,   y+4, bw2, optH, S_PANEL, S_BORDER, "+", S_WHITE); lx+=bw2+10;
-      display.setTextDatum(middle_left); display.setTextColor(S_DIM2);
-      display.drawString("Y:", lx, y+rowH/2); lx+=14;
-      sBtn(lx,   y+4, bw2, optH, S_PANEL, S_BORDER, "-", S_WHITE); lx+=bw2+2;
-      char ybuf[8]; snprintf(ybuf,sizeof(ybuf),"%d",s.workY);
-      display.setTextDatum(middle_left); display.setTextColor(S_WHITE);
-      display.drawString(ybuf, lx, y+rowH/2); lx+=44;
-      sBtn(lx,   y+4, bw2, optH, S_PANEL, S_BORDER, "+", S_WHITE);
-    }
-    y += rowH;
-
-    // ── Home corner ───────────────────────────────────────────────────────────
-    display.setFont(&fonts::Font0);
-    display.setTextDatum(middle_left);
-    display.setTextColor(S_DIM);
-    display.drawString("HOME", pad, y + rowH/2);
-    { const char* hc[]={"Bot-L","Bot-R","Top-L","Top-R"};
-      int hw=(bW-12)/4;
-      for(int i=0;i<4;i++){
-        bool sel2=((int)s.homeCorner==i);
-        sBtn(bx0+i*(hw+4), y+4, hw, optH, sel2?0x0400:S_PANEL, sel2?GREEN:S_BORDER, hc[i], sel2?S_WHITE:S_DIM);
-      }
-    }
-    y += rowH;
-
-    // ── Brightness ─────────────────────────────────────────────────────────
-    lbl("BRIGHT");
-    { int bw2=22, lx=bx0;
-      sBtn(lx, y+4, bw2, optH, S_PANEL, S_BORDER, "-", S_WHITE); lx+=bw2+4;
-      // Bar showing current brightness
-      int barW = bW - 2*bw2 - 16;
-      display.fillRect(lx, y+8, barW, optH-8, S_PANEL);
-      display.drawRect(lx, y+8, barW, optH-8, S_BORDER);
-      int fillW = (s.brightness * barW) / 255;
-      display.fillRect(lx+1, y+9, fillW-2, optH-10, S_CYAN);
-      char brbuf[8]; snprintf(brbuf,sizeof(brbuf),"%d%%",(s.brightness*100)/255);
-      display.setFont(&fonts::Font0); display.setTextDatum(middle_center);
-      display.setTextColor(S_WHITE);
-      display.drawString(brbuf, lx+barW/2, y+rowH/2);
-      lx += barW + 4;
-      sBtn(lx, y+4, bw2, optH, S_PANEL, S_BORDER, "+", S_WHITE);
-    }
-    y += rowH;
-
-    // ── Volume ─────────────────────────────────────────────────────────────
-    lbl("VOLUME");
-    { int vw=(bW-2)/10; 
-      const char* vlbls[]={"0","1","2","3","4","5","6","7","8","9"};
-      for(int i=0;i<10;i++) {
-        bool sel2=(s.volume==i);
-        uint16_t bg = (i==0) ? S_PANEL : sel2 ? 0x0019 : S_PANEL;
-        uint16_t bc = (i==0) ? S_DIM   : sel2 ? S_CYAN  : S_BORDER;
-        uint16_t tc = (i==0) ? S_DIM   : sel2 ? S_WHITE : S_DIM;
-        sBtn(bx0+i*(vw+2), y+4, vw, optH, bg, bc, vlbls[i], tc);
-      }
-    }
-    y += rowH;
-
-    // ── Monitor + Save buttons ─────────────────────────────────────────────
-    y += 4;
-    int cx2 = display.width() / 2;
-    sBtn(cx2 - 156, y, 96, 28, S_PANEL, S_CYAN,   "Inputs",      S_CYAN);
-    sBtn(cx2 - 54,  y, 96, 28, S_PANEL, S_ORANGE, "UART",        S_ORANGE);
-    sBtn(cx2 + 50,  y, 96, 28, 0x0C00,  S_GREEN,  "Save & Boot", S_GREEN);
-    // no-op: drawing direct to display
-}
 
 
 // ── UART Terminal Monitor ─────────────────────────────────────────────────────
@@ -871,8 +748,10 @@ void setup() {
 
     // ── Step 3: Connect or skip in sim mode ──────────────────────────────────
     if (s.simMode) {
-        drawProgress(100, "Sim Mode (no connection)", 0x07E0);
-        delay(400);
+        drawProgress(100, "Sim Mode — no connection needed", 0x07E0);
+        simMode_enable();
+        simMode_injectState();  // inject fake Idle state so UI shows normally
+        delay(300);
     } else {
         drawProgress(85, "Connecting...", 0x065F);
         request_status_report();

@@ -2427,7 +2427,7 @@ public:
         }
         if (_probeOpen)              drawProbeOverlay();
         if (_alarmOpen || _forceAlarm) drawAlarmOverlay();
-        if (state == Disconnected)    drawDisconnectedOverlay();
+        if (state == Disconnected && !simMode_active()) drawDisconnectedOverlay();
         drawNav();
         refreshDisplay();
         _inRedisplay = false;
