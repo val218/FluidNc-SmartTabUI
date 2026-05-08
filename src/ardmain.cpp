@@ -54,22 +54,135 @@ static bool readEnableNow() {
 }
 
 // ── Settings menu ─────────────────────────────────────────────────────────────
+static lgfx::LGFX_Sprite _settingsSprite(&display);
+static bool _spriteReady = false;
+
 static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) {
-    display.fillScreen(S_BG);
     int W  = display.width();
+    int H  = display.height();
     int cx = W / 2;
+    int rowH = 48, pad = 6, optH = 36;
+    int totalH = 36 + 9 * rowH + 4 + 28 + 8;  // all rows + buttons + padding
 
-    // Title
-    display.setFont(&fonts::Font2);
-    display.setTextDatum(middle_center);
-    display.setTextColor(S_WHITE);
-    display.drawString("Settings", cx, 16);
+    // Create sprite the full height of the content
+    if (!_spriteReady) {
+        _settingsSprite.setColorDepth(8);
+        _settingsSprite.createSprite(W, totalH);
+        _spriteReady = true;
+    }
+    _settingsSprite.fillSprite(S_BG);
 
-    display.setFont(&fonts::Font0);
-    display.setTextColor(S_DIM);
-    display.drawString(mpgOk ? "MPG: Connected" : "MPG: Not detected", cx, 30);
+    // Helper to draw buttons into sprite
+    auto sB = [&](int x, int y2, int w, int h, uint16_t bg, uint16_t bc, const char* lbl, uint16_t tc) {
+        _settingsSprite.fillRoundRect(x, y2, w, h, 3, bg);
+        _settingsSprite.drawRoundRect(x, y2, w, h, 3, bc);
+        _settingsSprite.setFont(&fonts::Font0);
+        _settingsSprite.setTextDatum(middle_center);
+        _settingsSprite.setTextColor(tc);
+        _settingsSprite.drawString(lbl, x+w/2, y2+h/2);
+    };
 
-    int y = 36 - scrollY, rowH = 48, pad = 6, optH = 36;
+    // Title (scrolls with content)
+    _settingsSprite.setFont(&fonts::Font2);
+    _settingsSprite.setTextDatum(middle_center);
+    _settingsSprite.setTextColor(S_WHITE);
+    _settingsSprite.drawString("Settings", cx, 16);
+    _settingsSprite.setFont(&fonts::Font0);
+    _settingsSprite.setTextColor(S_DIM);
+    _settingsSprite.drawString(mpgOk ? "MPG: Connected" : "MPG: Not detected", cx, 30);
+
+    int y = 36, bx0 = 68, bW = W - bx0 - 4;
+
+    auto lbl2 = [&](const char* t) {
+        _settingsSprite.setFont(&fonts::Font0);
+        _settingsSprite.setTextDatum(middle_left);
+        _settingsSprite.setTextColor(S_DIM);
+        _settingsSprite.drawString(t, pad, y + rowH/2);
+    };
+
+    // SIM
+    lbl2("SIM");
+    { int bw2=(bW-4)/2;
+      sB(bx0,       y+4,bw2,optH,s.simMode?S_PANEL:0x0400,s.simMode?S_BORDER:GREEN,"OFF",s.simMode?S_DIM:S_WHITE);
+      sB(bx0+bw2+4, y+4,bw2,optH,s.simMode?0x0019:S_PANEL,s.simMode?S_CYAN:S_BORDER,"SIM ON",s.simMode?S_WHITE:S_DIM);
+    }
+    y += rowH;
+    // THEME
+    lbl2("THEME");
+    { int tw=(bW-8)/3; const char* th[]={"Dark","Neutral","Light"};
+      for(int i=0;i<3;i++){bool s2=((int)s.theme==i);
+        sB(bx0+i*(tw+4),y+4,tw,optH,s2?0x0019:S_PANEL,s2?S_CYAN:S_BORDER,th[i],s2?S_WHITE:S_DIM);}
+    }
+    y += rowH;
+    // P6 BTN
+    lbl2("P6 BTN");
+    { int enw=(bW-12)/5; const char* en[]={"Gate","Touch","Jog","Macro","Off"};
+      for(int i=0;i<5;i++){bool s2=((int)s.enableMode==i);
+        sB(bx0+i*(enw+3),y+4,enw,optH,s2?0x0019:S_PANEL,s2?S_CYAN:S_BORDER,en[i],s2?S_WHITE:S_DIM);}
+    }
+    y += rowH;
+    // WORK
+    _settingsSprite.setFont(&fonts::Font0); _settingsSprite.setTextDatum(middle_left); _settingsSprite.setTextColor(S_DIM);
+    _settingsSprite.drawString("WORK", pad, y+rowH/2);
+    { int bw2=22, lx=bx0;
+      _settingsSprite.setTextColor(S_DIM2); _settingsSprite.drawString("X:", lx, y+rowH/2); lx+=14;
+      sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE); lx+=bw2+2;
+      char xb[8]; snprintf(xb,8,"%d",s.workX);
+      _settingsSprite.setTextColor(S_WHITE); _settingsSprite.drawString(xb, lx, y+rowH/2); lx+=38;
+      sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE); lx+=bw2+10;
+      _settingsSprite.setTextColor(S_DIM2); _settingsSprite.drawString("Y:", lx, y+rowH/2); lx+=14;
+      sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE); lx+=bw2+2;
+      char yb[8]; snprintf(yb,8,"%d",s.workY);
+      _settingsSprite.setTextColor(S_WHITE); _settingsSprite.drawString(yb, lx, y+rowH/2); lx+=44;
+      sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE);
+    }
+    y += rowH;
+    // HOME
+    _settingsSprite.setTextColor(S_DIM); _settingsSprite.drawString("HOME", pad, y+rowH/2);
+    { const char* hc[]={"Bot-L","Bot-R","Top-L","Top-R"}; int hw=(bW-12)/4;
+      for(int i=0;i<4;i++){bool s2=((int)s.homeCorner==i);
+        sB(bx0+i*(hw+4),y+4,hw,optH,s2?0x0400:S_PANEL,s2?GREEN:S_BORDER,hc[i],s2?S_WHITE:S_DIM);}
+    }
+    y += rowH;
+    // BRIGHT — slider bar, drag to adjust
+    lbl2("BRIGHT");
+    { int barX=bx0, barW=bW;
+      _settingsSprite.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
+      _settingsSprite.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
+      int fillW = std::max(4,(s.brightness*barW)/255);
+      _settingsSprite.fillRoundRect(barX+1,y+9,fillW-2,optH-10,3,S_CYAN);
+      char bb[8]; snprintf(bb,8,"%d%%",(s.brightness*100)/255);
+      _settingsSprite.setTextColor(S_WHITE); _settingsSprite.drawString(bb,barX+barW/2,y+rowH/2);
+    }
+    y += rowH;
+    // VOLUME — slider bar
+    lbl2("VOL");
+    { int barX=bx0, barW=bW;
+      _settingsSprite.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
+      _settingsSprite.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
+      int fillW = std::max(4,(s.volume*(barW))/9);
+      _settingsSprite.fillRoundRect(barX+1,y+9,fillW-2,optH-10,3,S_ORANGE);
+      char vb[8]; snprintf(vb,8,"%d/9",s.volume);
+      _settingsSprite.setTextColor(S_WHITE); _settingsSprite.drawString(vb,barX+barW/2,y+rowH/2);
+    }
+    y += rowH;
+    // Bottom buttons
+    y += 4;
+    sB(cx-156,y,96,28,S_PANEL,S_CYAN,  "Inputs",     S_CYAN);
+    sB(cx-54, y,96,28,S_PANEL,S_ORANGE,"UART",       S_ORANGE);
+    sB(cx+50, y,96,28,0x0C00, S_GREEN, "Save & Boot",S_GREEN);
+
+    // Push visible slice of sprite to display — no flicker
+    // Copy only rows [scrollY .. scrollY+H] from sprite to display at (0,0)
+    _settingsSprite.pushSprite(0, -scrollY);
+    // Scroll indicator bar
+    if (totalH > H) {
+        int tH = std::max(8, H * H / totalH);
+        int tY = scrollY * (H - tH) / std::max(1, totalH - H);
+        display.fillRect(W-4, 0, 4, H, S_PANEL);
+        display.fillRect(W-4, tY, 4, tH, S_DIM);
+    }
+}
     int bx0 = 68;           // all button rows start here
     int bW  = W - bx0 - 4; // available width for buttons
 
@@ -493,6 +606,25 @@ static void runSettingsMenu(AppSettings& s) {
         // Touch scroll: track finger Y while pressed, update on move
         if (t.wasPressed()) { _lastTouchY = t.y; delay(8); continue; }
         if (t.isPressed() && _lastTouchY >= 0) {
+            int ty2 = t.y + _settingsScroll;  // content coords
+            int rowH2 = 48, bx0_2 = 68, bW2 = W - bx0_2 - 4;
+            // Brightness slider drag
+            { int yBr = 36+5*rowH2+8;
+              if (ty2 >= yBr && ty2 < yBr+38 && t.x >= bx0_2 && t.x < bx0_2+bW2) {
+                  s.brightness = std::max(10, std::min(255, (t.x-bx0_2)*255/bW2));
+                  display.setBrightness(s.brightness);
+                  drawSettings(); delay(8); continue;
+              }
+            }
+            // Volume slider drag
+            { int yVol = 36+6*rowH2+8;
+              if (ty2 >= yVol && ty2 < yVol+38 && t.x >= bx0_2 && t.x < bx0_2+bW2) {
+                  s.volume = std::max(0, std::min(9, (t.x-bx0_2)*9/bW2));
+                  tabui_setVolume(s.volume);
+                  drawSettings(); delay(8); continue;
+              }
+            }
+            // Otherwise scroll
             int delta = _lastTouchY - t.y;
             if (abs(delta) >= 3) {
                 _settingsScroll = std::max(0, std::min(250, _settingsScroll + delta));
