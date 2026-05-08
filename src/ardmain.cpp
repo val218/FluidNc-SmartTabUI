@@ -54,7 +54,7 @@ static bool readEnableNow() {
 }
 
 // ── Settings menu ─────────────────────────────────────────────────────────────
-static lgfx::LGFX_Sprite _sBuf;  // settings back-buffer, created once on first use
+static lgfx::LGFX_Sprite* _sBuf = nullptr;  // settings back-buffer
 
 static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) {
     int W = display.width(), H = display.height(), cx = W/2;
@@ -62,42 +62,43 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     int bx0 = 68, bW = W - bx0 - 4;
 
     // Create back-buffer at screen size on first call (no flicker)
-    if (!_sBuf.width()) {
-        _sBuf.setColorDepth(8);
-        _sBuf.createSprite(W, H);
+    if (!_sBuf) {
+        _sBuf = new lgfx::LGFX_Sprite(&display);
+        _sBuf->setColorDepth(8);
+        _sBuf->createSprite(W, H);
     }
-    _sBuf.fillSprite(S_BG);
+    _sBuf->fillSprite(S_BG);
 
     auto sB = [&](int x, int y2, int w, int h2, uint16_t bg, uint16_t bc,
                   const char* lb, uint16_t tc) {
         if (y2+h2 < 0 || y2 > H) return;
-        _sBuf.fillRoundRect(x, y2, w, h2, 3, bg);
-        _sBuf.drawRoundRect(x, y2, w, h2, 3, bc);
-        _sBuf.setFont(&fonts::Font0);
-        _sBuf.setTextDatum(middle_center);
-        _sBuf.setTextColor(tc);
-        _sBuf.drawString(lb, x+w/2, y2+h2/2);
+        _sBuf->fillRoundRect(x, y2, w, h2, 3, bg);
+        _sBuf->drawRoundRect(x, y2, w, h2, 3, bc);
+        _sBuf->setFont(&fonts::Font0);
+        _sBuf->setTextDatum(middle_center);
+        _sBuf->setTextColor(tc);
+        _sBuf->drawString(lb, x+w/2, y2+h2/2);
     };
 
     auto lbTxt = [&](int ry, const char* t) {
         if (ry+rowH < 0 || ry > H) return;
-        _sBuf.setFont(&fonts::Font0);
-        _sBuf.setTextDatum(middle_left);
-        _sBuf.setTextColor(S_DIM);
-        _sBuf.drawString(t, pad, ry+rowH/2);
+        _sBuf->setFont(&fonts::Font0);
+        _sBuf->setTextDatum(middle_left);
+        _sBuf->setTextColor(S_DIM);
+        _sBuf->drawString(t, pad, ry+rowH/2);
     };
 
     int y = 36 - scrollY;
 
     // Title
     if (16-scrollY > -16 && 16-scrollY < H+16) {
-        _sBuf.setFont(&fonts::Font2);
-        _sBuf.setTextDatum(middle_center);
-        _sBuf.setTextColor(S_WHITE);
-        _sBuf.drawString("Settings", cx, 16-scrollY);
-        _sBuf.setFont(&fonts::Font0);
-        _sBuf.setTextColor(S_DIM);
-        _sBuf.drawString(mpgOk?"MPG: Connected":"MPG: Not detected", cx, 30-scrollY);
+        _sBuf->setFont(&fonts::Font2);
+        _sBuf->setTextDatum(middle_center);
+        _sBuf->setTextColor(S_WHITE);
+        _sBuf->drawString("Settings", cx, 16-scrollY);
+        _sBuf->setFont(&fonts::Font0);
+        _sBuf->setTextColor(S_DIM);
+        _sBuf->drawString(mpgOk?"MPG: Connected":"MPG: Not detected", cx, 30-scrollY);
     }
 
     // SIM
@@ -127,16 +128,16 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
         int bw2=22, lx=bx0+24;
         char xb[8],yb[8]; snprintf(xb,8,"%d",s.workX); snprintf(yb,8,"%d",s.workY);
         sB(lx,       y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE);
-        _sBuf.setTextDatum(middle_left); _sBuf.setTextColor(S_WHITE);
-        _sBuf.drawString(xb, lx+bw2+4, y+rowH/2);
+        _sBuf->setTextDatum(middle_left); _sBuf->setTextColor(S_WHITE);
+        _sBuf->drawString(xb, lx+bw2+4, y+rowH/2);
         sB(lx+bw2+4+34,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE);
         int lx2 = lx+bw2+4+34+bw2+10;
-        _sBuf.setTextColor(S_DIM2); _sBuf.drawString("Y:", lx2, y+rowH/2); lx2+=16;
+        _sBuf->setTextColor(S_DIM2); _sBuf->drawString("Y:", lx2, y+rowH/2); lx2+=16;
         sB(lx2,      y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE);
-        _sBuf.setTextColor(S_WHITE); _sBuf.drawString(yb, lx2+bw2+4, y+rowH/2);
+        _sBuf->setTextColor(S_WHITE); _sBuf->drawString(yb, lx2+bw2+4, y+rowH/2);
         sB(lx2+bw2+4+34,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE);
-        _sBuf.setTextColor(S_DIM2); _sBuf.setTextDatum(middle_left);
-        _sBuf.drawString("X:", bx0, y+rowH/2);
+        _sBuf->setTextColor(S_DIM2); _sBuf->setTextDatum(middle_left);
+        _sBuf->drawString("X:", bx0, y+rowH/2);
     } y += rowH;
 
     // HOME
@@ -150,24 +151,24 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     lbTxt(y, "BRIGHT");
     if (y+rowH > 0 && y < H) {
         int barX=bx0, barW=bW;
-        _sBuf.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
-        _sBuf.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
-        _sBuf.fillRoundRect(barX+1,y+9,std::max(4,(s.brightness*barW)/255)-2,optH-10,3,S_CYAN);
+        _sBuf->fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
+        _sBuf->drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
+        _sBuf->fillRoundRect(barX+1,y+9,std::max(4,(s.brightness*barW)/255)-2,optH-10,3,S_CYAN);
         char bb[8]; snprintf(bb,8,"%d%%",(s.brightness*100)/255);
-        _sBuf.setFont(&fonts::Font0); _sBuf.setTextDatum(middle_center);
-        _sBuf.setTextColor(S_WHITE); _sBuf.drawString(bb,barX+barW/2,y+rowH/2);
+        _sBuf->setFont(&fonts::Font0); _sBuf->setTextDatum(middle_center);
+        _sBuf->setTextColor(S_WHITE); _sBuf->drawString(bb,barX+barW/2,y+rowH/2);
     } y += rowH;
 
     // VOL slider
     lbTxt(y, "VOL");
     if (y+rowH > 0 && y < H) {
         int barX=bx0, barW=bW;
-        _sBuf.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
-        _sBuf.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
-        _sBuf.fillRoundRect(barX+1,y+9,std::max(4,(s.volume*barW)/9)-2,optH-10,3,S_ORANGE);
+        _sBuf->fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
+        _sBuf->drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
+        _sBuf->fillRoundRect(barX+1,y+9,std::max(4,(s.volume*barW)/9)-2,optH-10,3,S_ORANGE);
         char vb[8]; snprintf(vb,8,"%d/9",s.volume);
-        _sBuf.setFont(&fonts::Font0); _sBuf.setTextDatum(middle_center);
-        _sBuf.setTextColor(S_WHITE); _sBuf.drawString(vb,barX+barW/2,y+rowH/2);
+        _sBuf->setFont(&fonts::Font0); _sBuf->setTextDatum(middle_center);
+        _sBuf->setTextColor(S_WHITE); _sBuf->drawString(vb,barX+barW/2,y+rowH/2);
     } y += rowH;
 
     // Bottom buttons
@@ -181,12 +182,12 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
       if (totalH > H) {
         int tH = std::max(8, H*H/totalH);
         int tY = scrollY*(H-tH)/std::max(1,totalH-H);
-        _sBuf.fillRect(W-4, 0, 4, H, 0x2104);
-        _sBuf.fillRect(W-4, tY, 4, tH, S_DIM);
+        _sBuf->fillRect(W-4, 0, 4, H, 0x2104);
+        _sBuf->fillRect(W-4, tY, 4, tH, S_DIM);
       }
     }
 
-    _sBuf.pushSprite(0, 0);  // single DMA push — no flicker
+    _sBuf->pushSprite(0, 0);  // single DMA push — no flicker
 }
 
 
