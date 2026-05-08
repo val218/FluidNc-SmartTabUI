@@ -457,6 +457,7 @@ static void runSettingsMenu(AppSettings& s) {
         I2C_NUM_1, 0x20, &pcfVal, 1, pdMS_TO_TICKS(20)) == ESP_OK);
 
     int _settingsScroll = 0;
+    int _lastTouchY = -1;
     auto drawSettings = [&]() {
         drawSettingsMenu(s, mpgOk, _settingsScroll);
     };
@@ -481,8 +482,28 @@ static void runSettingsMenu(AppSettings& s) {
             }
         }
         auto t = touch.getDetail();
-        if (!t.wasClicked()) { delay(20); continue; }
-        int tx = t.x, ty = t.y;
+
+        // MPG encoder scroll
+        { int16_t enc = get_encoder();
+          if (enc != 0) {
+              _settingsScroll = std::max(0, std::min(250, _settingsScroll + enc * 8));
+              drawSettings(); delay(8); continue;
+          }
+        }
+        // Touch scroll: track finger Y while pressed, update on move
+        if (t.wasPressed()) { _lastTouchY = t.y; delay(8); continue; }
+        if (t.isPressed() && _lastTouchY >= 0) {
+            int delta = _lastTouchY - t.y;
+            if (abs(delta) >= 3) {
+                _settingsScroll = std::max(0, std::min(250, _settingsScroll + delta));
+                _lastTouchY = t.y;
+                drawSettings();
+            }
+            delay(8); continue;
+        }
+        if (t.isReleased()) _lastTouchY = -1;
+        if (!t.wasClicked()) { delay(15); continue; }
+        int tx = t.x, ty = t.y + _settingsScroll;
 
         int y = 36, rowH = 48, optH = 36;
         int bx0 = 68, bW = W - bx0 - 4;
