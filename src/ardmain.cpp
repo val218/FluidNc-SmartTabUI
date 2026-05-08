@@ -54,133 +54,139 @@ static bool readEnableNow() {
 }
 
 // ── Settings menu ─────────────────────────────────────────────────────────────
+static lgfx::LGFX_Sprite _sBuf;  // settings back-buffer, created once on first use
+
 static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) {
-    int W  = display.width();
-    int H  = display.height();
-    int cx = W / 2;
+    int W = display.width(), H = display.height(), cx = W/2;
     int rowH = 48, pad = 6, optH = 36;
+    int bx0 = 68, bW = W - bx0 - 4;
 
-    // Draw directly to display — fillScreen once, then draw all rows
-    // Offset each row by -scrollY to implement scrolling
-    display.fillScreen(S_BG);
+    // Create back-buffer at screen size on first call (no flicker)
+    if (!_sBuf.width()) {
+        _sBuf.setColorDepth(8);
+        _sBuf.createSprite(W, H);
+    }
+    _sBuf.fillSprite(S_BG);
 
-    // Helper: skip drawing if row is completely off-screen
-    auto visible = [&](int ry) { return ry + rowH > 0 && ry < H; };
-
-    // Helper to draw buttons
-    auto sB = [&](int x, int y2, int w, int h, uint16_t bg, uint16_t bc, const char* lbl, uint16_t tc) {
-        if (y2 + h < 0 || y2 > H) return;
-        display.fillRoundRect(x, y2, w, h, 3, bg);
-        display.drawRoundRect(x, y2, w, h, 3, bc);
-        display.setFont(&fonts::Font0);
-        display.setTextDatum(middle_center);
-        display.setTextColor(tc);
-        display.drawString(lbl, x+w/2, y2+h/2);
+    auto sB = [&](int x, int y2, int w, int h2, uint16_t bg, uint16_t bc,
+                  const char* lb, uint16_t tc) {
+        if (y2+h2 < 0 || y2 > H) return;
+        _sBuf.fillRoundRect(x, y2, w, h2, 3, bg);
+        _sBuf.drawRoundRect(x, y2, w, h2, 3, bc);
+        _sBuf.setFont(&fonts::Font0);
+        _sBuf.setTextDatum(middle_center);
+        _sBuf.setTextColor(tc);
+        _sBuf.drawString(lb, x+w/2, y2+h2/2);
     };
+
+    auto lbTxt = [&](int ry, const char* t) {
+        if (ry+rowH < 0 || ry > H) return;
+        _sBuf.setFont(&fonts::Font0);
+        _sBuf.setTextDatum(middle_left);
+        _sBuf.setTextColor(S_DIM);
+        _sBuf.drawString(t, pad, ry+rowH/2);
+    };
+
+    int y = 36 - scrollY;
 
     // Title
-    int titleY = 16 - scrollY;
-    if (titleY > -20 && titleY < H+20) {
-        display.setFont(&fonts::Font2);
-        display.setTextDatum(middle_center);
-        display.setTextColor(S_WHITE);
-        display.drawString("Settings", cx, titleY);
-        display.setFont(&fonts::Font0);
-        display.setTextColor(S_DIM);
-        display.drawString(mpgOk ? "MPG: Connected" : "MPG: Not detected", cx, 30 - scrollY);
+    if (16-scrollY > -16 && 16-scrollY < H+16) {
+        _sBuf.setFont(&fonts::Font2);
+        _sBuf.setTextDatum(middle_center);
+        _sBuf.setTextColor(S_WHITE);
+        _sBuf.drawString("Settings", cx, 16-scrollY);
+        _sBuf.setFont(&fonts::Font0);
+        _sBuf.setTextColor(S_DIM);
+        _sBuf.drawString(mpgOk?"MPG: Connected":"MPG: Not detected", cx, 30-scrollY);
     }
 
-    int y = 36 - scrollY, bx0 = 68, bW = W - bx0 - 4;
-
-    auto lbl2 = [&](const char* t) {
-        if (!visible(y)) return;
-        display.setFont(&fonts::Font0);
-        display.setTextDatum(middle_left);
-        display.setTextColor(S_DIM);
-        display.drawString(t, pad, y + rowH/2);
-    };
-
     // SIM
-    lbl2("SIM");
+    lbTxt(y, "SIM");
     { int bw2=(bW-4)/2;
       sB(bx0,       y+4,bw2,optH,s.simMode?S_PANEL:0x0400,s.simMode?S_BORDER:GREEN,"OFF",s.simMode?S_DIM:S_WHITE);
       sB(bx0+bw2+4, y+4,bw2,optH,s.simMode?0x0019:S_PANEL,s.simMode?S_CYAN:S_BORDER,"SIM ON",s.simMode?S_WHITE:S_DIM);
-    }
-    y += rowH;
+    } y += rowH;
+
     // THEME
-    lbl2("THEME");
+    lbTxt(y, "THEME");
     { int tw=(bW-8)/3; const char* th[]={"Dark","Neutral","Light"};
       for(int i=0;i<3;i++){bool s2=((int)s.theme==i);
         sB(bx0+i*(tw+4),y+4,tw,optH,s2?0x0019:S_PANEL,s2?S_CYAN:S_BORDER,th[i],s2?S_WHITE:S_DIM);}
-    }
-    y += rowH;
+    } y += rowH;
+
     // P6 BTN
-    lbl2("P6 BTN");
+    lbTxt(y, "P6 BTN");
     { int enw=(bW-12)/5; const char* en[]={"Gate","Touch","Jog","Macro","Off"};
       for(int i=0;i<5;i++){bool s2=((int)s.enableMode==i);
         sB(bx0+i*(enw+3),y+4,enw,optH,s2?0x0019:S_PANEL,s2?S_CYAN:S_BORDER,en[i],s2?S_WHITE:S_DIM);}
-    }
-    y += rowH;
+    } y += rowH;
+
     // WORK
-    display.setFont(&fonts::Font0); display.setTextDatum(middle_left); display.setTextColor(S_DIM);
-    display.drawString("WORK", pad, y+rowH/2);
-    { int bw2=22, lx=bx0;
-      display.setTextColor(S_DIM2); display.drawString("X:", lx, y+rowH/2); lx+=14;
-      sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE); lx+=bw2+2;
-      char xb[8]; snprintf(xb,8,"%d",s.workX);
-      display.setTextColor(S_WHITE); display.drawString(xb, lx, y+rowH/2); lx+=38;
-      sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE); lx+=bw2+10;
-      display.setTextColor(S_DIM2); display.drawString("Y:", lx, y+rowH/2); lx+=14;
-      sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE); lx+=bw2+2;
-      char yb[8]; snprintf(yb,8,"%d",s.workY);
-      display.setTextColor(S_WHITE); display.drawString(yb, lx, y+rowH/2); lx+=44;
-      sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE);
-    }
-    y += rowH;
+    lbTxt(y, "WORK");
+    if (y+rowH > 0 && y < H) {
+        int bw2=22, lx=bx0+24;
+        char xb[8],yb[8]; snprintf(xb,8,"%d",s.workX); snprintf(yb,8,"%d",s.workY);
+        sB(lx,       y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE);
+        _sBuf.setTextDatum(middle_left); _sBuf.setTextColor(S_WHITE);
+        _sBuf.drawString(xb, lx+bw2+4, y+rowH/2);
+        sB(lx+bw2+4+34,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE);
+        int lx2 = lx+bw2+4+34+bw2+10;
+        _sBuf.setTextColor(S_DIM2); _sBuf.drawString("Y:", lx2, y+rowH/2); lx2+=16;
+        sB(lx2,      y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE);
+        _sBuf.setTextColor(S_WHITE); _sBuf.drawString(yb, lx2+bw2+4, y+rowH/2);
+        sB(lx2+bw2+4+34,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE);
+        _sBuf.setTextColor(S_DIM2); _sBuf.setTextDatum(middle_left);
+        _sBuf.drawString("X:", bx0, y+rowH/2);
+    } y += rowH;
+
     // HOME
-    display.setTextColor(S_DIM); display.drawString("HOME", pad, y+rowH/2);
+    lbTxt(y, "HOME");
     { const char* hc[]={"Bot-L","Bot-R","Top-L","Top-R"}; int hw=(bW-12)/4;
       for(int i=0;i<4;i++){bool s2=((int)s.homeCorner==i);
         sB(bx0+i*(hw+4),y+4,hw,optH,s2?0x0400:S_PANEL,s2?GREEN:S_BORDER,hc[i],s2?S_WHITE:S_DIM);}
-    }
-    y += rowH;
-    // BRIGHT — slider bar, drag to adjust
-    lbl2("BRIGHT");
-    { int barX=bx0, barW=bW;
-      display.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
-      display.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
-      int fillW = std::max(4,(s.brightness*barW)/255);
-      display.fillRoundRect(barX+1,y+9,fillW-2,optH-10,3,S_CYAN);
-      char bb[8]; snprintf(bb,8,"%d%%",(s.brightness*100)/255);
-      display.setTextColor(S_WHITE); display.drawString(bb,barX+barW/2,y+rowH/2);
-    }
-    y += rowH;
-    // VOLUME — slider bar
-    lbl2("VOL");
-    { int barX=bx0, barW=bW;
-      display.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
-      display.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
-      int fillW = std::max(4,(s.volume*(barW))/9);
-      display.fillRoundRect(barX+1,y+9,fillW-2,optH-10,3,S_ORANGE);
-      char vb[8]; snprintf(vb,8,"%d/9",s.volume);
-      display.setTextColor(S_WHITE); display.drawString(vb,barX+barW/2,y+rowH/2);
-    }
-    y += rowH;
+    } y += rowH;
+
+    // BRIGHT slider
+    lbTxt(y, "BRIGHT");
+    if (y+rowH > 0 && y < H) {
+        int barX=bx0, barW=bW;
+        _sBuf.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
+        _sBuf.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
+        _sBuf.fillRoundRect(barX+1,y+9,std::max(4,(s.brightness*barW)/255)-2,optH-10,3,S_CYAN);
+        char bb[8]; snprintf(bb,8,"%d%%",(s.brightness*100)/255);
+        _sBuf.setFont(&fonts::Font0); _sBuf.setTextDatum(middle_center);
+        _sBuf.setTextColor(S_WHITE); _sBuf.drawString(bb,barX+barW/2,y+rowH/2);
+    } y += rowH;
+
+    // VOL slider
+    lbTxt(y, "VOL");
+    if (y+rowH > 0 && y < H) {
+        int barX=bx0, barW=bW;
+        _sBuf.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
+        _sBuf.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
+        _sBuf.fillRoundRect(barX+1,y+9,std::max(4,(s.volume*barW)/9)-2,optH-10,3,S_ORANGE);
+        char vb[8]; snprintf(vb,8,"%d/9",s.volume);
+        _sBuf.setFont(&fonts::Font0); _sBuf.setTextDatum(middle_center);
+        _sBuf.setTextColor(S_WHITE); _sBuf.drawString(vb,barX+barW/2,y+rowH/2);
+    } y += rowH;
+
     // Bottom buttons
     y += 4;
     sB(cx-156,y,96,28,S_PANEL,S_CYAN,  "Inputs",     S_CYAN);
     sB(cx-54, y,96,28,S_PANEL,S_ORANGE,"UART",       S_ORANGE);
     sB(cx+50, y,96,28,0x0C00, S_GREEN, "Save & Boot",S_GREEN);
 
-    // Scroll indicator bar
-    { int totalH = 36 + 9 * rowH + 4 + 28 + 8;
+    // Scroll indicator
+    { int totalH = 36 + 9*rowH + 32;
       if (totalH > H) {
-        int tH = std::max(8, H * H / totalH);
-        int tY = scrollY * (H - tH) / std::max(1, totalH - H);
-        display.fillRect(W-4, 0, 4, H, 0x2104);
-        display.fillRect(W-4, tY, 4, tH, S_DIM);
+        int tH = std::max(8, H*H/totalH);
+        int tY = scrollY*(H-tH)/std::max(1,totalH-H);
+        _sBuf.fillRect(W-4, 0, 4, H, 0x2104);
+        _sBuf.fillRect(W-4, tY, 4, tH, S_DIM);
       }
     }
+
+    _sBuf.pushSprite(0, 0);  // single DMA push — no flicker
 }
 
 
@@ -773,5 +779,15 @@ void setup() {
 
 void loop() {
     dispatch_events();  // touch/encoder first — keeps UI responsive
-    fnc_poll();         // then UART parse
+    if (simMode_active()) {
+        // Sim mode: inject fake state periodically, skip UART polling
+        static uint32_t _simLast = 0;
+        if (millis() - _simLast > 400) {
+            _simLast = millis();
+            simMode_tick();
+            simMode_injectState();
+        }
+    } else {
+        fnc_poll();     // UART parse — only when not in sim mode
+    }
 }
