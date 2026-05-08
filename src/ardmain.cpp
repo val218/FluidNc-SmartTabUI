@@ -54,7 +54,7 @@ static bool readEnableNow() {
 }
 
 // ── Settings menu ─────────────────────────────────────────────────────────────
-static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
+static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) {
     display.fillScreen(S_BG);
     int W  = display.width();
     int cx = W / 2;
@@ -69,7 +69,7 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
     display.setTextColor(S_DIM);
     display.drawString(mpgOk ? "MPG: Connected" : "MPG: Not detected", cx, 30);
 
-    int y = 36, rowH = 24, pad = 6, optH = 18;
+    int y = 36 - scrollY, rowH = 48, pad = 6, optH = 36;
     int bx0 = 68;           // all button rows start here
     int bW  = W - bx0 - 4; // available width for buttons
 
@@ -80,6 +80,14 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
         display.setTextColor(S_DIM);
         display.drawString(t, pad, y + rowH/2);
     };
+
+    // ── Sim Mode toggle ──────────────────────────────────────────────────────
+    lbl("SIM");
+    { int bw2=(bW-4)/2;
+      sBtn(bx0,        y+4, bw2, optH, s.simMode?S_PANEL:0x0400, s.simMode?S_BORDER:GREEN, "OFF", s.simMode?S_DIM:S_WHITE);
+      sBtn(bx0+bw2+4,  y+4, bw2, optH, s.simMode?0x0019:S_PANEL, s.simMode?S_CYAN:S_BORDER, "SIM ON", s.simMode?S_WHITE:S_DIM);
+    }
+    y += rowH;
 
     // ── Theme (3 buttons) ────────────────────────────────────────────────────
     lbl("THEME");
@@ -472,8 +480,15 @@ static void runSettingsMenu(AppSettings& s) {
         if (!t.wasClicked()) { delay(20); continue; }
         int tx = t.x, ty = t.y;
 
-        int y = 36, rowH = 24, optH = 18;
+        int y = 36, rowH = 48, optH = 36;
         int bx0 = 68, bW = W - bx0 - 4;
+
+        // Sim mode row
+        { int bw2=(bW-4)/2;
+          if (touchIn(tx,ty, bx0,       y+4, bw2, optH)) s.simMode = false;
+          if (touchIn(tx,ty, bx0+bw2+4, y+4, bw2, optH)) s.simMode = true;
+        }
+        y += rowH;
 
         // Theme row
         { int tw=(bW-8)/3;
@@ -515,24 +530,24 @@ static void runSettingsMenu(AppSettings& s) {
         y += 4;
 
         // Input Monitor
-        if (touchIn(tx,ty, cx-156, y, 96, 28)) {
+        if (touchIn(tx,ty, cx-156, 36+7*rowH+4, 96, 28)) {
             runInputMonitor();
             drawSettingsMenu(s, mpgOk);
             continue;
         }
         // UART Monitor
-        if (touchIn(tx,ty, cx-54, y, 96, 28)) {
+        if (touchIn(tx,ty, cx-54, 36+7*rowH+4, 96, 28)) {
             runUartMonitor();
             drawSettingsMenu(s, mpgOk);
             continue;
         }
         // Save & Boot
-        if (touchIn(tx,ty, cx+50, y, 96, 28)) {
+        if (touchIn(tx,ty, cx+50, 36+7*rowH+4, 96, 28)) {
             settings_save(s);
             return;
         }
 
-        drawSettingsMenu(s, mpgOk);
+        drawSettings();
     }
 
 }
@@ -697,13 +712,14 @@ void setup() {
         tabui_setWorkArea(s.workX, s.workY, (int)s.homeCorner);
     }
 
-    // ── Step 3: Show connecting status and enter UI immediately ──────────────
-    // Draw final progress bar state — connection check happens in loop() via
-    // dispatch_events which calls reDisplay showing the disconnected overlay.
-    // This avoids blocking setup() which can cause stack overflow / WDT reset.
-    drawProgress(85, "Connecting...", 0x065F);
-    // Send initial status request — response handled in loop()
-    request_status_report();
+    // ── Step 3: Connect or skip in sim mode ──────────────────────────────────
+    if (s.simMode) {
+        drawProgress(100, "Sim Mode (no connection)", 0x07E0);
+        delay(400);
+    } else {
+        drawProgress(85, "Connecting...", 0x065F);
+        request_status_report();
+    }
 
     // Create canvas — no fillScreen to avoid black flash
     // The first reDisplay() from activate_scene covers the display immediately

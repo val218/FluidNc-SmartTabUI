@@ -467,6 +467,8 @@ static void f2s(const std::string& s, int x, int y, int col, int datum = middle_
 // TabScene
 // ─────────────────────────────────────────────────────────────────────────────
 uint32_t g_pressExpiryMs = 0;
+static int      _alarmBeepCount = 0;
+static uint32_t _alarmBeepNext  = 0;
 class TabScene : public Scene {
 private:
     int  _tab      = 0;
@@ -1821,7 +1823,11 @@ public:
     void onLimitsChange() override { if (_tab == 1) reDisplay(); }
 
     void onStateChange(state_t old_state) override {
-        if (state == Alarm) _alarmOpen = true;
+        if (state == Alarm) {
+            _alarmOpen = true;
+            _alarmBeepCount = 4;  // beep 4 times
+            _alarmBeepNext = millis();
+        }
         else _alarmOpen = false;
         if (state == Idle) { _jobSentToFluidNC = false; }
         // Reconnection: re-request axis config when coming back online
@@ -2441,9 +2447,18 @@ void mpgCheckMacroFire() {
 
 // Global press expiry — set by any button press, checked in dispatch_events
 void tabui_checkPressExpiry() {
-    if (g_pressExpiryMs > 0 && millis() >= g_pressExpiryMs) {
+    uint32_t now = millis();
+    if (g_pressExpiryMs > 0 && now >= g_pressExpiryMs) {
         g_pressExpiryMs = 0;
         markDirty();
+    }
+    // Alarm two-tone beep (4 pairs)
+    if (_alarmBeepCount > 0 && now >= _alarmBeepNext) {
+        beep_ui(880,  60);   // low tone
+        delay(80);
+        beep_ui(1400, 60);   // high tone
+        _alarmBeepCount--;
+        _alarmBeepNext = now + 500;  // 500ms between pairs
     }
 }
 
