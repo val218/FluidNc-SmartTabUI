@@ -14,6 +14,7 @@
 #include "driver/gpio.h"
 
 #include <driver/uart.h>
+#include "driver/ledc.h"
 #include "hal/uart_hal.h"
 
 int lockout_pin = GPIO_NUM_34;
@@ -256,6 +257,24 @@ void init_hardware() {
     touch.begin(&display);
     init_encoder(enc_a, enc_b);
     init_fnc_uart(FNC_UART_NUM, PND_TX_FNC_RX_PIN, PND_RX_FNC_TX_PIN);
+
+    // Speaker: GPIO26 via on-board amplifier — configure LEDC for tone generation
+    ledc_timer_config_t spk_timer = {};
+    spk_timer.speed_mode       = LEDC_LOW_SPEED_MODE;
+    spk_timer.duty_resolution  = LEDC_TIMER_8_BIT;
+    spk_timer.timer_num        = LEDC_TIMER_3;
+    spk_timer.freq_hz          = 1000;
+    spk_timer.clk_cfg          = LEDC_AUTO_CLK;
+    ledc_timer_config(&spk_timer);
+
+    ledc_channel_config_t spk_ch = {};
+    spk_ch.gpio_num   = GPIO_NUM_26;
+    spk_ch.speed_mode = LEDC_LOW_SPEED_MODE;
+    spk_ch.channel    = LEDC_CHANNEL_5;
+    spk_ch.timer_sel  = LEDC_TIMER_3;
+    spk_ch.duty       = 0;   // silent at start
+    spk_ch.hpoint     = 0;
+    ledc_channel_config(&spk_ch);
     touch.setFlickThresh(10);
 }
 
@@ -394,3 +413,30 @@ void update_events() {
 
 void ackBeep() {}
 void deep_sleep(int us) {}
+
+// ── Speaker beep functions ────────────────────────────────────────────────────
+// Non-blocking: sets tone on/off using LEDC, caller responsible for timing
+// or use beep() which uses a FreeRTOS one-shot timer
+
+static esp_timer_handle_t _beepTimer = nullptr;
+static void _beepStop(void*) {
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, 0);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+}
+
+void beep(int freq_hz, int duration_ms, int duty) {
+    if (duty <= 0) return;  // muted
+    if (duty > 128) duty = 128;
+    // Stop any running beep
+    if (_beepTimer) { esp_timer_stop(_beepTimer); }
+    else {
+        esp_timer_create_args_t args = {};
+        args.callback = _beepStop;
+        args.name = "beep";
+        esp_timer_create(&args, &_beepTimer);
+    }
+    ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_3, freq_hz);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_5);
+    esp_timer_start_once(_beepTimer, duration_ms * 1000ULL);
+}

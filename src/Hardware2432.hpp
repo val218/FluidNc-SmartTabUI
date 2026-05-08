@@ -22,3 +22,6 @@ constexpr static const int FNC_UART_NUM      = 0;
 // GPIO assignments for the encoder are set by
 // init_hardware() in Hardware2432.cpp, based
 // on which board variant is in use.
+
+// Speaker beep — non-blocking, uses LEDC on GPIO26
+void beep(int freq_hz, int duration_ms, int duty = 128);

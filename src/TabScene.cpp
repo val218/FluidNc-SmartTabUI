@@ -10,6 +10,7 @@
 #include "driver/pcnt.h"
 #include "FileParser.h"
 #include "System.h"
+#include "Hardware2432.hpp"
 extern volatile uint32_t fnc_tx_count;
 extern override_percent_t mySro;
 extern override_percent_t myRro;
@@ -260,6 +261,11 @@ void readMpgSwitches() {
 
     if (mpgAxis != prevAxis || mpgStepIdx != prevStep) {
         _mpgChanged = true;  // picked up by dispatch_events on Core 1
+        // Audible feedback: different tones for axis vs step change
+        if (mpgAxis != prevAxis)
+            beep_ui(mpgAxis >= 0 ? 1200 : 800, 30);   // axis selected: 1200Hz / deselected: 800Hz
+        else
+            beep_ui(1800, 20);                          // step changed: higher short pip
     }
 }
 static const char* QUICK_CMDS[] = { "$H", "$?", "!", "~", "$X" };
@@ -2434,5 +2440,13 @@ void tabui_checkPressExpiry() {
         markDirty();
     }
 }
+
+static int _volumeLevel = 5;  // 0=mute, 1-9
+
+void tabui_setVolume(int v) {
+    _volumeLevel = (v < 0) ? 0 : (v > 9) ? 9 : v;
+}
+
+int tabui_getVolume() { return _volumeLevel; }
 
 Scene* getTabScene() { return &tabScene; }

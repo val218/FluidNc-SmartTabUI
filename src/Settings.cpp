@@ -16,6 +16,8 @@ void settings_load(AppSettings& s) {
     v = 1250;            nvs_get_i32(_nvs, "workX",       &v); s.workX       = v;
     v = 2500;            nvs_get_i32(_nvs, "workY",       &v); s.workY       = v;
     v = 0;               nvs_get_i32(_nvs, "homeCorner",  &v); s.homeCorner  = (HomeCorner)v;
+    v = 200;             nvs_get_i32(_nvs, "brightness",  &v); s.brightness  = v;
+    v = 5;               nvs_get_i32(_nvs, "volume",      &v); s.volume      = v;
 }
 
 void settings_save(const AppSettings& s) {

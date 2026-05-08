@@ -30,7 +30,10 @@ struct AppSettings {
     int        workX       = 1250;   // mm — short axis
     int        workY       = 2500;   // mm — long axis
     HomeCorner homeCorner  = HomeCorner::BottomLeft;
+    int        brightness  = 200;   // backlight 10-255
+    int        volume      = 5;     // beep volume 0-9 (0=mute)
 };
+
 
 void settings_load(AppSettings& s);
 void settings_save(const AppSettings& s);

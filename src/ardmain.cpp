@@ -144,6 +144,39 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk) {
     }
     y += rowH;
 
+    // ── Brightness ─────────────────────────────────────────────────────────
+    lbl("BRIGHT");
+    { int bw2=22, lx=bx0;
+      sBtn(lx, y+4, bw2, optH, S_PANEL, S_BORDER, "-", S_WHITE); lx+=bw2+4;
+      // Bar showing current brightness
+      int barW = bW - 2*bw2 - 16;
+      display.fillRect(lx, y+8, barW, optH-8, S_PANEL);
+      display.drawRect(lx, y+8, barW, optH-8, S_BORDER);
+      int fillW = (s.brightness * barW) / 255;
+      display.fillRect(lx+1, y+9, fillW-2, optH-10, S_CYAN);
+      char brbuf[8]; snprintf(brbuf,sizeof(brbuf),"%d%%",(s.brightness*100)/255);
+      display.setFont(&fonts::Font0); display.setTextDatum(middle_center);
+      display.setTextColor(S_WHITE);
+      display.drawString(brbuf, lx+barW/2, y+rowH/2);
+      lx += barW + 4;
+      sBtn(lx, y+4, bw2, optH, S_PANEL, S_BORDER, "+", S_WHITE);
+    }
+    y += rowH;
+
+    // ── Volume ─────────────────────────────────────────────────────────────
+    lbl("VOLUME");
+    { int vw=(bW-2)/10; 
+      const char* vlbls[]={"0","1","2","3","4","5","6","7","8","9"};
+      for(int i=0;i<10;i++) {
+        bool sel2=(s.volume==i);
+        uint16_t bg = (i==0) ? S_PANEL : sel2 ? 0x0019 : S_PANEL;
+        uint16_t bc = (i==0) ? S_DIM   : sel2 ? S_CYAN  : S_BORDER;
+        uint16_t tc = (i==0) ? S_DIM   : sel2 ? S_WHITE : S_DIM;
+        sBtn(bx0+i*(vw+2), y+4, vw, optH, bg, bc, vlbls[i], tc);
+      }
+    }
+    y += rowH;
+
     // ── Monitor + Save buttons ─────────────────────────────────────────────
     y += 4;
     int cx2 = display.width() / 2;
@@ -650,6 +683,8 @@ void setup() {
     tabui_setAxes((int)s.axes);
     tabui_setEnableMode((int)s.enableMode, s.enableMacro);
     tabui_setWorkArea(s.workX, s.workY, (int)s.homeCorner);
+    tabui_setVolume(s.volume);
+    display.setBrightness(s.brightness);
 
     if (enterSettings) {
         drawProgress(65, "Entering settings...", 0x07E0);
