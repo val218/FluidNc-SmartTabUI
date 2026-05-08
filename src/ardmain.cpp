@@ -54,50 +54,50 @@ static bool readEnableNow() {
 }
 
 // ── Settings menu ─────────────────────────────────────────────────────────────
-static lgfx::LGFX_Sprite _settingsSprite(&display);
-static bool _spriteReady = false;
-
 static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) {
     int W  = display.width();
     int H  = display.height();
     int cx = W / 2;
     int rowH = 48, pad = 6, optH = 36;
-    int totalH = 36 + 9 * rowH + 4 + 28 + 8;  // all rows + buttons + padding
 
-    // Create sprite the full height of the content
-    if (!_spriteReady) {
-        _settingsSprite.setColorDepth(8);
-        _settingsSprite.createSprite(W, totalH);
-        _spriteReady = true;
-    }
-    _settingsSprite.fillSprite(S_BG);
+    // Draw directly to display — fillScreen once, then draw all rows
+    // Offset each row by -scrollY to implement scrolling
+    display.fillScreen(S_BG);
 
-    // Helper to draw buttons into sprite
+    // Helper: skip drawing if row is completely off-screen
+    auto visible = [&](int ry) { return ry + rowH > 0 && ry < H; };
+
+    // Helper to draw buttons
     auto sB = [&](int x, int y2, int w, int h, uint16_t bg, uint16_t bc, const char* lbl, uint16_t tc) {
-        _settingsSprite.fillRoundRect(x, y2, w, h, 3, bg);
-        _settingsSprite.drawRoundRect(x, y2, w, h, 3, bc);
-        _settingsSprite.setFont(&fonts::Font0);
-        _settingsSprite.setTextDatum(middle_center);
-        _settingsSprite.setTextColor(tc);
-        _settingsSprite.drawString(lbl, x+w/2, y2+h/2);
+        if (y2 + h < 0 || y2 > H) return;
+        display.fillRoundRect(x, y2, w, h, 3, bg);
+        display.drawRoundRect(x, y2, w, h, 3, bc);
+        display.setFont(&fonts::Font0);
+        display.setTextDatum(middle_center);
+        display.setTextColor(tc);
+        display.drawString(lbl, x+w/2, y2+h/2);
     };
 
-    // Title (scrolls with content)
-    _settingsSprite.setFont(&fonts::Font2);
-    _settingsSprite.setTextDatum(middle_center);
-    _settingsSprite.setTextColor(S_WHITE);
-    _settingsSprite.drawString("Settings", cx, 16);
-    _settingsSprite.setFont(&fonts::Font0);
-    _settingsSprite.setTextColor(S_DIM);
-    _settingsSprite.drawString(mpgOk ? "MPG: Connected" : "MPG: Not detected", cx, 30);
+    // Title
+    int titleY = 16 - scrollY;
+    if (titleY > -20 && titleY < H+20) {
+        display.setFont(&fonts::Font2);
+        display.setTextDatum(middle_center);
+        display.setTextColor(S_WHITE);
+        display.drawString("Settings", cx, titleY);
+        display.setFont(&fonts::Font0);
+        display.setTextColor(S_DIM);
+        display.drawString(mpgOk ? "MPG: Connected" : "MPG: Not detected", cx, 30 - scrollY);
+    }
 
-    int y = 36, bx0 = 68, bW = W - bx0 - 4;
+    int y = 36 - scrollY, bx0 = 68, bW = W - bx0 - 4;
 
     auto lbl2 = [&](const char* t) {
-        _settingsSprite.setFont(&fonts::Font0);
-        _settingsSprite.setTextDatum(middle_left);
-        _settingsSprite.setTextColor(S_DIM);
-        _settingsSprite.drawString(t, pad, y + rowH/2);
+        if (!visible(y)) return;
+        display.setFont(&fonts::Font0);
+        display.setTextDatum(middle_left);
+        display.setTextColor(S_DIM);
+        display.drawString(t, pad, y + rowH/2);
     };
 
     // SIM
@@ -122,23 +122,23 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     }
     y += rowH;
     // WORK
-    _settingsSprite.setFont(&fonts::Font0); _settingsSprite.setTextDatum(middle_left); _settingsSprite.setTextColor(S_DIM);
-    _settingsSprite.drawString("WORK", pad, y+rowH/2);
+    display.setFont(&fonts::Font0); display.setTextDatum(middle_left); display.setTextColor(S_DIM);
+    display.drawString("WORK", pad, y+rowH/2);
     { int bw2=22, lx=bx0;
-      _settingsSprite.setTextColor(S_DIM2); _settingsSprite.drawString("X:", lx, y+rowH/2); lx+=14;
+      display.setTextColor(S_DIM2); display.drawString("X:", lx, y+rowH/2); lx+=14;
       sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE); lx+=bw2+2;
       char xb[8]; snprintf(xb,8,"%d",s.workX);
-      _settingsSprite.setTextColor(S_WHITE); _settingsSprite.drawString(xb, lx, y+rowH/2); lx+=38;
+      display.setTextColor(S_WHITE); display.drawString(xb, lx, y+rowH/2); lx+=38;
       sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE); lx+=bw2+10;
-      _settingsSprite.setTextColor(S_DIM2); _settingsSprite.drawString("Y:", lx, y+rowH/2); lx+=14;
+      display.setTextColor(S_DIM2); display.drawString("Y:", lx, y+rowH/2); lx+=14;
       sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE); lx+=bw2+2;
       char yb[8]; snprintf(yb,8,"%d",s.workY);
-      _settingsSprite.setTextColor(S_WHITE); _settingsSprite.drawString(yb, lx, y+rowH/2); lx+=44;
+      display.setTextColor(S_WHITE); display.drawString(yb, lx, y+rowH/2); lx+=44;
       sB(lx,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE);
     }
     y += rowH;
     // HOME
-    _settingsSprite.setTextColor(S_DIM); _settingsSprite.drawString("HOME", pad, y+rowH/2);
+    display.setTextColor(S_DIM); display.drawString("HOME", pad, y+rowH/2);
     { const char* hc[]={"Bot-L","Bot-R","Top-L","Top-R"}; int hw=(bW-12)/4;
       for(int i=0;i<4;i++){bool s2=((int)s.homeCorner==i);
         sB(bx0+i*(hw+4),y+4,hw,optH,s2?0x0400:S_PANEL,s2?GREEN:S_BORDER,hc[i],s2?S_WHITE:S_DIM);}
@@ -147,23 +147,23 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     // BRIGHT — slider bar, drag to adjust
     lbl2("BRIGHT");
     { int barX=bx0, barW=bW;
-      _settingsSprite.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
-      _settingsSprite.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
+      display.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
+      display.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
       int fillW = std::max(4,(s.brightness*barW)/255);
-      _settingsSprite.fillRoundRect(barX+1,y+9,fillW-2,optH-10,3,S_CYAN);
+      display.fillRoundRect(barX+1,y+9,fillW-2,optH-10,3,S_CYAN);
       char bb[8]; snprintf(bb,8,"%d%%",(s.brightness*100)/255);
-      _settingsSprite.setTextColor(S_WHITE); _settingsSprite.drawString(bb,barX+barW/2,y+rowH/2);
+      display.setTextColor(S_WHITE); display.drawString(bb,barX+barW/2,y+rowH/2);
     }
     y += rowH;
     // VOLUME — slider bar
     lbl2("VOL");
     { int barX=bx0, barW=bW;
-      _settingsSprite.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
-      _settingsSprite.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
+      display.fillRoundRect(barX,y+8,barW,optH-8,3,S_PANEL);
+      display.drawRoundRect(barX,y+8,barW,optH-8,3,S_BORDER);
       int fillW = std::max(4,(s.volume*(barW))/9);
-      _settingsSprite.fillRoundRect(barX+1,y+9,fillW-2,optH-10,3,S_ORANGE);
+      display.fillRoundRect(barX+1,y+9,fillW-2,optH-10,3,S_ORANGE);
       char vb[8]; snprintf(vb,8,"%d/9",s.volume);
-      _settingsSprite.setTextColor(S_WHITE); _settingsSprite.drawString(vb,barX+barW/2,y+rowH/2);
+      display.setTextColor(S_WHITE); display.drawString(vb,barX+barW/2,y+rowH/2);
     }
     y += rowH;
     // Bottom buttons
@@ -174,7 +174,7 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
 
     // Push visible slice of sprite to display — no flicker
     // Copy only rows [scrollY .. scrollY+H] from sprite to display at (0,0)
-    _settingsSprite.pushSprite(0, -scrollY);
+    display.pushSprite(0, -scrollY);
     // Scroll indicator bar
     if (totalH > H) {
         int tH = std::max(8, H * H / totalH);
