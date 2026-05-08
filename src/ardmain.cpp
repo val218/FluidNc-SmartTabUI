@@ -172,15 +172,14 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     sB(cx-54, y,96,28,S_PANEL,S_ORANGE,"UART",       S_ORANGE);
     sB(cx+50, y,96,28,0x0C00, S_GREEN, "Save & Boot",S_GREEN);
 
-    // Push visible slice of sprite to display — no flicker
-    // Copy only rows [scrollY .. scrollY+H] from sprite to display at (0,0)
-    display.pushSprite(0, -scrollY);
     // Scroll indicator bar
-    if (totalH > H) {
+    { int totalH = 36 + 9 * rowH + 4 + 28 + 8;
+      if (totalH > H) {
         int tH = std::max(8, H * H / totalH);
         int tY = scrollY * (H - tH) / std::max(1, totalH - H);
-        display.fillRect(W-4, 0, 4, H, S_PANEL);
+        display.fillRect(W-4, 0, 4, H, 0x2104);
         display.fillRect(W-4, tY, 4, tH, S_DIM);
+      }
     }
 }
 
