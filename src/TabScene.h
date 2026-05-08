@@ -22,3 +22,5 @@ void   tabui_setAxes(int axes);    // 0=XYZ 1=XYZA 2=XY 3=XYYZ
 void   tabui_setEnableMode(int mode, int macro);
 void   tabui_setWorkArea(int wx, int wy, int homeCorner);  // configure P6 behaviour
 int    tabui_getAxes();
+void   tabui_setVolume(int v);  // 0=mute 1-9
+void   tabui_checkPressExpiry();
