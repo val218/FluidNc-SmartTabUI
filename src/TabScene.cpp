@@ -460,6 +460,12 @@ static void f2s(const std::string& s, int x, int y, int col, int datum = middle_
 // TabScene
 // ─────────────────────────────────────────────────────────────────────────────
 uint32_t g_pressExpiryMs = 0;
+static int _volumeLevel = 5;  // 0=mute, 1-9 — must be before class
+
+static void beep_ui(int freq_hz, int duration_ms) {
+    if (_volumeLevel == 0) return;
+    beep(freq_hz, duration_ms, _volumeLevel * 14);
+}
 
 class TabScene : public Scene {
 private:
@@ -2441,12 +2447,8 @@ void tabui_checkPressExpiry() {
     }
 }
 
-static int _volumeLevel = 5;  // 0=mute, 1-9
-
 void tabui_setVolume(int v) {
     _volumeLevel = (v < 0) ? 0 : (v > 9) ? 9 : v;
 }
-
-int tabui_getVolume() { return _volumeLevel; }
 
 Scene* getTabScene() { return &tabScene; }
