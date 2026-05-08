@@ -184,6 +184,13 @@ static uint8_t readPCF8574() {
     return (err == ESP_OK) ? val : 0xFF;
 }
 
+static int _volumeLevel = 5;  // 0=mute, 1-9
+
+static void beep_ui(int freq_hz, int duration_ms) {
+    if (_volumeLevel == 0) return;
+    beep(freq_hz, duration_ms, _volumeLevel * 14);
+}
+
 void readMpgSwitches() {
     static uint32_t lastRead = 0;
     uint32_t now = millis();
@@ -460,13 +467,6 @@ static void f2s(const std::string& s, int x, int y, int col, int datum = middle_
 // TabScene
 // ─────────────────────────────────────────────────────────────────────────────
 uint32_t g_pressExpiryMs = 0;
-static int _volumeLevel = 5;  // 0=mute, 1-9 — must be before class
-
-static void beep_ui(int freq_hz, int duration_ms) {
-    if (_volumeLevel == 0) return;
-    beep(freq_hz, duration_ms, _volumeLevel * 14);
-}
-
 class TabScene : public Scene {
 private:
     int  _tab      = 0;
