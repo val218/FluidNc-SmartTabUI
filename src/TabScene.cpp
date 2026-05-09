@@ -507,7 +507,12 @@ private:
     uint32_t _macroPressTime = 0; // when macro was pressed
     bool _previewShowPath = false;  // false=gcode text, true=path viz
     bool _spindleMenuOpen = false;  // spindle sub-menu open in macros tab
-    Rect _unlockBtn;
+    Rect _unlockBtn={0,0,0,0};
+    Rect _rehomeBtn={0,0,0,0};
+    Rect _rehomeResBtn={0,0,0,0};
+    Rect _unlockBtnFull={0,0,0,0};
+    Rect _zCloseBtn={0,0,0,0};
+    Rect _zResumeBtn={0,0,0,0};
     Rect _probeClose;
     Rect _probeRows[N_PROBE_OPTS];
     Rect _cmdBtns[N_QUICK_CMDS];
@@ -2236,7 +2241,7 @@ public:
                 // Recovery buttons
                 if (hit(_unlockBtn, x, y)) {
                     // "Resume if safe"
-                    send_line("$X"); delay(80); fnc_realtime(CycleStartResume);
+                    send_line("$X"); delay(80); fnc_realtime((realtime_cmd_t)'~');
                     fnc_term_inject("> Resume after e-stop");
                     _estopRecovery=0; _alarmOpen=false; markDirty(); return;
                 }
