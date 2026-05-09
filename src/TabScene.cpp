@@ -1812,7 +1812,7 @@ private:
         bool estopRecovery = (_estopRecovery >= 1 && !estopPressed);  // estop was pressed, now released
 
         // Taller panel for recovery options
-        int ph = estopRecovery ? 170 : 130;
+        int ph = estopRecovery ? 196 : 130;
         int pw = W - 20;
         int cx = W/2, cy = (NAV_Y+TOP)/2;
         int px = cx-pw/2, py = cy-ph/2;
@@ -1820,43 +1820,41 @@ private:
         strokeR(px,py,pw,ph,8,RED);
 
         if (estopPressed) {
-            f2("! E-STOP ACTIVE", cx, py+18, RED);
-            f2("Release e-stop to continue", cx, py+38, COL_WHITE2);
+            // E-stop currently held — just show status
+            f2("! E-STOP ACTIVE", cx, py+20, RED);
+            f2("Release e-stop to see options", cx, py+44, COL_WHITE2);
         } else if (estopRecovery) {
-            // E-stop was pressed, now released — show recovery options
-            f2("! E-STOP RELEASED", cx, py+18, YELLOW);
-            f2("Choose recovery action:", cx, py+36, COL_WHITE2);
-            int bw3=(pw-24)/3, bh3=32, by3=py+52;
-            int bx0=px+8;
+            // E-stop released — recovery menu
+            f2("! E-STOP RELEASED", cx, py+16, YELLOW);
+            f2("Choose recovery:", cx, py+32, COL_WHITE2);
+            // Three stacked buttons — much easier to read than cramped row
+            int bh3=30, bw3=pw-16, bby=py+46;
             // Resume if safe
-            canvas.fillRoundRect(bx0,             by3,bw3,bh3,3,GREEN);
-            f2("Resume",bx0+bw3/2,by3+bh3/2,COL_BG,middle_center);
-            f2("if safe",bx0+bw3/2,by3+bh3/2+12,COL_BG,middle_center);
+            canvas.fillRoundRect(px+8,bby,       bw3,bh3,3,GREEN);
+            f2("Resume if safe  (~)",cx,bby+bh3/2,COL_BG,middle_center);
+            _unlockBtn={px+8,bby,bw3,bh3};
+            bby+=bh3+4;
             // Rehome
-            canvas.fillRoundRect(bx0+bw3+8,       by3,bw3,bh3,3,COL_AX_Z);
-            f2("Rehome",bx0+bw3+8+bw3/2,by3+bh3/2,COL_BG,middle_center);
-            f2("$H",    bx0+bw3+8+bw3/2,by3+bh3/2+12,COL_BG,middle_center);
+            canvas.fillRoundRect(px+8,bby,       bw3,bh3,3,COL_AX_Z);
+            f2("Rehome  ($H)",cx,bby+bh3/2,COL_BG,middle_center);
+            _rehomeBtn={px+8,bby,bw3,bh3};
+            bby+=bh3+4;
             // Rehome + Resume
-            canvas.fillRoundRect(bx0+bw3*2+16,    by3,bw3,bh3,3,ORANGE);
-            f2("Rehome+",bx0+bw3*2+16+bw3/2,by3+bh3/2,COL_BG,middle_center);
-            f2("Resume", bx0+bw3*2+16+bw3/2,by3+bh3/2+12,COL_BG,middle_center);
-            // Store rects for touch
-            _unlockBtn   = {bx0,          by3, bw3, bh3};  // Resume if safe
-            _rehomeBtn   = {bx0+bw3+8,    by3, bw3, bh3};  // Rehome
-            _rehomeResBtn= {bx0+bw3*2+16, by3, bw3, bh3};  // Rehome+Resume
-            // Unlock still available at bottom
-            int ubw2=pw-16, ubh2=28;
-            int ubx2=px+8, uby2=py+ph-ubh2-8;
-            tintStrokeR(ubx2,uby2,ubw2,ubh2,4,RED,RED,40);
-            f2("UNLOCK ($X)",cx,uby2+ubh2/2,COL_WHITE,middle_center);
-            _unlockBtnFull = {ubx2,uby2,ubw2,ubh2};
+            canvas.fillRoundRect(px+8,bby,       bw3,bh3,3,ORANGE);
+            f2("Rehome + Resume job",cx,bby+bh3/2,COL_BG,middle_center);
+            _rehomeResBtn={px+8,bby,bw3,bh3};
+            bby+=bh3+4;
+            // Plain unlock
+            canvas.fillRoundRect(px+8,bby,       bw3,bh3,3,COL_PANEL2);
+            canvas.drawRoundRect(px+8,bby,       bw3,bh3,3,RED);
+            f2("Just Unlock  ($X)",cx,bby+bh3/2,COL_WHITE,middle_center);
+            _unlockBtnFull={px+8,bby,bw3,bh3};
         } else {
-            // Normal alarm (not estop)
+            // Normal FluidNC alarm
             f2("! ALARM", cx, py+22, RED);
-            f2("Press UNLOCK to clear alarm", cx, py+44, COL_WHITE2);
-            int ubw2=pw-16, ubh2=36;
-            int ubx2=px+8, uby2=py+ph-ubh2-8;
-            _unlockBtn = {ubx2, uby2, ubw2, ubh2};
+            f2("Clear alarm with $X", cx, py+44, COL_WHITE2);
+            int ubw2=pw-16, ubh2=36, ubx2=px+8, uby2=py+ph-ubh2-10;
+            _unlockBtn={ubx2,uby2,ubw2,ubh2};
             tintStrokeR(ubx2,uby2,ubw2,ubh2,6,RED,RED,60);
             f2("UNLOCK  ($X)",cx,uby2+ubh2/2,COL_WHITE,middle_center);
         }
@@ -2331,6 +2329,16 @@ public:
             // Clear [×] button — top-right of viz area (clears loaded G-code path)
             // Viz area: double-tap = fullscreen toggle, [×] corner = clear path
             if (x >= VIZ_X && x < VIZ_X+VIZ_W && y >= VIZ_Y && y < VIZ_Y+VIZ_H) {
+                // Z nudge: open if in Hold state, close if already open
+                if (_zNudgeOpen) {
+                    if (hit(_zCloseBtn,x,y))  { _zNudgeOffset=0;send_line("G49");_zNudgeOpen=false;markDirty();return;}
+                    if (hit(_zResumeBtn,x,y)) { _zNudgeOpen=false;fnc_realtime((realtime_cmd_t)'~');markDirty();return;}
+                    return;  // consume touch while Z nudge open
+                }
+                if (state == Hold) {
+                    _zNudgeOpen=true; _zNudgeOffset=0.0f; markDirty(); return;
+                }
+                // Normal viz tap — clear or double-tap fullscreen
                 if (!vizPath.empty() && x >= VIZ_X+VIZ_W-26 && y <= VIZ_Y+21) {
                     vizPath.clear(); vizJobName.clear(); vizPathExecuted=0;
                     _vizFullscreen=false; markDirty(); return;
