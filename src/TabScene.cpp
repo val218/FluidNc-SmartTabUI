@@ -1857,6 +1857,51 @@ private:
         }
     }
 
+    // ── Z height nudge overlay — inside viz area, encoder-controlled ──────────
+    void drawZNudgeOverlay() {
+        int vx=VIZ_X, vy=VIZ_Y, vw=VIZ_W, vh=VIZ_H;
+        canvas.fillRect(vx, vy, vw, vh, COL_PANEL);
+        canvas.drawRect(vx, vy, vw, vh, COL_AX_Z);
+        // Title bar
+        canvas.fillRect(vx, vy, vw, 16, COL_AX_Z);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_BG);
+        canvas.drawString("Z HEIGHT ADJUST", vx+vw/2, vy+8);
+        // Step info
+        float stepVal=mpgSteps[(int)mpgStepIdx];
+        char stepBuf[20]; snprintf(stepBuf,sizeof(stepBuf),"Step: %.3fmm",stepVal);
+        canvas.setTextColor(COL_DIM2); canvas.drawString(stepBuf,vx+vw/2,vy+28);
+        // Current / New / Offset
+        float curZ=myAxes[2], newZ=curZ+_zNudgeOffset;
+        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
+        canvas.setTextColor(COL_DIM2); canvas.drawString("Current Z:",vx+4,vy+44);
+        canvas.setTextDatum(middle_right); canvas.setTextColor(COL_AX_Z);
+        char cb[12]; snprintf(cb,12,"%.3f",curZ); canvas.drawString(cb,vx+vw-4,vy+44);
+        canvas.setTextDatum(middle_left); canvas.setTextColor(COL_DIM2);
+        canvas.drawString("New Z:",vx+4,vy+60);
+        canvas.setTextDatum(middle_right);
+        canvas.setTextColor(_zNudgeOffset>0.0005f?GREEN:_zNudgeOffset<-0.0005f?RED:COL_WHITE);
+        char nb[12]; snprintf(nb,12,"%.3f",newZ); canvas.drawString(nb,vx+vw-4,vy+60);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_DIM2); canvas.drawString("Offset:",vx+vw/2,vy+76);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextColor(_zNudgeOffset>0.0005f?GREEN:_zNudgeOffset<-0.0005f?RED:COL_DIM);
+        char ob[12]; snprintf(ob,12,"%+.3f",_zNudgeOffset); canvas.drawString(ob,vx+vw/2,vy+90);
+        canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+        canvas.drawString("Turn encoder to adjust",vx+vw/2,vy+106);
+        canvas.drawString("Step switch = increment",vx+vw/2,vy+118);
+        // Buttons
+        int bw3=(vw-10)/2, bh3=22, bby=vy+vh-bh3-3;
+        canvas.fillRoundRect(vx+3,    bby,bw3,bh3,3,COL_PANEL2);
+        canvas.drawRoundRect(vx+3,    bby,bw3,bh3,3,COL_BORDER2);
+        canvas.setTextColor(COL_WHITE); canvas.drawString("Cancel",vx+3+bw3/2,bby+bh3/2);
+        canvas.fillRoundRect(vx+7+bw3,bby,bw3,bh3,3,GREEN);
+        canvas.setTextColor(COL_BG); canvas.drawString("Apply+Resume",vx+7+bw3+bw3/2,bby+bh3/2);
+        _zCloseBtn  ={vx+3,     bby,bw3,bh3};
+        _zResumeBtn ={vx+7+bw3, bby,bw3,bh3};
+    }
+
+
 public:
     TabScene() : Scene("TabUI", 4) {}  // encoder_scale=4: X4 PCNT quadrature, 1 detent = 1 step
 
