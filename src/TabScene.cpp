@@ -359,7 +359,8 @@ static bool _vizCacheReady = false;
 static bool _vizFullscreen = false;  // DRO viz double-tap fullscreen
 static bool _confirmRun = false;
 static bool _zNudgeOpen = false;
-static int  _estopRecovery = 0;  // 0=none 1=alarmed 2=released    // Z nudge overlay during job
+static int  _estopRecovery = 0;
+static bool _showEstopRecovery = false;  // set by tabui_setEstopRecovery, read by class  // 0=none 1=alarmed 2=released    // Z nudge overlay during job
 static float _zNudgeOffset = 0.0f;  // accumulated Z nudge     // waiting for run confirmation
 static uint32_t _lastVizTap = 0;    // for double-tap detection
 
@@ -1939,8 +1940,13 @@ public:
             _alarmBeepNext = millis();
             if (mpgEstopActive) _estopRecovery = 1;  // e-stop caused alarm
         }
-        else _alarmOpen = false;
-        if (state == Idle) { _jobSentToFluidNC = false; _estopRecovery = 0; _zNudgeOffset=0; }
+        else {
+            // Keep alarm open if estop recovery is pending
+            if (!_showEstopRecovery) _alarmOpen = false;
+        }
+        if (state == Idle && !_showEstopRecovery) {
+            _jobSentToFluidNC = false; _estopRecovery = 0; _zNudgeOffset=0;
+        }
         // Reconnection: re-request axis config when coming back online
         if (old_state == Disconnected && state != Disconnected) {
             send_line("$axes/count");
@@ -2241,13 +2247,13 @@ public:
                     // "Resume if safe"
                     send_line("$X"); delay(80); fnc_realtime((realtime_cmd_t)'~');
                     fnc_term_inject("> Resume after e-stop");
-                    _estopRecovery=0; _alarmOpen=false; markDirty(); return;
+                    _estopRecovery=0; _showEstopRecovery=false; _alarmOpen=false; markDirty(); return;
                 }
                 if (hit(_rehomeBtn, x, y)) {
                     // Rehome
                     send_line("$X"); delay(80); send_line("$H");
                     fnc_term_inject("> Rehome after e-stop");
-                    _estopRecovery=0; markDirty(); return;
+                    _estopRecovery=0; _showEstopRecovery=false; markDirty(); return;
                 }
                 if (hit(_rehomeResBtn, x, y)) {
                     // Rehome + re-run job
@@ -2259,12 +2265,12 @@ public:
                         _jobSentToFluidNC = true;
                         fnc_term_inject(("> Rehome+Resume: " + simJobName).c_str());
                     }
-                    _estopRecovery=0; markDirty(); return;
+                    _estopRecovery=0; _showEstopRecovery=false; markDirty(); return;
                 }
                 if (hit(_unlockBtnFull, x, y)) {
                     // Plain unlock
                     send_line("$X"); fnc_term_inject("> $X");
-                    _estopRecovery=0; _alarmOpen=false; markDirty(); return;
+                    _estopRecovery=0; _showEstopRecovery=false; _alarmOpen=false; markDirty(); return;
                 }
             } else if (!mpgEstopActive) {
                 // Standard alarm — just unlock
@@ -2635,9 +2641,8 @@ void mpgCheckMacroFire() {
 
 // Global press expiry — set by any button press, checked in dispatch_events
 void tabui_setEstopRecovery() {
-    // Called by mpgTask when e-stop is released — shows recovery menu in overlay
     _estopRecovery = 1;
-    _alarmOpen = true;   // keep overlay open
+    _showEstopRecovery = true;  // signal class to keep overlay open
     markDirty();
 }
 
