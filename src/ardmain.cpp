@@ -122,22 +122,25 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
         sB(bx0+i*(enw+3),y+4,enw,optH,s2?0x0019:S_PANEL,s2?S_CYAN:S_BORDER,en[i],s2?S_WHITE:S_DIM);}
     } y += rowH;
 
-    // WORK
-    lbTxt(y, "WORK");
+    // WORK X (row)
+    lbTxt(y, "X mm");
     if (y+rowH > 0 && y < H) {
-        int bw2=22, lx=bx0+24;
-        char xb[8],yb[8]; snprintf(xb,8,"%d",s.workX); snprintf(yb,8,"%d",s.workY);
-        sB(lx,       y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE);
-        _sBuf->setTextDatum(middle_left); _sBuf->setTextColor(S_WHITE);
-        _sBuf->drawString(xb, lx+bw2+4, y+rowH/2);
-        sB(lx+bw2+4+34,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE);
-        int lx2 = lx+bw2+4+34+bw2+10;
-        _sBuf->setTextColor(S_DIM2); _sBuf->drawString("Y:", lx2, y+rowH/2); lx2+=16;
-        sB(lx2,      y+4,bw2,optH,S_PANEL,S_BORDER,"-",S_WHITE);
-        _sBuf->setTextColor(S_WHITE); _sBuf->drawString(yb, lx2+bw2+4, y+rowH/2);
-        sB(lx2+bw2+4+34,y+4,bw2,optH,S_PANEL,S_BORDER,"+",S_WHITE);
-        _sBuf->setTextColor(S_DIM2); _sBuf->setTextDatum(middle_left);
-        _sBuf->drawString("X:", bx0, y+rowH/2);
+        char xb[8]; snprintf(xb,8,"%d",s.workX);
+        sB(bx0,       y+8,44,optH-8,S_PANEL,S_BORDER,"-",S_WHITE);
+        _sBuf->setFont(&fonts::Font2); _sBuf->setTextDatum(middle_center);
+        _sBuf->setTextColor(S_WHITE);
+        _sBuf->drawString(xb, bx0+44+bW/2-44, y+rowH/2);
+        sB(bx0+bW-44, y+8,44,optH-8,S_PANEL,S_BORDER,"+",S_WHITE);
+    } y += rowH;
+    // WORK Y (row)
+    lbTxt(y, "Y mm");
+    if (y+rowH > 0 && y < H) {
+        char yb[8]; snprintf(yb,8,"%d",s.workY);
+        sB(bx0,       y+8,44,optH-8,S_PANEL,S_BORDER,"-",S_WHITE);
+        _sBuf->setFont(&fonts::Font2); _sBuf->setTextDatum(middle_center);
+        _sBuf->setTextColor(S_WHITE);
+        _sBuf->drawString(yb, bx0+44+bW/2-44, y+rowH/2);
+        sB(bx0+bW-44, y+8,44,optH-8,S_PANEL,S_BORDER,"+",S_WHITE);
     } y += rowH;
 
     // HOME
@@ -178,7 +181,7 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     sB(cx+50, y,96,28,0x0C00, S_GREEN, "Save & Boot",S_GREEN);
 
     // Scroll indicator
-    { int totalH = 36 + 9*rowH + 32;
+    { int totalH = 36 + 10*rowH + 32;
       if (totalH > H) {
         int tH = std::max(8, H*H/totalH);
         int tY = scrollY*(H-tH)/std::max(1,totalH-H);
@@ -482,7 +485,7 @@ static void runSettingsMenu(AppSettings& s) {
         // MPG encoder scroll
         { int16_t enc = get_encoder();
           if (enc != 0) {
-              _settingsScroll = std::max(0, std::min(250, _settingsScroll + enc * 8));
+              _settingsScroll = std::max(0, std::min(300, _settingsScroll + enc * 8));
               drawSettings(); delay(8); continue;
           }
         }
@@ -491,16 +494,16 @@ static void runSettingsMenu(AppSettings& s) {
         if (t.isPressed() && _lastTouchY >= 0) {
             int ty2 = t.y + _settingsScroll;  // content coords
             int rowH2 = 48, bx0_2 = 68, bW2 = W - bx0_2 - 4;
-            // Brightness slider drag
-            { int yBr = 36+5*rowH2+8;
+            // Brightness slider drag  (row 6 = after SIM,THEME,P6,WX,WY,HOME)
+            { int yBr = 36+6*rowH2+8;
               if (ty2 >= yBr && ty2 < yBr+38 && t.x >= bx0_2 && t.x < bx0_2+bW2) {
                   s.brightness = std::max(10, std::min(255, (t.x-bx0_2)*255/bW2));
                   display.setBrightness(s.brightness);
                   drawSettings(); delay(8); continue;
               }
             }
-            // Volume slider drag
-            { int yVol = 36+6*rowH2+8;
+            // Volume slider drag  (row 7)
+            { int yVol = 36+7*rowH2+8;
               if (ty2 >= yVol && ty2 < yVol+38 && t.x >= bx0_2 && t.x < bx0_2+bW2) {
                   s.volume = std::max(0, std::min(9, (t.x-bx0_2)*9/bW2));
                   tabui_setVolume(s.volume);
@@ -510,7 +513,7 @@ static void runSettingsMenu(AppSettings& s) {
             // Otherwise scroll
             int delta = _lastTouchY - t.y;
             if (abs(delta) >= 3) {
-                _settingsScroll = std::max(0, std::min(250, _settingsScroll + delta));
+                _settingsScroll = std::max(0, std::min(300, _settingsScroll + delta));
                 _lastTouchY = t.y;
                 drawSettings();
             }
@@ -551,13 +554,13 @@ static void runSettingsMenu(AppSettings& s) {
             if (touchIn(tx,ty, enx0b+158, y+5, 30, optH) && s.enableMacro < 15) s.enableMacro++;
             y += rowH;
         }
-        // WORK area X -/+
-        { int bw2=22, lx=bx0+14;
-          if (touchIn(tx,ty,lx,   y+4,bw2,optH) && s.workX>50)   s.workX-=50;  lx+=bw2+40;
-          if (touchIn(tx,ty,lx,   y+4,bw2,optH) && s.workX<9999) s.workX+=50;  lx+=bw2+24;
-          if (touchIn(tx,ty,lx,   y+4,bw2,optH) && s.workY>50)   s.workY-=50;  lx+=bw2+46;
-          if (touchIn(tx,ty,lx,   y+4,bw2,optH) && s.workY<9999) s.workY+=50;
-        }
+        // WORK X row
+        if (touchIn(tx,ty, bx0,       y+8, 44, optH-8) && s.workX > 50)   s.workX -= 50;
+        if (touchIn(tx,ty, bx0+bW-44, y+8, 44, optH-8) && s.workX < 9999) s.workX += 50;
+        y += rowH;
+        // WORK Y row
+        if (touchIn(tx,ty, bx0,       y+8, 44, optH-8) && s.workY > 50)   s.workY -= 50;
+        if (touchIn(tx,ty, bx0+bW-44, y+8, 44, optH-8) && s.workY < 9999) s.workY += 50;
         y += rowH;
 
         // Home corner
@@ -570,21 +573,21 @@ static void runSettingsMenu(AppSettings& s) {
         y += 4;
 
         // Input Monitor
-        if (touchIn(tx,ty, cx-156, 36+7*rowH+4, 96, 28)) {
+        if (touchIn(tx,ty, cx-156, 36+8*rowH+4, 96, 28)) {
             runInputMonitor();
             drawSettings();
             continue;
         }
         // UART Monitor
-        if (touchIn(tx,ty, cx-54, 36+7*rowH+4, 96, 28)) {
+        if (touchIn(tx,ty, cx-54, 36+8*rowH+4, 96, 28)) {
             runUartMonitor();
             drawSettings();
             continue;
         }
-        // Save & Boot
-        if (touchIn(tx,ty, cx+50, 36+7*rowH+4, 96, 28)) {
+        // Save & Boot — save then restart for clean state
+        if (touchIn(tx,ty, cx+50, 36+8*rowH+4, 96, 28)) {
             settings_save(s);
-            return;
+            esp_restart();
         }
 
         drawSettings();
@@ -752,15 +755,14 @@ void setup() {
         tabui_setWorkArea(s.workX, s.workY, (int)s.homeCorner);
     }
 
-    // ── Step 3: Connect or skip in sim mode ──────────────────────────────────
-    if (s.simMode) {
-        drawProgress(100, "Sim Mode — no connection needed", 0x07E0);
-        simMode_enable();
-        simMode_injectState();  // inject fake Idle state so UI shows normally
-        delay(300);
-    } else {
+    // ── Step 3: Connect or sim ───────────────────────────────────────────────
+    if (!s.simMode) {
         drawProgress(85, "Connecting...", 0x065F);
         request_status_report();
+    } else {
+        drawProgress(100, "Sim Mode", 0x07E0);
+        simMode_enable();
+        delay(200);
     }
 
     // Create canvas — no fillScreen to avoid black flash
