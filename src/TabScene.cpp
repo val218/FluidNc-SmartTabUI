@@ -357,7 +357,10 @@ static bool _loadingDone  = false;          // all batches received
 // Format: uint32 count, then count * (float x, float y)
 static bool _vizCacheReady = false;
 static bool _vizFullscreen = false;  // DRO viz double-tap fullscreen
-static bool _confirmRun = false;     // waiting for run confirmation
+static bool _confirmRun = false;
+static bool _zNudgeOpen = false;
+static int  _estopRecovery = 0;  // 0=none 1=alarmed 2=released    // Z nudge overlay during job
+static float _zNudgeOffset = 0.0f;  // accumulated Z nudge     // waiting for run confirmation
 static uint32_t _lastVizTap = 0;    // for double-tap detection
 
 static uint32_t vizCacheKey(const std::string& name, int size) {
@@ -497,6 +500,7 @@ private:
     Rect _homeAllBtn, _probeBtnR;
     Rect _axisHomeBtns[3];
     Rect _zeroWcsBtns[4];
+    Rect _gotoZeroBtns[4];
     int  _homePressedId = -1;  // which home button was last pressed (-1=none)
     uint32_t _homePressTime = 0;  // when it was pressed
     int  _macroPressedId = -1;   // which macro was last pressed
@@ -1170,19 +1174,16 @@ private:
 
     // ── Homing screen ────────────────────────────────────────────────────────
     void drawHomingScreen() {
-        int pad=8, gap=4, bw=W-2*pad;
+        int pad=6, gap=3, bw=W-2*pad;
         bool fl=(millis()-_homePressTime)<300;
-        int btnH=26, secLH=12, secGap=4;
+        int btnH=28, secLH=13, secGap=3;
         int secH=secLH+btnH+secGap;
-        int totalH=4*secH;
+        // 6 sections: Homing, Home Axis, Zero WCS, Go to 0, Endstops (at bottom as list)
+        int totalH=5*secH + secLH + 3*(btnH+gap);  // 5 button rows + endstop list
         int avH=NAV_Y-TOP-4;
 
         _homeScroll=std::max(0,std::min(_homeScroll,std::max(0,totalH-avH)));
 
-        // Clip all drawing to content area — prevents overflow into nav bar
-        canvas.setClipRect(0, TOP, W, avH+4);
-
-        // Scroll indicator (drawn outside clip just on the right edge)
         canvas.clearClipRect();
         if(totalH>avH){
             int thumbH=std::max(10,avH*avH/totalH);
@@ -1204,8 +1205,8 @@ private:
             }
             vy+=secLH;
         };
-        // visible: button must overlap content area AND not be entirely above TOP
-        auto visible=[&](){ return vy+btnH>TOP && vy<NAV_Y && vy+btnH<=NAV_Y; };
+        auto visible=[&](){ return vy+btnH>TOP && vy<NAV_Y; };
+        auto skipBtn=[&](){ vy+=btnH+secGap; };
 
         // ── Home All + Probe ──────────────────────────────────────────────
         secLabel("Homing");
@@ -1242,24 +1243,7 @@ private:
         } else{for(int i=0;i<3;i++) _axisHomeBtns[i]={0,0,0,0};}
         vy+=btnH+secGap;
 
-        // ── Endstop status ────────────────────────────────────────────────
-        secLabel("Endstops");
-        if(visible()){
-            int esW=(bw-2*gap)/3;
-            for(int i=0;i<3;i++){
-                int ex=pad+i*(esW+gap);
-                bool trig=myLimitSwitches[i];
-                canvas.fillRoundRect(ex,vy,esW,btnH,3,trig?0x6000:COL_PANEL2);
-                canvas.drawRoundRect(ex,vy,esW,btnH,3,trig?RED:COL_BORDER2);
-                canvas.fillCircle(ex+10,vy+btnH/2,4,trig?RED:COL_DIM2);
-                canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_left);
-                canvas.setTextColor(COL_WHITE);
-                canvas.drawString(axlet[i],ex+20,vy+btnH/2);
-                canvas.setTextDatum(middle_right);canvas.setTextColor(trig?RED:COL_DIM2);
-                canvas.drawString(trig?"TRIG":"open",ex+esW-4,vy+btnH/2);
-            }
-        }
-        vy+=btnH+secGap;
+
 
         // ── Zero WCS ─────────────────────────────────────────────────────
         secLabel("Zero WCS");
@@ -1279,8 +1263,47 @@ private:
                 canvas.drawString(zlbl,zx+zw/2,vy+btnH/2);
             }
         } else{for(int k=0;k<4;k++) _zeroWcsBtns[k]={0,0,0,0};}
+        vy+=btnH+secGap;
 
-        // Remove clip rect so rest of UI draws normally
+        // ── Go to 0 (rapid move to work zero) ────────────────────────────
+        secLabel("Go to 0");
+        if(visible()){
+            const char* gla[]={"X","Y","Z","All"};
+            int gcols[]={COL_AX_X,COL_AX_Y,COL_AX_Z,ORANGE};
+            int gw=(bw-3*gap)/4;
+            for(int k=0;k<4;k++){
+                int gx=pad+k*(gw+gap);
+                _gotoZeroBtns[k]={gx,vy,gw,btnH};
+                bool gp=(fl&&_homePressedId==30+k);
+                if(gp) canvas.fillRoundRect(gx,vy,gw,btnH,3,gcols[k]);
+                else{canvas.fillRoundRect(gx,vy,gw,btnH,3,COL_PANEL2);canvas.drawRoundRect(gx,vy,gw,btnH,3,gcols[k]);}
+                canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_center);
+                canvas.setTextColor(gp?COL_BG:gcols[k]);
+                char glbl[8]; snprintf(glbl,sizeof(glbl),"→%s0",gla[k]);
+                canvas.drawString(glbl,gx+gw/2,vy+btnH/2);
+            }
+        } else{for(int k=0;k<4;k++) _gotoZeroBtns[k]={0,0,0,0};}
+        vy+=btnH+secGap;
+
+        // ── Endstops (as list rows at bottom) ────────────────────────────
+        secLabel("Endstops");
+        const char* esNames[]={"X Endstop","Y Endstop","Z Endstop"};
+        for(int i=0;i<3;i++){
+            if(vy>TOP-btnH && vy<NAV_Y){
+                bool trig=myLimitSwitches[i];
+                canvas.fillRoundRect(pad,vy,bw,btnH,3,trig?0x6000:COL_PANEL2);
+                canvas.drawRoundRect(pad,vy,bw,btnH,3,trig?RED:COL_BORDER2);
+                canvas.fillCircle(pad+12,vy+btnH/2,5,trig?RED:COL_DIM2);
+                canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_left);
+                canvas.setTextColor(COL_WHITE);
+                canvas.drawString(esNames[i],pad+26,vy+btnH/2);
+                canvas.setTextDatum(middle_right);
+                canvas.setTextColor(trig?RED:COL_DIM2);
+                canvas.drawString(trig?"TRIGGERED":"open",pad+bw-6,vy+btnH/2);
+            }
+            vy+=btnH+gap;
+        }
+
         canvas.clearClipRect();
     }
 
@@ -1780,26 +1803,57 @@ private:
     void drawAlarmOverlay(bool estopOnly = false) {
         canvas.fillRect(0, TOP, W, NAV_Y - TOP, 0x8000);
 
-        int pw = 220, ph = 130;
-        int cx = W / 2, cy = (NAV_Y + TOP) / 2;
-        fillR(cx - pw/2, cy - ph/2, pw, ph, 8, 0x2800);
-        strokeR(cx - pw/2, cy - ph/2, pw, ph, 8, RED);
+        bool estopPressed = mpgEstopActive;
+        bool estopRecovery = (_estopRecovery >= 1 && !estopPressed);  // estop was pressed, now released
 
-        if (mpgEstopActive) {
-            f2("! E-STOP ACTIVE", cx, cy - ph/2 + 22, RED);
-            f2(estopOnly ? "E-STOP pressed" : "Machine in Alarm state", cx, cy - ph/2 + 44, COL_WHITE2);
-            f2("Release to clear and resume", cx, cy - ph/2 + 62, COL_WHITE2);
+        // Taller panel for recovery options
+        int ph = estopRecovery ? 170 : 130;
+        int pw = W - 20;
+        int cx = W/2, cy = (NAV_Y+TOP)/2;
+        int px = cx-pw/2, py = cy-ph/2;
+        fillR(px,py,pw,ph,8,0x2800);
+        strokeR(px,py,pw,ph,8,RED);
+
+        if (estopPressed) {
+            f2("! E-STOP ACTIVE", cx, py+18, RED);
+            f2("Release e-stop to continue", cx, py+38, COL_WHITE2);
+        } else if (estopRecovery) {
+            // E-stop was pressed, now released — show recovery options
+            f2("! E-STOP RELEASED", cx, py+18, YELLOW);
+            f2("Choose recovery action:", cx, py+36, COL_WHITE2);
+            int bw3=(pw-24)/3, bh3=32, by3=py+52;
+            int bx0=px+8;
+            // Resume if safe
+            canvas.fillRoundRect(bx0,             by3,bw3,bh3,3,GREEN);
+            f2("Resume",bx0+bw3/2,by3+bh3/2,COL_BG,middle_center);
+            f2("if safe",bx0+bw3/2,by3+bh3/2+12,COL_BG,middle_center);
+            // Rehome
+            canvas.fillRoundRect(bx0+bw3+8,       by3,bw3,bh3,3,COL_AX_Z);
+            f2("Rehome",bx0+bw3+8+bw3/2,by3+bh3/2,COL_BG,middle_center);
+            f2("$H",    bx0+bw3+8+bw3/2,by3+bh3/2+12,COL_BG,middle_center);
+            // Rehome + Resume
+            canvas.fillRoundRect(bx0+bw3*2+16,    by3,bw3,bh3,3,ORANGE);
+            f2("Rehome+",bx0+bw3*2+16+bw3/2,by3+bh3/2,COL_BG,middle_center);
+            f2("Resume", bx0+bw3*2+16+bw3/2,by3+bh3/2+12,COL_BG,middle_center);
+            // Store rects for touch
+            _unlockBtn   = {bx0,          by3, bw3, bh3};  // Resume if safe
+            _rehomeBtn   = {bx0+bw3+8,    by3, bw3, bh3};  // Rehome
+            _rehomeResBtn= {bx0+bw3*2+16, by3, bw3, bh3};  // Rehome+Resume
+            // Unlock still available at bottom
+            int ubw2=pw-16, ubh2=28;
+            int ubx2=px+8, uby2=py+ph-ubh2-8;
+            tintStrokeR(ubx2,uby2,ubw2,ubh2,4,RED,RED,40);
+            f2("UNLOCK ($X)",cx,uby2+ubh2/2,COL_WHITE,middle_center);
+            _unlockBtnFull = {ubx2,uby2,ubw2,ubh2};
         } else {
-            f2("! ALARM", cx, cy - ph/2 + 22, RED);
-            f2("Press UNLOCK to clear", cx, cy - ph/2 + 44, COL_WHITE2);
-        }
-
-        int ubw = 180, ubh = 36;
-        int ubx = cx - ubw/2, uby = cy + ph/2 - ubh - 8;
-        _unlockBtn = { ubx, uby, ubw, ubh };
-        if (!mpgEstopActive) {
-            tintStrokeR(ubx, uby, ubw, ubh, 6, RED, RED, 60);
-            f2("UNLOCK  ($X)", cx, uby + ubh/2, COL_WHITE);
+            // Normal alarm (not estop)
+            f2("! ALARM", cx, py+22, RED);
+            f2("Press UNLOCK to clear alarm", cx, py+44, COL_WHITE2);
+            int ubw2=pw-16, ubh2=36;
+            int ubx2=px+8, uby2=py+ph-ubh2-8;
+            _unlockBtn = {ubx2, uby2, ubw2, ubh2};
+            tintStrokeR(ubx2,uby2,ubw2,ubh2,6,RED,RED,60);
+            f2("UNLOCK  ($X)",cx,uby2+ubh2/2,COL_WHITE,middle_center);
         }
     }
 
@@ -1833,11 +1887,12 @@ public:
     void onStateChange(state_t old_state) override {
         if (state == Alarm) {
             _alarmOpen = true;
-            _alarmBeepCount = 4;  // beep 4 times
+            _alarmBeepCount = 4;
             _alarmBeepNext = millis();
+            if (mpgEstopActive) _estopRecovery = 1;  // e-stop caused alarm
         }
         else _alarmOpen = false;
-        if (state == Idle) { _jobSentToFluidNC = false; }
+        if (state == Idle) { _jobSentToFluidNC = false; _estopRecovery = 0; _zNudgeOffset=0; }
         // Reconnection: re-request axis config when coming back online
         if (old_state == Disconnected && state != Disconnected) {
             send_line("$axes/count");
@@ -1989,9 +2044,19 @@ public:
     }
 
     void onEncoder(int delta) override {
-        // Always update direction indicator immediately
         mpgLastDir = (delta > 0) ? 1 : -1;
         mpgDirTime = millis();
+
+        // Z nudge mode intercepts encoder regardless of axis selection
+        if (_zNudgeOpen && _tab == 0) {
+            float step = mpgSteps[(int)mpgStepIdx];  // 0.01 / 0.10 / 1.00 from step switch
+            _zNudgeOffset += delta * step;
+            // Send tool offset command
+            char cmd[32]; snprintf(cmd, sizeof(cmd), "G43.1 Z%.3f", _zNudgeOffset);
+            send_line(cmd);
+            reDisplay();
+            return;
+        }
 
         // Jogging ONLY on DRO tab (tab 0) — all other tabs use wheel for scrolling
         if (_tab == 0 && mpgAxis >= 0 && _barSel == 0) {
@@ -2118,14 +2183,50 @@ public:
         int x = touchX, y = touchY;
         beep_ui(600, 8);   // subtle click
 
-        // Alarm overlay — intercepts all touches
-        if (_alarmOpen && state == Alarm) {
-            if (hit(_unlockBtn, x, y)) {
-                send_line("$X");
-                fnc_term_inject("> $X");
-                termLines.push_back({ "[MSG:Unlocked]", GREEN  });
+        // Alarm/E-stop overlay — intercepts all touches
+        if (_alarmOpen || _forceAlarm) {
+            bool estopReleased = (_estopRecovery >= 1 && !mpgEstopActive);
+
+            if (estopReleased) {
+                // Recovery buttons
+                if (hit(_unlockBtn, x, y)) {
+                    // "Resume if safe"
+                    send_line("$X"); delay(80); fnc_realtime(CycleStartResume);
+                    fnc_term_inject("> Resume after e-stop");
+                    _estopRecovery=0; _alarmOpen=false; markDirty(); return;
+                }
+                if (hit(_rehomeBtn, x, y)) {
+                    // Rehome
+                    send_line("$X"); delay(80); send_line("$H");
+                    fnc_term_inject("> Rehome after e-stop");
+                    _estopRecovery=0; markDirty(); return;
+                }
+                if (hit(_rehomeResBtn, x, y)) {
+                    // Rehome + re-run job
+                    send_line("$X"); delay(80); send_line("$H");
+                    if (!simJobName.empty()) {
+                        delay(200);
+                        std::string rpath = filePath + "/" + simJobName;
+                        send_linef("$Localfs/Run=%s", rpath.c_str());
+                        _jobSentToFluidNC = true;
+                        fnc_term_inject(("> Rehome+Resume: " + simJobName).c_str());
+                    }
+                    _estopRecovery=0; markDirty(); return;
+                }
+                if (hit(_unlockBtnFull, x, y)) {
+                    // Plain unlock
+                    send_line("$X"); fnc_term_inject("> $X");
+                    _estopRecovery=0; _alarmOpen=false; markDirty(); return;
+                }
+            } else if (!mpgEstopActive) {
+                // Standard alarm — just unlock
+                if (hit(_unlockBtn, x, y)) {
+                    send_line("$X"); fnc_term_inject("> $X");
+                    termLines.push_back({"[MSG:Unlocked]", GREEN});
+                    _alarmOpen=false; markDirty();
+                }
             }
-            return;
+            return;  // consume all touches while overlay is open
         }
 
         // Probe overlay
@@ -2276,6 +2377,10 @@ public:
                     _confirmRun=false;
                     simJobName=fileList[fileSelected].name;
                     std::string rpath=filePath+"/"+fileList[fileSelected].name;
+                    // Pre-position: absolute mode, lift Z to machine home, XY to WCS zero
+                    send_line("G90");
+                    send_line("G53 G0 Z0");
+                    send_line("G0 X0 Y0");
                     send_linef("$Localfs/Run=%s",rpath.c_str());
                     termLines.push_back({"> Run: "+simJobName,COL_DIM2});
                     _jobSentToFluidNC=true;
@@ -2314,6 +2419,10 @@ public:
                         _confirmRun=false;
                         simJobName=fileList[fileSelected].name;
                         std::string path=filePath+"/"+fileList[fileSelected].name;
+                        // Pre-position: absolute mode, lift Z, move XY to WCS zero
+                        send_line("G90");
+                        send_line("G53 G0 Z0");
+                        send_line("G0 X0 Y0");
                         send_linef("$Localfs/Run=%s",path.c_str());
                         termLines.push_back({"> Run: "+simJobName,COL_DIM2});
                         _jobSentToFluidNC=true;
@@ -2435,6 +2544,7 @@ public:
             case 4: drawMacrosScreen();   break;
         }
         if (_probeOpen)              drawProbeOverlay();
+        if (_zNudgeOpen)             drawZNudgeOverlay();
         if (_alarmOpen || _forceAlarm) drawAlarmOverlay(_forceAlarm && simMode_active());
         if (state == Disconnected && !simMode_active()) drawDisconnectedOverlay();
         drawNav();
