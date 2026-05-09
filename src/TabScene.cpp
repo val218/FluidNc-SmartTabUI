@@ -168,8 +168,9 @@ void mpgSignalChanged()   { _mpgChanged = true; }
 // Touch gating: only applies to DRO tab in EnableGate/TouchOnly modes
 // All other tabs always accept touch regardless of enable button
 bool tabui_touchGated()   {
-    if (_currentTab != 0) return false;  // never gate non-DRO tabs
-    return (_enableMode==0||_enableMode==1) && !mpgEnable;
+    // EnableGate (mode 0): ALL touch blocked unless EN held
+    if (_enableMode == 0 && !mpgEnable) return true;
+    return false;
 }
 void setSimMode(bool sim) { (void)sim; }  // simulation removed
 bool getSimMode()         { return false; }  // simulation removed
@@ -2108,6 +2109,7 @@ public:
 
     void onTouchClick() override {
         int x = touchX, y = touchY;
+        beep_ui(900, 12);  // subtle click — lower freq, very short
 
         // Alarm overlay — intercepts all touches
         if (_alarmOpen && state == Alarm) {
