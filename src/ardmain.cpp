@@ -783,6 +783,7 @@ void setup() {
     activate_scene(getTabScene());
     if (s.simMode) {
         simMode_injectState();   // inject Idle after scene is ready — no lag
+        tabui_resetJobState();   // clear any stale job flags
         markDirty();
     }
 

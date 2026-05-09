@@ -1777,7 +1777,7 @@ private:
     }
 
     // ── Alarm overlay ─────────────────────────────────────────────────────────
-    void drawAlarmOverlay() {
+    void drawAlarmOverlay(bool estopOnly = false) {
         canvas.fillRect(0, TOP, W, NAV_Y - TOP, 0x8000);
 
         int pw = 220, ph = 130;
@@ -1787,7 +1787,7 @@ private:
 
         if (mpgEstopActive) {
             f2("! E-STOP ACTIVE", cx, cy - ph/2 + 22, RED);
-            f2("Machine in Alarm state", cx, cy - ph/2 + 44, COL_WHITE2);
+            f2(estopOnly ? "E-STOP pressed" : "Machine in Alarm state", cx, cy - ph/2 + 44, COL_WHITE2);
             f2("Release to clear and resume", cx, cy - ph/2 + 62, COL_WHITE2);
         } else {
             f2("! ALARM", cx, cy - ph/2 + 22, RED);
@@ -2435,7 +2435,7 @@ public:
             case 4: drawMacrosScreen();   break;
         }
         if (_probeOpen)              drawProbeOverlay();
-        if (_alarmOpen || _forceAlarm) drawAlarmOverlay();
+        if (_alarmOpen || _forceAlarm) drawAlarmOverlay(_forceAlarm && simMode_active());
         if (state == Disconnected && !simMode_active()) drawDisconnectedOverlay();
         drawNav();
         refreshDisplay();
@@ -2473,6 +2473,13 @@ void tabui_checkPressExpiry() {
 
 void tabui_setVolume(int v) {
     _volumeLevel = (v < 0) ? 0 : (v > 9) ? 9 : v;
+}
+
+void tabui_resetJobState() {
+    // Clear stale job state flags — call on boot or mode switch
+    simJobRunning    = false;
+    _jobSentToFluidNC = false;
+    vizPathExecuted  = 0;
 }
 
 Scene* getTabScene() { return &tabScene; }

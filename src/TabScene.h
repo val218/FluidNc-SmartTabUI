@@ -24,3 +24,4 @@ void   tabui_setWorkArea(int wx, int wy, int homeCorner);  // configure P6 behav
 int    tabui_getAxes();
 void   tabui_setVolume(int v);  // 0=mute 1-9
 void   tabui_checkPressExpiry();
+void   tabui_resetJobState();
