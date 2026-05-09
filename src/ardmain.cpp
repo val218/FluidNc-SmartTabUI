@@ -643,14 +643,13 @@ static void mpgTask(void*) {
 
         lastEstop = estopHigh;
 
-        // Send $X to clear Alarm → Idle after FluidNC boot completes
+        // E-stop released: set _estopRecovery so UI shows recovery menu
         if (resumeTime && now >= resumeTime && estopHigh) {
             resumeTime = 0;
-            extern volatile bool _forceAlarm;
-            _forceAlarm = false;
-            send_line("$X");
-            fnc_term_inject("> $X: Alarm cleared → Idle");
-            fnc_realtime(StatusReport);
+            // Do NOT auto-send $X — let user choose recovery action from overlay
+            // Just signal the UI to show recovery options
+            extern void tabui_setEstopRecovery();
+            tabui_setEstopRecovery();
             mpgSignalChanged();
         }
 

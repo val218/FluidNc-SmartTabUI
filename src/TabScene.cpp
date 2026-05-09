@@ -2405,6 +2405,17 @@ public:
                     reDisplay(); return;
                 }
             }
+            // Go to Zero buttons
+            const char* gcmds[]={"G0 X0","G0 Y0","G0 Z0","G0 X0 Y0"};
+            for(int k=0;k<4;k++){
+                if(hit(_gotoZeroBtns[k],x,y)){
+                    _homePressedId=30+k; _homePressTime=millis(); g_pressExpiryMs=millis()+300;
+                    send_line("G90");
+                    send_line(gcmds[k]);
+                    fnc_term_inject((std::string("> G90; ")+gcmds[k]).c_str());
+                    reDisplay(); return;
+                }
+            }
         }
 
         // Files screen
@@ -2623,6 +2634,13 @@ void mpgCheckMacroFire() {
 }
 
 // Global press expiry — set by any button press, checked in dispatch_events
+void tabui_setEstopRecovery() {
+    // Called by mpgTask when e-stop is released — shows recovery menu in overlay
+    _estopRecovery = 1;
+    _alarmOpen = true;   // keep overlay open
+    markDirty();
+}
+
 void tabui_checkPressExpiry() {
     uint32_t now = millis();
     if (g_pressExpiryMs > 0 && now >= g_pressExpiryMs) {

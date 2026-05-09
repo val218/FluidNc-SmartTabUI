@@ -25,3 +25,4 @@ int    tabui_getAxes();
 void   tabui_setVolume(int v);  // 0=mute 1-9
 void   tabui_checkPressExpiry();
 void   tabui_resetJobState();
+void   tabui_setEstopRecovery();
