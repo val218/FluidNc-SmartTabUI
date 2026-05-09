@@ -1,5 +1,6 @@
 // ardmain.cpp — Tab UI boot for FluidDial JC2432W328C
 #include "System.h"
+#include "Hardware2432.hpp"
 #include "FluidNCModel.h"
 #include "FileParser.h"
 #include "Scene.h"
