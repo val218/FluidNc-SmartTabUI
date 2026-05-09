@@ -615,6 +615,11 @@ static void mpgTask(void*) {
             fnc_realtime((realtime_cmd_t)0x18);  // Ctrl-X Soft Reset → Alarm
             fnc_term_inject("> E-STOP: Reset → Alarm");
             resumeTime = 0;
+            // Alarm siren: 3 fast two-tone beeps
+            for (int bi = 0; bi < 3; bi++) {
+                beep(880,  80, 128);  vTaskDelay(pdMS_TO_TICKS(90));
+                beep(1400, 80, 128);  vTaskDelay(pdMS_TO_TICKS(110));
+            }
         }
 
         // While e-stop held: repeat Soft Reset every 2s so FluidNC cannot recover
@@ -762,7 +767,6 @@ void setup() {
     } else {
         drawProgress(100, "Sim Mode", 0x07E0);
         simMode_enable();
-        simMode_injectState();  // inject Idle state immediately — no lag on startup
     }
 
     // Create canvas — no fillScreen to avoid black flash
@@ -774,8 +778,12 @@ void setup() {
 
     dbg_printf("FluidNC Pendant %s  [%s | theme=%d | axes=%d]\n",
                git_info, "Normal", (int)s.theme, (int)s.axes);
-    fnc_realtime(StatusReport);
+    if (!s.simMode) fnc_realtime(StatusReport);
     activate_scene(getTabScene());
+    if (s.simMode) {
+        simMode_injectState();   // inject Idle after scene is ready — no lag
+        markDirty();
+    }
 
     xTaskCreatePinnedToCore(mpgTask, "mpg", 4096, nullptr, 1, nullptr, 0);
 }
