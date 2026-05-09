@@ -762,7 +762,7 @@ void setup() {
     } else {
         drawProgress(100, "Sim Mode", 0x07E0);
         simMode_enable();
-        delay(200);
+        simMode_injectState();  // inject Idle state immediately — no lag on startup
     }
 
     // Create canvas — no fillScreen to avoid black flash
@@ -785,7 +785,7 @@ void loop() {
     if (simMode_active()) {
         // Sim mode: inject fake state periodically, skip UART polling
         static uint32_t _simLast = 0;
-        if (millis() - _simLast > 400) {
+        if (millis() - _simLast > 80) {
             _simLast = millis();
             simMode_tick();
             simMode_injectState();

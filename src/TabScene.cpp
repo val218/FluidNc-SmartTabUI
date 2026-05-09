@@ -267,13 +267,20 @@ void readMpgSwitches() {
         pcnt_counter_clear(PCNT_UNIT_0);
     }
 
+    // EN button press/release beep
+    static bool _prevEnable = false;
+    if (enable != _prevEnable) {
+        _prevEnable = enable;
+        if (enable) beep_ui(1100, 20);   // EN pressed — mid tone
+        else        beep_ui(700,  15);   // EN released — lower tone
+    }
+
     if (mpgAxis != prevAxis || mpgStepIdx != prevStep) {
-        _mpgChanged = true;  // picked up by dispatch_events on Core 1
-        // Audible feedback: different tones for axis vs step change
+        _mpgChanged = true;
         if (mpgAxis != prevAxis)
-            beep_ui(mpgAxis >= 0 ? 1200 : 800, 30);   // axis selected: 1200Hz / deselected: 800Hz
+            beep_ui(mpgAxis >= 0 ? 1200 : 800, 30);
         else
-            beep_ui(1800, 20);                          // step changed: higher short pip
+            beep_ui(1800, 20);
     }
 }
 static const char* QUICK_CMDS[] = { "$H", "$?", "!", "~", "$X" };
@@ -2109,7 +2116,7 @@ public:
 
     void onTouchClick() override {
         int x = touchX, y = touchY;
-        beep_ui(900, 12);  // subtle click — lower freq, very short
+        beep_ui(600, 8);   // subtle click
 
         // Alarm overlay — intercepts all touches
         if (_alarmOpen && state == Alarm) {

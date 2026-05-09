@@ -30,6 +30,9 @@ void settings_save(const AppSettings& s) {
     nvs_set_i32(_nvs, "workX",       s.workX);
     nvs_set_i32(_nvs, "workY",       s.workY);
     nvs_set_i32(_nvs, "homeCorner",  (int)s.homeCorner);
+    nvs_set_i32(_nvs, "brightness",  s.brightness);
+    nvs_set_i32(_nvs, "volume",      s.volume);
+    nvs_commit(_nvs);  // flush to flash — required or values are lost on power cycle
 }
 
 void settings_applyTheme(Theme t) { tabui_setTheme((int)t); }

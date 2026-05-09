@@ -79,11 +79,12 @@ void dispatch_touch() {
     touchX = t.x - sprite_offset.x;
     touchY = t.y - sprite_offset.y;
 
-    // P6 enable button touch gating — allow nav bar (y>=206) through regardless
+    // EN gate: EnableGate mode (0) blocks ALL touch unless EN held
+    // Nav bar (y>=206) always allowed so user can at least change tabs
     bool touchGated = tabui_touchGated();
-    if (touchGated && touchY < 206) {
-        // Gated area: only process clicks, not press/release/flick
-        if (t.wasClicked()) {
+    if (touchGated) {
+        // Gate All: block all touch except nav bar (so user can hold EN and tap tabs)
+        if (touchY >= 206 && t.wasClicked()) {
             current_scene->onTouchClick();
         }
         return;
