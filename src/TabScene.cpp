@@ -1466,7 +1466,7 @@ private:
     // ── Files screen ─────────────────────────────────────────────────────────
     void drawFilesScreen() {
         // Layout: [24px header] [rows 30px each] [38px action bar]
-        int hdrH=24, abH=38, rowH=38;
+        int hdrH=24, abH=38, rowH=34;
         int listY=TOP+hdrH;
         int abY=NAV_Y-abH;
         int maxR=(abY-listY)/rowH;
@@ -1518,11 +1518,10 @@ private:
                 canvas.setTextColor(sel?CYAN:COL_DIM2);
                 canvas.drawString("NC",12,ry+rowH/2);
                 // Filename
-                canvas.setFont(&fonts::Font4); canvas.setTextDatum(middle_left);
+                canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
                 canvas.setTextColor(sel?COL_WHITE:(_currentTheme==2?0x0000:COL_WHITE2));
-                // Truncate long names (Font4 is wider — fewer chars fit)
                 std::string fname=fe.name;
-                if((int)fname.size()>18) fname=fname.substr(0,15)+"...";
+                if((int)fname.size()>24) fname=fname.substr(0,21)+"...";
                 canvas.drawString(fname.c_str(),24,ry+rowH/2);
                 // Size below name
                 if(fe.size>0){
@@ -1835,7 +1834,7 @@ private:
             _rehomeResBtn={bx,bby,bw3,bh3};  bby+=bh3+3;
             canvas.fillRoundRect(bx,bby,bw3,bh3,3,COL_PANEL2);
             canvas.drawRoundRect(bx,bby,bw3,bh3,3,RED);
-            f2("Just Unlock  ($X)",cx,bby+bh3/2,COL_WHITE,middle_center);
+            f2("Cancel Job  ($X)",cx,bby+bh3/2,COL_WHITE,middle_center);
             _unlockBtnFull={bx,bby,bw3,bh3};
         } else if (mpgEstopActive) {
             // ── E-stop held ───────────────────────────────────────────────
@@ -2016,6 +2015,26 @@ public:
                 // Home All step 2: home XY after Z is done
                 send_line("$HX"); send_line("$HY");
                 fnc_term_inject("> $HX $HY");
+            } else if (action == 4) {
+                // Resume after e-stop: send cycle start now that Idle
+                fnc_realtime((realtime_cmd_t)'~');
+                fnc_term_inject("> ~ : Cycle start/resume");
+            } else if (action == 20) {
+                // Pre-run step 1: Z raised, now move XY to WCS zero
+                _runStep = 3; reDisplay();
+                send_line("G0 X0 Y0");
+                fnc_term_inject("> G0 X0 Y0: moving to work zero");
+                _pendingAction = 21;
+            } else if (action == 21) {
+                // Pre-run step 2: at XY zero, now run the file
+                _runStep = 4; reDisplay();
+                if (!simJobName.empty()) {
+                    std::string rpath = filePath+"/"+simJobName;
+                    send_linef("$Localfs/Run=%s", rpath.c_str());
+                    termLines.push_back({"> Run: "+simJobName, COL_DIM2});
+                    _jobSentToFluidNC = true;
+                }
+                _runStep = 0; markDirty();
             }
         }
         // Reconnection: re-request axis config when coming back online
@@ -2321,11 +2340,11 @@ public:
                     _showEstopRecovery=false; _estopRecovery=0;
                     _alarmOpen=false; _forceAlarm=false;
                 };
-                // ── Resume if safe: $X then ~ ─────────────────────────────────
+                // ── Resume if safe: $X → Idle → ~ ────────────────────────────
                 if (hit(_unlockBtn, x, y)) {
                     send_line("$X");
-                    fnc_realtime((realtime_cmd_t)'~');
-                    fnc_term_inject("> $X + Resume (~)");
+                    fnc_term_inject("> $X — will resume when Idle");
+                    _pendingAction = 4;  // on Idle: send ~
                     clearRecovery(); markDirty(); return;
                 }
                 // ── Rehome: $X → Idle → Z lift → $HZ → Idle → $HX $HY ────────
@@ -2522,7 +2541,7 @@ public:
 
         // Files screen
         if (_tab == 2) {
-            int hdrH=24, abH=38, rowH=38;
+            int hdrH=24, abH=38, rowH=34;
             int listY=TOP+hdrH, abY=NAV_Y-abH;
 
             // ── Preview overlay is checked FIRST — it covers the whole screen ──
@@ -2548,16 +2567,13 @@ public:
                     _confirmRun=false;
                     simJobName=fileList[fileSelected].name;
                     _tab=0; filePreviewMode=false; _previewShowPath=false;
-                    _runStep=1; markDirty();
-                    // Show overlay then execute with small yields between steps
-                    reDisplay();
-                    send_line("G90"); _runStep=2; reDisplay(); vTaskDelay(pdMS_TO_TICKS(300));
-                    send_line("G53 G0 Z0"); _runStep=3; reDisplay(); vTaskDelay(pdMS_TO_TICKS(800));
-                    send_line("G0 X0 Y0"); _runStep=4; reDisplay(); vTaskDelay(pdMS_TO_TICKS(600));
-                    std::string rpath=filePath+"/"+simJobName;
-                    send_linef("$Localfs/Run=%s",rpath.c_str());
-                    termLines.push_back({"> Run: "+simJobName,COL_DIM2});
-                    _jobSentToFluidNC=true; _runStep=0; markDirty(); return;
+                    // Step 1: G90 + lift Z. Steps 2+ fire via _pendingAction when Idle
+                    _runStep=2; reDisplay();
+                    send_line("G90");
+                    send_line("G53 G0 Z0");
+                    fnc_term_inject("> G90 + Z lift — moving to work zero next");
+                    _pendingAction=20;  // fires: G0 X0 Y0 → then file run
+                    markDirty(); return;
                 }
                 // Tap in content area — scroll or consume
                 if (y > pAbY - 20 && y < pAbY) {
@@ -2591,15 +2607,12 @@ public:
                         _confirmRun=false;
                         simJobName=fileList[fileSelected].name;
                         _tab=0; filePreviewMode=false; _previewShowPath=false;
-                        _runStep=1; markDirty();
-                        reDisplay();
-                        send_line("G90"); _runStep=2; reDisplay(); vTaskDelay(pdMS_TO_TICKS(300));
-                        send_line("G53 G0 Z0"); _runStep=3; reDisplay(); vTaskDelay(pdMS_TO_TICKS(800));
-                        send_line("G0 X0 Y0"); _runStep=4; reDisplay(); vTaskDelay(pdMS_TO_TICKS(600));
-                        std::string path=filePath+"/"+simJobName;
-                        send_linef("$Localfs/Run=%s",path.c_str());
-                        termLines.push_back({"> Run: "+simJobName,COL_DIM2});
-                        _jobSentToFluidNC=true; _runStep=0; markDirty(); return;
+                        _runStep=2; reDisplay();
+                        send_line("G90");
+                        send_line("G53 G0 Z0");
+                        fnc_term_inject("> G90 + Z lift — moving to work zero next");
+                        _pendingAction=20;
+                        markDirty(); return;
                     }
                 }
                 _confirmRun=false; return;
