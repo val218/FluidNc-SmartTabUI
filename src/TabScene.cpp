@@ -2155,15 +2155,15 @@ public:
         mpgLastDir = (delta > 0) ? 1 : -1;
         mpgDirTime = millis();
 
-        // Z nudge mode intercepts encoder regardless of axis selection
+        // Z nudge mode: use $J jog command — works in Hold state, updates myAxes live
         if (_zNudgeOpen && _tab == 0) {
-            float step = mpgSteps[(int)mpgStepIdx];  // 0.01 / 0.10 / 1.00 from step switch
-            _zNudgeOffset += delta * step;
-            // Shift WCS Z: G10 L20 P1 adjusts WCS so current position reports as given value
-            // myAxes[2] is current Z in WCS. We want it to appear as myAxes[2]+offset.
-            // Equivalent: shift Z origin by -offset → new WCS zero is offset mm lower.
+            float step = mpgSteps[(int)mpgStepIdx];
+            float move = delta * step;
+            _zNudgeOffset += move;
+            // $J=G91 G21 Zx.xx Fxxxx — incremental jog, works during Hold
             char cmd[48];
-            snprintf(cmd, sizeof(cmd), "G91 G0 Z%.4f G90", delta * step);  // incremental jog
+            snprintf(cmd, sizeof(cmd), "$J=G91 G21 Z%.4f F%d",
+                     move, (int)(3000 * step / 0.01f));  // speed scales with step size
             send_line(cmd);
             reDisplay();
             return;
@@ -2410,8 +2410,8 @@ public:
             if (x >= VIZ_X && x < VIZ_X+VIZ_W && y >= VIZ_Y && y < VIZ_Y+VIZ_H) {
                 // Z nudge: open if in Hold state, close if already open
                 if (_zNudgeOpen) {
-                    if (hit(_zCloseBtn,x,y))  { _zNudgeOffset=0; _zNudgeOpen=false; markDirty(); return;}
-                    if (hit(_zResumeBtn,x,y)) { _zNudgeOpen=false;fnc_realtime((realtime_cmd_t)'~');markDirty();return;}
+                    if (hit(_zCloseBtn,x,y))  { _zNudgeOpen=false; markDirty(); return;}
+                    if (hit(_zResumeBtn,x,y)) { _zNudgeOpen=false; _zNudgeOffset=0; fnc_realtime((realtime_cmd_t)'~'); markDirty(); return;}
                     return;  // consume touch while Z nudge open
                 }
                 if (state == Hold) {
