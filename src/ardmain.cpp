@@ -1,6 +1,7 @@
 // ardmain.cpp — Tab UI boot for FluidDial JC2432W328C
 #include "System.h"
 #include "Hardware2432.hpp"
+#include "JobRecovery.h"
 #include "FluidNCModel.h"
 #include "FileParser.h"
 #include "Scene.h"
@@ -782,6 +783,11 @@ void setup() {
                git_info, "Normal", (int)s.theme, (int)s.axes);
     if (!s.simMode) fnc_realtime(StatusReport);
     activate_scene(getTabScene());
+    // Check for interrupted job on boot
+    jobrecov_init();
+    if (jobrecov_hasDirty() && !s.simMode) {
+        jobrecov_showPrompt();  // will show on first reDisplay
+    }
     if (s.simMode) {
         simMode_injectState();   // inject Idle after scene is ready — no lag
         tabui_resetJobState();   // clear any stale job flags

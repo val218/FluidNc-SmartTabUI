@@ -11,6 +11,7 @@
 #include "FileParser.h"
 #include "System.h"
 #include "Hardware2432.hpp"
+#include "JobRecovery.h"
 extern volatile uint32_t fnc_tx_count;
 extern override_percent_t mySro;
 extern override_percent_t myRro;
@@ -837,7 +838,14 @@ private:
             };
 
             // Draw tool path at work area scale (shows where path sits in work area)
-            if(myPercent>0) vizPathExecuted=(int)vizPath.size()*(int)myPercent/100;
+            if(myPercent>0) {
+                vizPathExecuted=(int)vizPath.size()*(int)myPercent/100;
+                // Update checkpoint line estimate from job progress
+                if (_jobSentToFluidNC && !allFileLines.empty()) {
+                    uint32_t estLine = (uint32_t)(allFileLines.size() * myPercent / 100.0f);
+                    jobrecov_lineExecuted(estLine);
+                }
+            }
             int exec=std::min(vizPathExecuted,(int)vizPath.size()-1);
             int step=std::max(1,(int)vizPath.size()/2000);
             for(int pi=1;pi<(int)vizPath.size();pi+=step){
@@ -1984,49 +1992,7 @@ public:
             _jobSentToFluidNC = false; _estopRecovery = 0; _zNudgeOffset=0;
         }
 
-        if (state == Idle && _pendingAction != 0) {
-            int action = _pendingAction;
-            _pendingAction = 0;
-            if (action == 1) {
-                // Step 1: Home Z first (raises Z as part of homing)
-                send_line("$HZ");
-                fnc_term_inject("> $HZ: Home Z (raises axis during homing)");
-                _pendingAction = 11;
-            } else if (action == 11) {
-                // Step 2: Home X and Y
-                send_line("$HX"); send_line("$HY");
-                fnc_term_inject("> $HX $HY");
-            } else if (action == 2) {
-                // Rehome+Resume step 1: home Z
-                send_line("$HZ");
-                fnc_term_inject("> $HZ: Home Z first");
-                _pendingAction = 12;
-            } else if (action == 12) {
-                // Step 2: home XY then queue resume
-                send_line("$HX"); send_line("$HY");
-                fnc_term_inject("> $HX $HY");
-                _pendingAction = 3;
-            } else if (action == 3) {
-                // After rehome — re-run the job
-                if (!simJobName.empty()) {
-                    std::string rpath = filePath+"/"+simJobName;
-                    send_linef("$Localfs/Run=%s", rpath.c_str());
-                    _jobSentToFluidNC = true;
-                    fnc_term_inject(("> Resume job: "+simJobName).c_str());
-                }
-            } else if (action == 10) {
-                // Home All step 2: home XY after Z is done
-                send_line("$HX"); send_line("$HY");
-                fnc_term_inject("> $HX $HY");
-            } else if (action == 4) {
-                // Resume after e-stop: send cycle start now that Idle
-                fnc_realtime((realtime_cmd_t)'~');
-                fnc_term_inject("> ~ : Cycle start/resume");
-            } else if (action == 20) {
-                // Unused — run sequence sends all at once now
-                _runStep = 0; markDirty();
-            }
-        }
+        // Pending actions now handled in tabui_checkPressExpiry (polled each dispatch cycle)
         // Reconnection: re-request axis config when coming back online
         if (old_state == Disconnected && state != Disconnected) {
             send_line("$axes/count");
@@ -2040,6 +2006,10 @@ public:
             // Started or resumed
             _jobStartTime = millis();
         } else if (state != Cycle && old_state == Cycle) {
+            // Job finished (or aborted)
+            if (_jobSentToFluidNC && state == Idle) {
+                jobrecov_jobComplete();  // clean finish — clear checkpoint
+            }
             // Paused or ended — accumulate elapsed
             _jobElapsed += millis() - _jobStartTime;
             _jobStartTime = 0;
@@ -2322,6 +2292,12 @@ public:
         int x = touchX, y = touchY;
         beep_ui(600, 8);   // subtle click
 
+        // Job recovery wizard intercepts all touches when active
+        if (jobrecov_getPhase() != RecoveryPhase::None) {
+            jobrecov_onTouch(x, y);
+            markDirty(); return;
+        }
+
         // Alarm/E-stop overlay — intercepts all touches
         if (_alarmOpen || _forceAlarm) {
             if (_showEstopRecovery) {
@@ -2569,7 +2545,7 @@ public:
                     send_linef("$Localfs/Run=%s",rpath.c_str());
                     termLines.push_back({"> Run: "+simJobName,COL_DIM2});
                     _jobSentToFluidNC=true;
-                    // Show overlay — steps updated by FluidNC state transitions
+                    jobrecov_jobStarted((filePath+"/"+simJobName).c_str());
                     _runStep=1; _runStartMs=millis(); markDirty(); return;
                 }
                 // Tap in content area — scroll or consume
@@ -2747,6 +2723,9 @@ public:
             case 4: drawMacrosScreen();   break;
         }
         if (_probeOpen)              drawProbeOverlay();
+        // Job recovery wizard overlay (full screen, drawn last)
+        if (jobrecov_getPhase() != RecoveryPhase::None)
+            jobrecov_draw(&canvas, W, H, TOP, NAV_Y);
         if (_runStep > 0) {
             uint32_t el = millis() - _runStartMs;
             // Hard timeout: close overlay after 8s regardless
@@ -2799,11 +2778,49 @@ void tabui_checkPressExpiry() {
     }
     // Alarm two-tone beep (4 pairs)
     if (_alarmBeepCount > 0 && now >= _alarmBeepNext) {
-        beep_ui(880,  60);   // low tone
+        beep_ui(880,  60);
         delay(80);
-        beep_ui(1400, 60);   // high tone
+        beep_ui(1400, 60);
         _alarmBeepCount--;
-        _alarmBeepNext = now + 500;  // 500ms between pairs
+        _alarmBeepNext = now + 500;
+    }
+    // Pending action poll — fires when machine reaches Idle state
+    // More reliable than onStateChange callback which can miss transitions
+    static uint32_t _lastActionCheck = 0;
+    if (_pendingAction != 0 && state == Idle && now - _lastActionCheck > 300) {
+        _lastActionCheck = now;
+        int action = _pendingAction;
+        _pendingAction = 0;
+        if (action == 1) {
+            send_line("$HZ");
+            fnc_term_inject("> $HZ: Homing Z");
+            _pendingAction = 11;
+        } else if (action == 11) {
+            send_line("$HX"); send_line("$HY");
+            fnc_term_inject("> $HX $HY: Homing XY");
+        } else if (action == 2) {
+            send_line("$HZ");
+            fnc_term_inject("> $HZ: Homing Z first");
+            _pendingAction = 12;
+        } else if (action == 12) {
+            send_line("$HX"); send_line("$HY");
+            fnc_term_inject("> $HX $HY");
+            _pendingAction = 3;
+        } else if (action == 3) {
+            if (!simJobName.empty()) {
+                std::string rpath = filePath+"/"+simJobName;
+                send_linef("$Localfs/Run=%s", rpath.c_str());
+                _jobSentToFluidNC = true;
+                fnc_term_inject(("> Resume: "+simJobName).c_str());
+            }
+        } else if (action == 4) {
+            fnc_realtime((realtime_cmd_t)'~');
+            fnc_term_inject("> ~ Resume");
+        } else if (action == 10) {
+            send_line("$HX"); send_line("$HY");
+            fnc_term_inject("> $HX $HY");
+        }
+        markDirty();
     }
 }
 
