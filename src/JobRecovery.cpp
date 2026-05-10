@@ -77,6 +77,15 @@ static void snapshotState() {
     _cp.spindleSpeed = mySpeed;
     _cp.tool = mySelectedTool;
     _cp.lastLine = _currentLine;
+    // Also save percent if available (more reliable than line count)
+    extern file_percent_t myPercent;
+    if (myPercent > 0 && myPercent <= 100) {
+        // Store percent in upper 16 bits of lastLine as a fallback
+        // If lastLine is 0 (no line tracking), use percent
+        if (_currentLine == 0) {
+            _cp.lastLine = (uint32_t)myPercent * 1000;  // encode: percent*1000
+        }
+    }
     // Parse WCS from myModes string
     const char* m = myModes.c_str();
     if      (strstr(m,"G54")) strncpy(_cp.wcs,"G54",8);
@@ -329,13 +338,22 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         bool connected = (state != Disconnected);
         uint16_t stcol = connected ? GREEN : RED;
         const char* ststr = connected ? "FluidNC Connected" : "FluidNC Not Connected";
-        canvas->fillCircle(px+14, py+48, 5, stcol);
-        txt0(ststr, px+24, py+48, stcol, 4);  // 4=middle_left
+        canvas->fillCircle(cx-60, py+48, 5, stcol);
+        txt0(ststr, cx-48, py+48, stcol, 4);  // middle_left aligned near center
         // Stats
-        char line1[48]; snprintf(line1,sizeof(line1),"Last line: %u", _cp.lastLine);
+        char line1[48];
+        // Detect if lastLine is encoded percent (value > 100000 means percent*1000)
+        if (_cp.lastLine > 100000) {
+            uint32_t pct = _cp.lastLine / 1000;
+            snprintf(line1,sizeof(line1),"Progress: ~%u%%", pct);
+        } else if (_cp.lastLine > 0) {
+            snprintf(line1,sizeof(line1),"Last line: %u", _cp.lastLine);
+        } else {
+            snprintf(line1,sizeof(line1),"Progress: unknown");
+        }
         char line2[48];
         float x2=_cp.axisX/10000.0f, y2=_cp.axisY/10000.0f, z2=_cp.axisZ/10000.0f;
-        snprintf(line2,sizeof(line2),"Position: X%.2f Y%.2f Z%.2f",x2,y2,z2);
+        snprintf(line2,sizeof(line2),"X%.2f Y%.2f Z%.2f",x2,y2,z2);
         txt0(line1, cx, py+64, C_WHITE);
         txt0(line2, cx, py+78, C_WHITE);
         txt0("Resume this job?", cx, py+96, CYAN);

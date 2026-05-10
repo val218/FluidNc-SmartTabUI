@@ -2157,16 +2157,25 @@ public:
         mpgLastDir = (delta > 0) ? 1 : -1;
         mpgDirTime = millis();
 
-        // Z nudge mode: use $J jog command — works in Hold state, updates myAxes live
+        // Z nudge: shift WCS Z so job resumes at new height
+        // G10 L20 P1 adjusts WCS so current machine pos = new value
+        // This permanently shifts all subsequent job Z moves by 'move' amount
         if (_zNudgeOpen && _tab == 0) {
             float step = mpgSteps[(int)mpgStepIdx];
             float move = delta * step;
             _zNudgeOffset += move;
-            // $J=G91 G21 Zx.xx Fxxxx — incremental jog, works during Hold
-            char cmd[48];
-            int feed = step <= 0.011f ? 200 : step <= 0.11f ? 500 : 2000;
-            snprintf(cmd, sizeof(cmd), "$J=G91 G21 Z%.4f F%d", move, feed);
+            // Current WCS Z in mm
+            float curZ_mm = myAxes[2] / 10000.0f;
+            // Shift WCS: tell machine "current Z position = curZ + move"
+            // This offsets all future absolute Z moves by 'move'
+            char cmd[64];
+            snprintf(cmd, sizeof(cmd), "G10 L20 P1 Z%.4f", curZ_mm + move);
             send_line(cmd);
+            // Also physically jog Z to the new position so machine is at right height
+            int feed = step <= 0.011f ? 200 : step <= 0.11f ? 500 : 2000;
+            char jog[48];
+            snprintf(jog, sizeof(jog), "$J=G91 G21 Z%.4f F%d", move, feed);
+            send_line(jog);
             reDisplay();
             return;
         }
