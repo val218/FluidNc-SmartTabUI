@@ -1859,37 +1859,39 @@ private:
         }
     }
 
-    // ── Pre-run sequence overlay — shows countdown steps ────────────────────────
+    // ── Pre-run info overlay — informational only, no commands sent here ────────
     void drawRunSequenceOverlay() {
-        int pw=W-20, ph=140, px=10, py=(NAV_Y+TOP)/2-ph/2;
+        int pw=W-20, ph=148, px=10, py=(NAV_Y+TOP)/2-ph/2;
         canvas.fillRoundRect(px,py,pw,ph,8,COL_PANEL);
         canvas.drawRoundRect(px,py,pw,ph,8,CYAN);
         int cx2=px+pw/2;
         canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
         canvas.setTextColor(CYAN);
-        canvas.drawString("Starting Job...",cx2,py+16);
-        // Steps
-        struct Step { const char* label; int state; };
-        Step steps[]={
-            {"1. Set absolute mode (G90)",     1},
-            {"2. Raise Z to safe height",      2},
-            {"3. Move to X0 Y0",               3},
-            {"4. Start file",                  4},
+        canvas.drawString("Preparing Job...",cx2,py+14);
+        // 4 info steps — each lights up based on _runStep
+        // _runStep is driven by FluidNC state changes, not timers
+        struct { const char* label; } steps[]={
+            {"Sending setup commands"},
+            {"Raising Z to safe height"},
+            {"Moving to work X0 Y0"},
+            {"Starting job file"},
         };
         for(int i=0;i<4;i++){
-            int sy=py+36+i*22;
-            bool done=(_runStep>steps[i].state);
-            bool active=(_runStep==steps[i].state);
-            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
-            canvas.setTextColor(done?GREEN:active?YELLOW:COL_DIM);
-            const char* icon=done?"✓ ":active?"► ":"  ";
-            char line[48]; snprintf(line,sizeof(line),"%s%s",icon,steps[i].label);
-            canvas.drawString(line,px+10,sy);
-            if(active){
-                // Progress bar for active step
-                canvas.fillRoundRect(px+10,sy+8,pw-20,4,2,COL_DIM);
-                canvas.fillRoundRect(px+10,sy+8,(pw-20)/2,4,2,YELLOW);
+            int sy=py+34+i*26;
+            bool done=(_runStep>i+1);
+            bool active=(_runStep==i+1);
+            // Row background
+            if(active) canvas.fillRoundRect(px+6,sy-8,pw-12,22,3,COL_DIM);
+            // Status dot
+            canvas.fillCircle(px+16,sy+3,5,done?GREEN:active?YELLOW:COL_DIM);
+            if(done) {
+                canvas.setTextColor(0x0000); canvas.setFont(&fonts::Font0);
+                canvas.setTextDatum(middle_center);
+                canvas.drawString("✓",px+16,sy+3);
             }
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+            canvas.setTextColor(done?GREEN:active?YELLOW:COL_DIM2);
+            canvas.drawString(steps[i].label,px+26,sy+3);
         }
     }
 
@@ -1979,6 +1981,20 @@ public:
         if (state == Idle && !_showEstopRecovery) {
             _jobSentToFluidNC = false; _estopRecovery = 0; _zNudgeOffset=0;
         }
+        // Update run sequence overlay based on state transitions
+        if (_runStep > 0 && _runStep < 4) {
+            if (state == Cycle) _runStep++;   // machine started moving → advance step
+            else if (state == Idle) {
+                if (_runStep == 2) _runStep = 3;  // done lifting Z, now doing XY
+                else if (_runStep == 3) { _runStep = 4; reDisplay(); }  // at XY zero
+            }
+            markDirty();
+        }
+        if (_runStep == 4 && state == Cycle) {
+            // Job actually started
+            _runStep = 0; markDirty();
+        }
+
         if (state == Idle && _pendingAction != 0) {
             int action = _pendingAction;
             _pendingAction = 0;
@@ -2020,20 +2036,7 @@ public:
                 fnc_realtime((realtime_cmd_t)'~');
                 fnc_term_inject("> ~ : Cycle start/resume");
             } else if (action == 20) {
-                // Pre-run step 1: Z raised, now move XY to WCS zero
-                _runStep = 3; reDisplay();
-                send_line("G0 X0 Y0");
-                fnc_term_inject("> G0 X0 Y0: moving to work zero");
-                _pendingAction = 21;
-            } else if (action == 21) {
-                // Pre-run step 2: at XY zero, now run the file
-                _runStep = 4; reDisplay();
-                if (!simJobName.empty()) {
-                    std::string rpath = filePath+"/"+simJobName;
-                    send_linef("$Localfs/Run=%s", rpath.c_str());
-                    termLines.push_back({"> Run: "+simJobName, COL_DIM2});
-                    _jobSentToFluidNC = true;
-                }
+                // Unused — run sequence sends all at once now
                 _runStep = 0; markDirty();
             }
         }
@@ -2567,13 +2570,16 @@ public:
                     _confirmRun=false;
                     simJobName=fileList[fileSelected].name;
                     _tab=0; filePreviewMode=false; _previewShowPath=false;
-                    // Step 1: G90 + lift Z. Steps 2+ fire via _pendingAction when Idle
-                    _runStep=2; reDisplay();
+                    // Send all pre-run commands to FluidNC — it queues them internally
                     send_line("G90");
                     send_line("G53 G0 Z0");
-                    fnc_term_inject("> G90 + Z lift — moving to work zero next");
-                    _pendingAction=20;  // fires: G0 X0 Y0 → then file run
-                    markDirty(); return;
+                    send_line("G0 X0 Y0");
+                    std::string rpath=filePath+"/"+simJobName;
+                    send_linef("$Localfs/Run=%s",rpath.c_str());
+                    termLines.push_back({"> Run: "+simJobName,COL_DIM2});
+                    _jobSentToFluidNC=true;
+                    // Show overlay — steps updated by FluidNC state transitions
+                    _runStep=1; markDirty(); return;
                 }
                 // Tap in content area — scroll or consume
                 if (y > pAbY - 20 && y < pAbY) {
@@ -2607,12 +2613,14 @@ public:
                         _confirmRun=false;
                         simJobName=fileList[fileSelected].name;
                         _tab=0; filePreviewMode=false; _previewShowPath=false;
-                        _runStep=2; reDisplay();
                         send_line("G90");
                         send_line("G53 G0 Z0");
-                        fnc_term_inject("> G90 + Z lift — moving to work zero next");
-                        _pendingAction=20;
-                        markDirty(); return;
+                        send_line("G0 X0 Y0");
+                        std::string path2=filePath+"/"+simJobName;
+                        send_linef("$Localfs/Run=%s",path2.c_str());
+                        termLines.push_back({"> Run: "+simJobName,COL_DIM2});
+                        _jobSentToFluidNC=true;
+                        _runStep=1; markDirty(); return;
                     }
                 }
                 _confirmRun=false; return;
