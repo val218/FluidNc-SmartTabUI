@@ -1,6 +1,7 @@
 #include "JobRecovery.h"
 #include "FluidNCModel.h"
 #include "System.h"
+#include "Scene.h"
 #include <LittleFS.h>
 #include <string>
 #include <vector>
@@ -8,6 +9,10 @@
 
 // LovyanGFX sprite forward — we cast in draw
 #include <LovyanGFX.hpp>
+
+// Declarations for functions defined in other translation units
+extern "C" void fnc_term_inject(const char* line);
+extern std::string myModes;  // defined in FluidNCModel.cpp
 
 // ── Constants ────────────────────────────────────────────────────────────────
 #define CHKPT_PATH  "/job_checkpoint.bin"
