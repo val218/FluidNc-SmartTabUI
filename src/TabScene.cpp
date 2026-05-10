@@ -358,7 +358,8 @@ static bool _loadingDone  = false;          // all batches received
 static bool _vizCacheReady = false;
 static bool _vizFullscreen = false;  // DRO viz double-tap fullscreen
 static bool _confirmRun = false;
-static int  _runStep = 0;      // 0=idle 1=lifting Z 2=going XY 3=starting
+static int  _runStep = 0;         // 0=idle 1=lifting Z 2=going XY 3=starting
+static uint32_t _runStartMs = 0;   // when run sequence started
 static bool _zNudgeOpen = false;
 static int  _estopRecovery = 0;
 static bool _showEstopRecovery = false;  // set by tabui_setEstopRecovery, read by class
@@ -1517,21 +1518,21 @@ private:
                 canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
                 canvas.setTextColor(sel?CYAN:COL_DIM2);
                 canvas.drawString("NC",12,ry+rowH/2);
-                // Filename
+                // Filename — upper portion of row
                 canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
                 canvas.setTextColor(sel?COL_WHITE:(_currentTheme==2?0x0000:COL_WHITE2));
                 std::string fname=fe.name;
-                if((int)fname.size()>24) fname=fname.substr(0,21)+"...";
-                canvas.drawString(fname.c_str(),24,ry+rowH/2);
-                // Size below name
+                if((int)fname.size()>22) fname=fname.substr(0,19)+"...";
+                canvas.drawString(fname.c_str(),24,ry+10);
+                // File size — lower portion, right-aligned, small font
                 if(fe.size>0){
                     char sz[16];
                     if(fe.size>=1000000) snprintf(sz,sizeof(sz),"%.1fMB",fe.size/1000000.0);
                     else if(fe.size>=1000) snprintf(sz,sizeof(sz),"%.1fKB",fe.size/1000.0);
                     else snprintf(sz,sizeof(sz),"%dB",fe.size);
-                    canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+                    canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_right);
                     canvas.setTextColor(COL_DIM2);
-                    canvas.drawString(sz,24,ry+rowH/2+6);
+                    canvas.drawString(sz,W-6,ry+rowH-10);
                 }
             }
         }
@@ -1859,39 +1860,40 @@ private:
         }
     }
 
-    // ── Pre-run info overlay — informational only, no commands sent here ────────
+    // ── Pre-run info overlay — drawn in VIZ area only, DRO gauges still visible ─
     void drawRunSequenceOverlay() {
-        int pw=W-20, ph=148, px=10, py=(NAV_Y+TOP)/2-ph/2;
-        canvas.fillRoundRect(px,py,pw,ph,8,COL_PANEL);
-        canvas.drawRoundRect(px,py,pw,ph,8,CYAN);
-        int cx2=px+pw/2;
-        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
-        canvas.setTextColor(CYAN);
-        canvas.drawString("Preparing Job...",cx2,py+14);
-        // 4 info steps — each lights up based on _runStep
-        // _runStep is driven by FluidNC state changes, not timers
+        // Draw inside the viz panel (right side of DRO)
+        int vx=VIZ_X, vy=VIZ_Y, vw=VIZ_W, vh=VIZ_H;
+        canvas.fillRect(vx,vy,vw,vh,COL_PANEL);
+        canvas.drawRect(vx,vy,vw,vh,CYAN);
+        // Title bar
+        canvas.fillRect(vx,vy,vw,16,CYAN);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_BG);
+        canvas.drawString("PREPARING JOB",vx+vw/2,vy+8);
+        // Job name
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_WHITE2);
+        std::string jn=simJobName.size()>16?simJobName.substr(0,13)+"...":simJobName;
+        canvas.drawString(jn.c_str(),vx+vw/2,vy+26);
+        // 4 steps
         struct { const char* label; } steps[]={
-            {"Sending setup commands"},
-            {"Raising Z to safe height"},
-            {"Moving to work X0 Y0"},
-            {"Starting job file"},
+            {"Setup (G90)"},
+            {"Raising Z"},
+            {"Moving to X0 Y0"},
+            {"Starting file"},
         };
+        int sY=vy+38;
         for(int i=0;i<4;i++){
-            int sy=py+34+i*26;
             bool done=(_runStep>i+1);
             bool active=(_runStep==i+1);
-            // Row background
-            if(active) canvas.fillRoundRect(px+6,sy-8,pw-12,22,3,COL_DIM);
-            // Status dot
-            canvas.fillCircle(px+16,sy+3,5,done?GREEN:active?YELLOW:COL_DIM);
-            if(done) {
-                canvas.setTextColor(0x0000); canvas.setFont(&fonts::Font0);
-                canvas.setTextDatum(middle_center);
-                canvas.drawString("✓",px+16,sy+3);
-            }
+            int sy=sY+i*26;
+            if(active){canvas.fillRoundRect(vx+2,sy-6,vw-4,20,2,COL_DIM);}
+            int dotcol=done?GREEN:active?YELLOW:COL_DIM2;
+            canvas.fillCircle(vx+10,sy+4,4,dotcol);
             canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
             canvas.setTextColor(done?GREEN:active?YELLOW:COL_DIM2);
-            canvas.drawString(steps[i].label,px+26,sy+3);
+            canvas.drawString(steps[i].label,vx+18,sy+4);
         }
     }
 
@@ -1980,19 +1982,6 @@ public:
         }
         if (state == Idle && !_showEstopRecovery) {
             _jobSentToFluidNC = false; _estopRecovery = 0; _zNudgeOffset=0;
-        }
-        // Update run sequence overlay based on state transitions
-        if (_runStep > 0 && _runStep < 4) {
-            if (state == Cycle) _runStep++;   // machine started moving → advance step
-            else if (state == Idle) {
-                if (_runStep == 2) _runStep = 3;  // done lifting Z, now doing XY
-                else if (_runStep == 3) { _runStep = 4; reDisplay(); }  // at XY zero
-            }
-            markDirty();
-        }
-        if (_runStep == 4 && state == Cycle) {
-            // Job actually started
-            _runStep = 0; markDirty();
         }
 
         if (state == Idle && _pendingAction != 0) {
@@ -2579,7 +2568,7 @@ public:
                     termLines.push_back({"> Run: "+simJobName,COL_DIM2});
                     _jobSentToFluidNC=true;
                     // Show overlay — steps updated by FluidNC state transitions
-                    _runStep=1; markDirty(); return;
+                    _runStep=1; _runStartMs=millis(); markDirty(); return;
                 }
                 // Tap in content area — scroll or consume
                 if (y > pAbY - 20 && y < pAbY) {
@@ -2620,7 +2609,7 @@ public:
                         send_linef("$Localfs/Run=%s",path2.c_str());
                         termLines.push_back({"> Run: "+simJobName,COL_DIM2});
                         _jobSentToFluidNC=true;
-                        _runStep=1; markDirty(); return;
+                        _runStep=1; _runStartMs=millis(); markDirty(); return;
                     }
                 }
                 _confirmRun=false; return;
@@ -2756,7 +2745,19 @@ public:
             case 4: drawMacrosScreen();   break;
         }
         if (_probeOpen)              drawProbeOverlay();
-        if (_runStep > 0)            drawRunSequenceOverlay();
+        if (_runStep > 0) {
+            // Advance overlay steps by elapsed time (informational only)
+            uint32_t el = millis() - _runStartMs;
+            if      (el < 800)  _runStep = 1;   // sending commands
+            else if (el < 2000) _runStep = 2;   // Z lifting (~1.2s)
+            else if (el < 3500) _runStep = 3;   // XY moving (~1.5s)
+            else                _runStep = 4;   // file starting
+            // Auto-close once job is running
+            if (_jobSentToFluidNC && state == Cycle && el > 2000)
+                _runStep = 0;
+            else
+                drawRunSequenceOverlay();
+        }
         if (_zNudgeOpen)             drawZNudgeOverlay();
         if (_alarmOpen || _forceAlarm) drawAlarmOverlay(_forceAlarm && simMode_active());
         if (state == Disconnected && !simMode_active()) drawDisconnectedOverlay();
