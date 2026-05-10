@@ -42,10 +42,13 @@ static bool inRect(const Rect& r, int x, int y) {
 static void saveCheckpoint() {
     memcpy(_cp.magic, "JCP", 4);
     _cp.savedAt = millis();
-    File f = LittleFS.open(CHKPT_PATH, "w");
+    File f = LittleFS.open(CHKPT_PATH, FILE_WRITE);
     if (f) {
         f.write((const uint8_t*)&_cp, sizeof(_cp));
         f.close();
+        dbg_printf("JobRecovery: saved line=%u\n", _cp.lastLine);
+    } else {
+        dbg_println("JobRecovery: SAVE FAILED");
     }
 }
 
@@ -93,8 +96,11 @@ static void snapshotState() {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 void jobrecov_init() {
-    LittleFS.begin(true);  // mount, format if needed
+    // LittleFS already mounted by init_system() — just load checkpoint
     _hasCheckpoint = loadCheckpoint() && _cp.dirty;
+    dbg_printf("JobRecovery: dirty=%d path=%s line=%u\n",
+               _hasCheckpoint, _hasCheckpoint?_cp.jobPath:"none",
+               _hasCheckpoint?_cp.lastLine:0u);
 }
 
 bool jobrecov_hasDirty() { return _hasCheckpoint; }

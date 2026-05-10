@@ -840,10 +840,14 @@ private:
             // Draw tool path at work area scale (shows where path sits in work area)
             if(myPercent>0) {
                 vizPathExecuted=(int)vizPath.size()*(int)myPercent/100;
-                // Update checkpoint line estimate from job progress
+                // Update checkpoint line estimate from job progress (throttled)
                 if (_jobSentToFluidNC && !allFileLines.empty()) {
-                    uint32_t estLine = (uint32_t)(allFileLines.size() * myPercent / 100.0f);
-                    jobrecov_lineExecuted(estLine);
+                    static file_percent_t _lastSavedPct = 0;
+                    if (myPercent != _lastSavedPct) {
+                        _lastSavedPct = myPercent;
+                        uint32_t estLine = (uint32_t)(allFileLines.size() * myPercent / 100.0f);
+                        jobrecov_lineExecuted(estLine);
+                    }
                 }
             }
             int exec=std::min(vizPathExecuted,(int)vizPath.size()-1);
