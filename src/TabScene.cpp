@@ -360,7 +360,8 @@ static bool _vizFullscreen = false;  // DRO viz double-tap fullscreen
 static bool _confirmRun = false;
 static bool _zNudgeOpen = false;
 static int  _estopRecovery = 0;
-static bool _showEstopRecovery = false;  // set by tabui_setEstopRecovery, read by class  // 0=none 1=alarmed 2=released    // Z nudge overlay during job
+static bool _showEstopRecovery = false;  // set by tabui_setEstopRecovery, read by class
+static int  _pendingAction = 0;  // 0=none 1=rehome 2=rehome+resume after $X clears alarm  // 0=none 1=alarmed 2=released    // Z nudge overlay during job
 static float _zNudgeOffset = 0.0f;  // accumulated Z nudge     // waiting for run confirmation
 static uint32_t _lastVizTap = 0;    // for double-tap detection
 
@@ -1944,6 +1945,40 @@ public:
         if (state == Idle && !_showEstopRecovery) {
             _jobSentToFluidNC = false; _estopRecovery = 0; _zNudgeOffset=0;
         }
+        if (state == Idle && _pendingAction != 0) {
+            int action = _pendingAction;
+            _pendingAction = 0;
+            if (action == 1) {
+                // Rehome Z first, then XY
+                send_line("$HZ");
+                fnc_term_inject("> $HZ: Home Z first");
+                _pendingAction = 11;  // then home XY
+            } else if (action == 11) {
+                send_line("$HX"); send_line("$HY");
+                fnc_term_inject("> $HX $HY: Home XY");
+            } else if (action == 2) {
+                // Rehome Z then XY, then resume job
+                send_line("$HZ");
+                fnc_term_inject("> $HZ: Home Z first");
+                _pendingAction = 12;
+            } else if (action == 12) {
+                send_line("$HX"); send_line("$HY");
+                fnc_term_inject("> $HX $HY: Home XY");
+                _pendingAction = 3;  // then resume
+            } else if (action == 3) {
+                // After rehome — re-run the job
+                if (!simJobName.empty()) {
+                    std::string rpath = filePath+"/"+simJobName;
+                    send_linef("$Localfs/Run=%s", rpath.c_str());
+                    _jobSentToFluidNC = true;
+                    fnc_term_inject(("> Resume job: "+simJobName).c_str());
+                }
+            } else if (action == 10) {
+                // Home All sequence: Z first then XY (from Home tab button)
+                send_line("$HX"); send_line("$HY");
+                fnc_term_inject("> $HX $HY after Z homed");
+            }
+        }
         // Reconnection: re-request axis config when coming back online
         if (old_state == Disconnected && state != Disconnected) {
             send_line("$axes/count");
@@ -2102,8 +2137,11 @@ public:
         if (_zNudgeOpen && _tab == 0) {
             float step = mpgSteps[(int)mpgStepIdx];  // 0.01 / 0.10 / 1.00 from step switch
             _zNudgeOffset += delta * step;
-            // Send tool offset command
-            char cmd[32]; snprintf(cmd, sizeof(cmd), "G43.1 Z%.3f", _zNudgeOffset);
+            // Shift WCS Z: G10 L20 P1 adjusts WCS so current position reports as given value
+            // myAxes[2] is current Z in WCS. We want it to appear as myAxes[2]+offset.
+            // Equivalent: shift Z origin by -offset → new WCS zero is offset mm lower.
+            char cmd[48];
+            snprintf(cmd, sizeof(cmd), "G91 G0 Z%.4f G90", delta * step);  // incremental jog
             send_line(cmd);
             reDisplay();
             return;
@@ -2170,9 +2208,11 @@ public:
         }
 
         // All other cases: scroll the active tab (axis switch position ignored)
-        if (_tab == 2) {
+        if (_tab == 1) {
+            // Home tab scroll — each detent = 8px
+            _homeScroll = std::max(0, _homeScroll + delta * 8);
+        } else if (_tab == 2) {
             if (filePreviewMode) {
-                // Scroll gcode preview
                 int maxS = std::max(0, (int)previewLines.size() - 1);
                 previewScroll = std::max(0, std::min(previewScroll + delta, maxS));
             } else {
@@ -2337,7 +2377,7 @@ public:
             if (x >= VIZ_X && x < VIZ_X+VIZ_W && y >= VIZ_Y && y < VIZ_Y+VIZ_H) {
                 // Z nudge: open if in Hold state, close if already open
                 if (_zNudgeOpen) {
-                    if (hit(_zCloseBtn,x,y))  { _zNudgeOffset=0;send_line("G49");_zNudgeOpen=false;markDirty();return;}
+                    if (hit(_zCloseBtn,x,y))  { _zNudgeOffset=0; _zNudgeOpen=false; markDirty(); return;}
                     if (hit(_zResumeBtn,x,y)) { _zNudgeOpen=false;fnc_realtime((realtime_cmd_t)'~');markDirty();return;}
                     return;  // consume touch while Z nudge open
                 }
@@ -2385,7 +2425,9 @@ public:
         if (_tab == 1) {
             if (hit(_homeAllBtn, x, y)) {
                 _homePressedId=0; _homePressTime=millis(); g_pressExpiryMs = millis()+300;
-                send_line("$H"); fnc_term_inject("> $H");
+                // Home Z first for safety, then X and Y
+                send_line("$HZ"); fnc_term_inject("> $HZ (Z first for safety)");
+                _pendingAction = 10;  // when Idle: home X and Y
                 reDisplay(); return;
             }
             if (hit(_probeBtnR, x, y)) {
@@ -2411,14 +2453,28 @@ public:
                     reDisplay(); return;
                 }
             }
-            // Go to Zero buttons
-            const char* gcmds[]={"G0 X0","G0 Y0","G0 Z0","G0 X0 Y0"};
+            // Go to Zero buttons — safe Z lift before XY movement
             for(int k=0;k<4;k++){
                 if(hit(_gotoZeroBtns[k],x,y)){
                     _homePressedId=30+k; _homePressTime=millis(); g_pressExpiryMs=millis()+300;
-                    send_line("G90");
-                    send_line(gcmds[k]);
-                    fnc_term_inject((std::string("> G90; ")+gcmds[k]).c_str());
+                    send_line("G90");            // absolute mode
+                    if (k == 0) {                // X only
+                        send_line("G53 G0 Z0"); // safe Z height (machine home)
+                        send_line("G0 X0");      // move X to WCS zero
+                        fnc_term_inject("> Go X0 (Z safe lift first)");
+                    } else if (k == 1) {         // Y only
+                        send_line("G53 G0 Z0"); // safe Z height
+                        send_line("G0 Y0");      // move Y to WCS zero
+                        fnc_term_inject("> Go Y0 (Z safe lift first)");
+                    } else if (k == 2) {         // Z only
+                        send_line("G0 Z0");      // move Z directly to WCS zero
+                        fnc_term_inject("> Go Z0");
+                    } else {                     // All: Z up, XY to zero, Z to zero
+                        send_line("G53 G0 Z0"); // 1. lift Z to machine home (safe)
+                        send_line("G0 X0 Y0");  // 2. move XY to WCS zero
+                        send_line("G0 Z0");      // 3. lower Z to WCS zero
+                        fnc_term_inject("> Go All 0 (Z lift → XY → Z0)");
+                    }
                     reDisplay(); return;
                 }
             }
@@ -2581,14 +2637,33 @@ public:
 
     void onLeftFlick()  override {}
     void onRightFlick() override {}
+    void onScrollDrag(int dy) override {
+        // Continuous drag scroll for all scrollable tabs
+        if (_tab == 1) {
+            _homeScroll = std::max(0, _homeScroll + dy);
+            reDisplay();
+        } else if (_tab == 2) {
+            fileScroll += dy;
+            if (fileScroll < 0) fileScroll = 0;
+            reDisplay();
+        } else if (_tab == 3) {
+            termScroll += dy;
+            reDisplay();
+        } else if (_tab == 4) {
+            macroScroll += dy;
+            if (macroScroll < 0) macroScroll = 0;
+            reDisplay();
+        }
+    }
+
     void onUpFlick() override {
-        if (_tab == 1) { _homeScroll = std::max(0, _homeScroll - 20); reDisplay(); }
+        if (_tab == 1) { _homeScroll = std::max(0, _homeScroll - 40); reDisplay(); }
         if (_tab == 2 && filePreviewMode) { previewScroll = std::max(0, previewScroll - 5); reDisplay(); }
         if (_tab == 3) { termScroll = std::max(0, termScroll - 5); reDisplay(); }
         if (_tab == 4) { if(_spindleMenuOpen){_spindleMenuOpen=false;}else{macroScroll=std::max(0,macroScroll-2);} reDisplay(); }
     }
     void onDownFlick() override {
-        if (_tab == 1) { _homeScroll += 20; reDisplay(); }
+        if (_tab == 1) { _homeScroll += 40; reDisplay(); }
         if (_tab == 2 && filePreviewMode) { previewScroll += 5; reDisplay(); }
         if (_tab == 3) {
             termScroll += 5;

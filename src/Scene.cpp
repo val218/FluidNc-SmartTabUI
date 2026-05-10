@@ -14,6 +14,8 @@ int touchX;
 int touchY;
 int touchDeltaX;
 int touchDeltaY;
+static int _dragStartY = -1;
+static int _dragLastY  = -1;
 
 // Dirty flag for rate-limited redraw — avoids redundant full-screen redraws
 static volatile bool _displayDirty = false;
@@ -104,6 +106,22 @@ void dispatch_touch() {
         if (t.state == m5::touch_state_t::touch)     dispatch_button(true,  button);
         else if (t.state == m5::touch_state_t::none) dispatch_button(false, button);
         return;
+    }
+
+    // Continuous drag scroll — track Y movement while finger is down
+    if (t.state == m5::touch_state_t::touch_begin) {
+        _dragStartY = t.y;
+        _dragLastY  = t.y;
+    } else if (t.state == m5::touch_state_t::touch && _dragLastY >= 0) {
+        int dy = _dragLastY - t.y;
+        if (abs(dy) >= 3) {
+            touchDeltaY = dy;
+            current_scene->onScrollDrag(dy);
+            _dragLastY = t.y;
+        }
+        return;
+    } else if (t.state == m5::touch_state_t::none || t.state == m5::touch_state_t::flick_end) {
+        _dragLastY = -1;
     }
 
     if (t.wasClicked())   { current_scene->onTouchClick();   return; }
