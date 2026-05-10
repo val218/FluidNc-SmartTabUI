@@ -2242,12 +2242,16 @@ public:
                     send_line("$X"); delay(80);
                     fnc_realtime((realtime_cmd_t)'~');
                     fnc_term_inject("> Resume after e-stop");
-                    _showEstopRecovery=false; _estopRecovery=0; _alarmOpen=false; markDirty(); return;
+                    _showEstopRecovery=false; _estopRecovery=0; _alarmOpen=false;
+                    extern volatile bool _forceAlarm; _forceAlarm=false;
+                    markDirty(); return;
                 }
                 if (hit(_rehomeBtn, x, y)) {
                     send_line("$X"); delay(80); send_line("$H");
                     fnc_term_inject("> Rehome after e-stop");
-                    _showEstopRecovery=false; _estopRecovery=0; markDirty(); return;
+                    _showEstopRecovery=false; _estopRecovery=0;
+                    extern volatile bool _forceAlarm; _forceAlarm=false;
+                    markDirty(); return;
                 }
                 if (hit(_rehomeResBtn, x, y)) {
                     send_line("$X"); delay(80); send_line("$H");
@@ -2258,11 +2262,15 @@ public:
                         _jobSentToFluidNC=true;
                         fnc_term_inject(("> Rehome+Resume: "+simJobName).c_str());
                     }
-                    _showEstopRecovery=false; _estopRecovery=0; markDirty(); return;
+                    _showEstopRecovery=false; _estopRecovery=0;
+                    extern volatile bool _forceAlarm; _forceAlarm=false;
+                    markDirty(); return;
                 }
                 if (hit(_unlockBtnFull, x, y)) {
                     send_line("$X"); fnc_term_inject("> $X");
-                    _showEstopRecovery=false; _estopRecovery=0; _alarmOpen=false; markDirty(); return;
+                    _showEstopRecovery=false; _estopRecovery=0; _alarmOpen=false;
+                    extern volatile bool _forceAlarm; _forceAlarm=false;
+                    markDirty(); return;
                 }
             } else if (!mpgEstopActive) {
                 // Normal FluidNC alarm
