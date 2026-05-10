@@ -363,7 +363,8 @@ static int  _runStep = 0;         // 0=idle 1=lifting Z 2=going XY 3=starting
 static uint32_t _runStartMs = 0;   // when run sequence started
 static bool _zNudgeOpen = false;
 static int  _estopRecovery = 0;
-static bool _showEstopRecovery = false;  // set by tabui_setEstopRecovery, read by class
+static bool _showEstopRecovery = false;
+int _tabFromRecovery = -1;  // set by JobRecovery to request tab switch  // set by tabui_setEstopRecovery, read by class
 static int  _pendingAction = 0;  // 0=none 1=rehome 2=rehome+resume after $X clears alarm  // 0=none 1=alarmed 2=released    // Z nudge overlay during job
 static float _zNudgeOffset = 0.0f;  // accumulated Z nudge     // waiting for run confirmation
 static uint32_t _lastVizTap = 0;    // for double-tap detection
@@ -2808,6 +2809,14 @@ void tabui_checkPressExpiry() {
         _alarmBeepCount--;
         _alarmBeepNext = now + 500;
     }
+    // Handle tab switch requested by recovery wizard (e.g. "Go to Home tab")
+    if (_tabFromRecovery >= 0) {
+        extern void tabui_setTab(int);
+        _currentTab = _tabFromRecovery;
+        _tabFromRecovery = -1;
+        markDirty();
+    }
+
     // Pending action poll — fires when machine reaches Idle state
     // More reliable than onStateChange callback which can miss transitions
     static uint32_t _lastActionCheck = 0;

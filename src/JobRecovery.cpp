@@ -308,16 +308,28 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         canvas->drawRoundRect(x,y,w,h,r,c);
     };
     auto txt = [&](const char* s, int x, int y, uint16_t c, int datum=4){
-        canvas->setFont(&fonts::Font2);
+        canvas->setFont(&fonts::Font2);  // larger font for titles only
         canvas->setTextDatum((lgfx::v1::textdatum_t)datum);
         canvas->setTextColor(c);
         canvas->drawString(s, x, y);
     };
     auto txt0 = [&](const char* s, int x, int y, uint16_t c, int datum=4){
-        canvas->setFont(&fonts::Font0);
+        canvas->setFont(&fonts::Font0);  // small font for body text
         canvas->setTextDatum((lgfx::v1::textdatum_t)datum);
         canvas->setTextColor(c);
         canvas->drawString(s, x, y);
+    };
+    // Clip-safe text: truncates string to fit within panel width
+    int pw2 = pw - 12;  // usable text width
+    auto txt0_safe = [&](const char* s, int x, int y, uint16_t c){
+        canvas->setFont(&fonts::Font0);
+        canvas->setTextDatum((lgfx::v1::textdatum_t)4);  // middle_left
+        canvas->setTextColor(c);
+        // Measure and truncate if needed
+        std::string str(s);
+        while (str.size() > 3 && canvas->textWidth(str.c_str()) > pw2)
+            str = str.substr(0, str.size()-1);
+        canvas->drawString(str.c_str(), x, y);
     };
     auto btn = [&](Rect& r, int x, int y, int w, int h, uint16_t fill, uint16_t border, const char* label, uint16_t tc){
         r = {x,y,w,h};
@@ -366,11 +378,11 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     case RecoveryPhase::AskToolBreak: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,ORANGE);
         txt("TOOL BREAK OR E-STOP?", cx, py+16, ORANGE);
-        txt0("Was this job stopped due to:", cx, py+34, C_WHITE);
-        txt0("tool break, E-stop, power loss,", cx, py+48, C_WHITE);
-        txt0("or any sudden stop?", cx, py+62, C_WHITE);
-        txt0("YES = manual jog clear + tool change required", cx, py+80, YELLOW);
-        txt0("NO  = standard resume (machine stopped normally)", cx, py+94, C_DIM);
+        txt0_safe("Was this job stopped due to:", px+6, py+34, C_WHITE);
+        txt0_safe("tool break, E-stop, power loss,", px+6, py+48, C_WHITE);
+        txt0_safe("or any sudden stop?", px+6, py+62, C_WHITE);
+        txt0_safe("YES = manual jog + tool change required", px+6, py+80, YELLOW);
+        txt0_safe("NO  = standard resume (clean stop)", px+6, py+94, C_DIM);
         int bw2=(pw-18)/2, by2=py+avH-bh-8;
         btn(_btnA, px+6,      by2, bw2, bh, 0xC000, RED,   "YES (Tool Break)",  C_WHITE);
         btn(_btnB, px+12+bw2, by2, bw2, bh, GREEN,  GREEN, "NO (Clean Stop)",   0x0000);
@@ -379,33 +391,39 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
 
     case RecoveryPhase::ShowLines: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,CYAN);
-        txt("CONFIRM RESUME LINE", cx, py+14, CYAN);
-        txt0("Select where to resume (back up 3-5 lines):", cx, py+28, C_WHITE);
-        // Show last lines with selectable buttons
-        int lineH=16, startY=py+40;
-        uint32_t startLine = (_cp.lastLine > 9) ? _cp.lastLine-9 : 0;
-        for(int i=0;i<10;i++){
+        txt("SELECT RESUME LINE", cx, py+14, CYAN);
+        txt0_safe("Tap a line to select, then confirm:", px+6, py+28, C_WHITE);
+        // Decode lastLine — may be encoded percent
+        uint32_t baseLine = (_cp.lastLine > 100000) ? (_cp.lastLine/1000)*30 : _cp.lastLine;
+        int lineH=18, startY=py+42;
+        int nLines = std::min(7, (avH-42-bh-8)/lineH);
+        uint32_t startLine = (baseLine > (uint32_t)(nLines-1)) ? baseLine-(nLines-1) : 0;
+        // Store line rects for touch
+        static Rect _lineRects[7];
+        for(int i=0;i<nLines;i++){
             uint32_t ln = startLine+i;
-            bool isDefault=(ln==_resumeLine);
+            bool isSel=(ln==_resumeLine);
             int ly=startY+i*lineH;
-            if(isDefault) canvas->fillRect(px+4,ly-2,pw-8,lineH,0x2106);
-            char lb[32]; snprintf(lb,sizeof(lb),"Line %u%s",ln,isDefault?" ◄ default":"");
+            _lineRects[i]={px+4,ly-1,pw-8,lineH-1};
+            canvas->fillRoundRect(px+4,ly-1,pw-8,lineH-1,2,isSel?0x0019:C_PANEL);
+            if(isSel) canvas->drawRoundRect(px+4,ly-1,pw-8,lineH-1,2,CYAN);
+            char lb[32]; snprintf(lb,sizeof(lb),"Line %u%s",ln,isSel?" ◄":"");
             canvas->setFont(&fonts::Font0); canvas->setTextDatum(4);
-            canvas->setTextColor(isDefault?YELLOW:C_DIM);
-            canvas->drawString(lb,cx,ly+6);
+            canvas->setTextColor(isSel?YELLOW:C_DIM);
+            canvas->drawString(lb,cx,ly+lineH/2);
         }
-        btn(_btnA, px+6, py+avH-bh-8, pw-12, bh, CYAN, CYAN, "Use selected line", 0x0000);
+        btn(_btnA, px+6, py+avH-bh-8, pw-12, bh, CYAN, CYAN, "Resume from selected line", 0x0000);
         break;
     }
 
     case RecoveryPhase::ManualJog: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,RED);
         txt("MANUAL JOG REQUIRED", cx, py+14, RED);
-        txt0("Machine stopped mid-cut.", cx, py+30, C_WHITE);
-        txt0("Use MPG wheel to:", cx, py+46, YELLOW);
-        txt0("1. Jog Z UP to clear workpiece", cx, py+62, C_WHITE);
-        txt0("2. Jog X/Y clear of workpiece", cx, py+78, C_WHITE);
-        txt0("DO NOT auto-move — path may be obstructed", cx, py+94, RED);
+        txt0_safe("Machine stopped mid-cut.", px+6, py+30, C_WHITE);
+        txt0_safe("Use MPG wheel to:", px+6, py+46, YELLOW);
+        txt0_safe("1. Jog Z UP to clear workpiece", px+16, py+62, C_WHITE);
+        txt0_safe("2. Jog X/Y clear of workpiece", px+16, py+78, C_WHITE);
+        txt0_safe("DO NOT auto-move — path may be blocked", px+6, py+94, RED);
         btn(_btnA, px+6, py+avH-bh-8, pw-12, bh, GREEN, GREEN, "Done — machine is clear", 0x0000);
         break;
     }
@@ -413,29 +431,36 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     case RecoveryPhase::ToolChange: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,ORANGE);
         txt("TOOL CHANGE REQUIRED", cx, py+14, ORANGE);
-        txt0("1. Insert new/checked tool", cx, py+32, C_WHITE);
-        txt0("2. Run tool length probe (Home tab)", cx, py+48, C_WHITE);
-        txt0("3. Verify Z0 is correct", cx, py+64, C_WHITE);
-        char tlast[32]; snprintf(tlast,sizeof(tlast),"Last tool: T%u", _cp.tool);
-        txt0(tlast, cx, py+80, C_DIM);
-        btn(_btnA, px+6, py+avH-bh-8, pw-12, bh, ORANGE, ORANGE, "Tool changed + probed", 0x0000);
+        txt0_safe("Insert new tool, then set Z0:", px+6, py+30, C_WHITE);
+        // Option A: probe
+        int bh2=26, bh3=26, gap2=4;
+        int by2 = py+avH - bh2 - bh3 - bh3 - gap2*2 - 8;
+        txt0_safe("Option 1 — Auto probe:", px+6, by2-14, YELLOW);
+        btn(_btnB, px+6, by2, pw-12, bh2, 0x0019, CYAN, "Open Home Tab → Run Probe", C_WHITE);
+        by2 += bh2+gap2;
+        txt0_safe("Option 2 — Manual: jog Z to surface, then:", px+6, by2-14, YELLOW);
+        // Set Z0 manually
+        btn(_btnC, px+6, by2, pw-12, bh3, 0x2800, GREEN, "Set Z0 here  (G10 L20 P1 Z0)", C_WHITE);
+        by2 += bh3+gap2;
+        // Done
+        btn(_btnA, px+6, by2, pw-12, bh3, ORANGE, ORANGE, "Done — Z0 is set, continue", 0x0000);
         break;
     }
 
     case RecoveryPhase::Confirm: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,GREEN);
         txt("READY TO RESUME", cx, py+14, GREEN);
-        txt0("The pendant will execute this sequence:", cx, py+30, C_WHITE);
-        txt0("1. Home Z for reference", cx, py+46, C_DIM);
+        txt0_safe("The pendant will execute:", px+6, py+30, C_WHITE);
+        txt0_safe("1. Home Z for reference", px+16, py+46, C_DIM);
         char pos[48];
         float rx=_cp.axisX/10000.0f, ry2=_cp.axisY/10000.0f, rz=_cp.axisZ/10000.0f;
-        snprintf(pos,sizeof(pos),"2. Move to X%.2f Y%.2f",rx,ry2);
-        txt0(pos, cx, py+60, C_DIM);
-        snprintf(pos,sizeof(pos),"3. Lower Z to %.2f at F%u",rz,_cp.feedRate);
-        txt0(pos, cx, py+74, C_DIM);
-        char rline[32]; snprintf(rline,sizeof(rline),"4. Resume from line ~%u",_resumeLine);
-        txt0(rline, cx, py+88, C_DIM);
-        if(_toolBreak) txt0("(Tool re-probed — Z offset applied)", cx, py+104, YELLOW);
+        snprintf(pos,sizeof(pos),"2. X%.2f Y%.2f",rx,ry2);
+        txt0_safe(pos, px+16, py+60, C_DIM);
+        snprintf(pos,sizeof(pos),"3. Z %.2f at F%u",rz,_cp.feedRate);
+        txt0_safe(pos, px+16, py+74, C_DIM);
+        char rline[32]; snprintf(rline,sizeof(rline),"4. Resume ~line %u",_resumeLine);
+        txt0_safe(rline, px+16, py+88, C_DIM);
+        if(_toolBreak) txt0_safe("(Tool re-probed, Z offset applied)", px+6, py+104, YELLOW);
         int bw2=(pw-18)/2, by2=py+avH-bh-8;
         btn(_btnA, px+6,      by2, bw2, bh, GREEN,  GREEN, "CONFIRM RESUME", 0x0000);
         btn(_btnB, px+12+bw2, by2, bw2, bh, C_PANEL, RED,  "CANCEL",         RED);
@@ -458,14 +483,38 @@ bool jobrecov_onTouch(int x, int y) {
         if (inRect(_btnA,x,y)) { jobrecov_advance(1); return true; }  // YES tool break
         if (inRect(_btnB,x,y)) { jobrecov_advance(0); return true; }  // NO clean stop
         break;
-    case RecoveryPhase::ShowLines:
+    case RecoveryPhase::ShowLines: {
+        // Check individual line rows
+        uint32_t baseLine = (_cp.lastLine > 100000) ? (_cp.lastLine/1000)*30 : _cp.lastLine;
+        static Rect _lineRects[7];  // defined in draw, reused here
+        int nLines = 7;
+        uint32_t startLine = (baseLine > (uint32_t)(nLines-1)) ? baseLine-(nLines-1) : 0;
+        for(int i=0;i<nLines;i++){
+            int lineH=18, startY=44+4;  // matches draw: startY=py+42, py=TOP+4=24
+            int ly = 24+42+i*lineH;
+            Rect r={12,ly-1,296,lineH-1};
+            if(inRect(r,x,y)){ _resumeLine=startLine+i; return true; }
+        }
         if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }
         break;
+    }
     case RecoveryPhase::ManualJog:
         if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }
         break;
     case RecoveryPhase::ToolChange:
-        if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }
+        if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }  // Done
+        if (inRect(_btnB,x,y)) {
+            // Open Home tab for probing — recovery stays active
+            extern int _tabFromRecovery;
+            _tabFromRecovery = 1;
+            return true;
+        }
+        if (inRect(_btnC,x,y)) {
+            // Manual Z0 — send G10 L20 P1 Z0 to set current position as Z zero
+            send_line("G10 L20 P1 Z0");
+            fnc_term_inject("> G10 L20 P1 Z0: Z0 set at current position");
+            return true;
+        }
         break;
     case RecoveryPhase::Confirm:
         if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }  // CONFIRM
