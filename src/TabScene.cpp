@@ -1988,20 +1988,18 @@ public:
             int action = _pendingAction;
             _pendingAction = 0;
             if (action == 1) {
-                // Step 1: Lift Z to safe height, then home Z
-                send_line("G53 G0 Z0");   // lift Z to machine home (safe)
+                // Step 1: Home Z first (raises Z as part of homing)
                 send_line("$HZ");
-                fnc_term_inject("> Z lift + $HZ");
+                fnc_term_inject("> $HZ: Home Z (raises axis during homing)");
                 _pendingAction = 11;
             } else if (action == 11) {
                 // Step 2: Home X and Y
                 send_line("$HX"); send_line("$HY");
                 fnc_term_inject("> $HX $HY");
             } else if (action == 2) {
-                // Rehome+Resume step 1: lift Z + home Z
-                send_line("G53 G0 Z0");
+                // Rehome+Resume step 1: home Z
                 send_line("$HZ");
-                fnc_term_inject("> Z lift + $HZ (will resume job after)");
+                fnc_term_inject("> $HZ: Home Z first");
                 _pendingAction = 12;
             } else if (action == 12) {
                 // Step 2: home XY then queue resume
@@ -2353,14 +2351,18 @@ public:
                     _pendingAction = 2;  // Idle → Z lift + $HZ → Idle → $HX $HY → Idle → run
                     clearRecovery(); markDirty(); return;
                 }
-                // ── Cancel job entirely: $X + clear all job state ─────────────
+                // ── Cancel job: $X + clear all job state + clear viz ─────────────
                 if (hit(_unlockBtnFull, x, y)) {
                     send_line("$X");
                     fnc_term_inject("> $X: Alarm cleared, job cancelled");
-                    simJobName.clear();          // forget the job
+                    simJobName.clear();
                     _jobSentToFluidNC = false;
                     simJobRunning = false;
                     vizPathExecuted = 0;
+                    vizPath.clear();        // clear toolpath from DRO viz
+                    vizJobName.clear();     // clear job name from viz strip
+                    fileSelected = -1;      // deselect file
+                    _runStep = 0;           // close any overlay
                     clearRecovery(); markDirty(); return;
                 }
             } else if (!mpgEstopActive) {
@@ -2746,17 +2748,21 @@ public:
         }
         if (_probeOpen)              drawProbeOverlay();
         if (_runStep > 0) {
-            // Advance overlay steps by elapsed time (informational only)
             uint32_t el = millis() - _runStartMs;
-            if      (el < 800)  _runStep = 1;   // sending commands
-            else if (el < 2000) _runStep = 2;   // Z lifting (~1.2s)
-            else if (el < 3500) _runStep = 3;   // XY moving (~1.5s)
-            else                _runStep = 4;   // file starting
-            // Auto-close once job is running
-            if (_jobSentToFluidNC && state == Cycle && el > 2000)
-                _runStep = 0;
-            else
+            // Hard timeout: close overlay after 8s regardless
+            if (el > 8000) { _runStep = 0; }
+            // Close as soon as FluidNC enters Cycle (job running)
+            else if (_jobSentToFluidNC && state == Cycle) { _runStep = 0; }
+            // Close if machine goes Alarm (something went wrong)
+            else if (state == Alarm) { _runStep = 0; }
+            else {
+                // Advance steps by time
+                if      (el < 600)  _runStep = 1;
+                else if (el < 2000) _runStep = 2;
+                else if (el < 4000) _runStep = 3;
+                else                _runStep = 4;
                 drawRunSequenceOverlay();
+            }
         }
         if (_zNudgeOpen)             drawZNudgeOverlay();
         if (_alarmOpen || _forceAlarm) drawAlarmOverlay(_forceAlarm && simMode_active());
