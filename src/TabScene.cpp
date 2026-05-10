@@ -1924,16 +1924,18 @@ private:
         char stepBuf[20]; snprintf(stepBuf,sizeof(stepBuf),"Step: %.3fmm",stepVal);
         canvas.setTextColor(COL_DIM2); canvas.drawString(stepBuf,vx+vw/2,vy+28);
         // Current / New / Offset
-        float curZ=myAxes[2], newZ=curZ+_zNudgeOffset;
+        // myAxes is e4 fixed point (×10000) — divide to get mm
+        float curZ = myAxes[2] / 10000.0f;
+        float newZ = curZ + _zNudgeOffset;  // both now in mm
         canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
         canvas.setTextColor(COL_DIM2); canvas.drawString("Current Z:",vx+4,vy+44);
         canvas.setTextDatum(middle_right); canvas.setTextColor(COL_AX_Z);
-        char cb[12]; snprintf(cb,12,"%.3f",curZ); canvas.drawString(cb,vx+vw-4,vy+44);
+        char cb[12]; snprintf(cb,12,"%.2f",curZ); canvas.drawString(cb,vx+vw-4,vy+44);
         canvas.setTextDatum(middle_left); canvas.setTextColor(COL_DIM2);
         canvas.drawString("New Z:",vx+4,vy+60);
         canvas.setTextDatum(middle_right);
         canvas.setTextColor(_zNudgeOffset>0.0005f?GREEN:_zNudgeOffset<-0.0005f?RED:COL_WHITE);
-        char nb[12]; snprintf(nb,12,"%.3f",newZ); canvas.drawString(nb,vx+vw-4,vy+60);
+        char nb[12]; snprintf(nb,12,"%.2f",newZ); canvas.drawString(nb,vx+vw-4,vy+60);
         canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
         canvas.setTextColor(COL_DIM2); canvas.drawString("Offset:",vx+vw/2,vy+76);
         canvas.setFont(&fonts::Font2);
@@ -2591,6 +2593,7 @@ public:
                         send_linef("$Localfs/Run=%s",path2.c_str());
                         termLines.push_back({"> Run: "+simJobName,COL_DIM2});
                         _jobSentToFluidNC=true;
+                        jobrecov_jobStarted((filePath+"/"+simJobName).c_str());
                         _runStep=1; _runStartMs=millis(); markDirty(); return;
                     }
                 }
@@ -2781,6 +2784,12 @@ void tabui_checkPressExpiry() {
     if (g_pressExpiryMs > 0 && now >= g_pressExpiryMs) {
         g_pressExpiryMs = 0;
         markDirty();
+    }
+    // Periodic job checkpoint save — every 10 seconds while job running
+    static uint32_t _lastChkptSave = 0;
+    if (_jobSentToFluidNC && state == Cycle && now - _lastChkptSave > 10000) {
+        _lastChkptSave = now;
+        jobrecov_saveNow();
     }
     // Alarm two-tone beep (4 pairs)
     if (_alarmBeepCount > 0 && now >= _alarmBeepNext) {

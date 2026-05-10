@@ -97,10 +97,16 @@ static void snapshotState() {
 // ── Public API ────────────────────────────────────────────────────────────────
 void jobrecov_init() {
     // LittleFS already mounted by init_system() — just load checkpoint
-    _hasCheckpoint = loadCheckpoint() && _cp.dirty;
-    dbg_printf("JobRecovery: dirty=%d path=%s line=%u\n",
-               _hasCheckpoint, _hasCheckpoint?_cp.jobPath:"none",
-               _hasCheckpoint?_cp.lastLine:0u);
+    bool loaded = loadCheckpoint();
+    _hasCheckpoint = loaded && _cp.dirty;
+    if (loaded) {
+        char msg[80];
+        snprintf(msg, sizeof(msg), "[Recovery] dirty=%d line=%u path=%s",
+                 _cp.dirty, _cp.lastLine, _cp.jobPath);
+        fnc_term_inject(msg);
+    } else {
+        fnc_term_inject("[Recovery] No checkpoint found");
+    }
 }
 
 bool jobrecov_hasDirty() { return _hasCheckpoint; }
