@@ -2561,10 +2561,10 @@ public:
                     _confirmRun=false;
                     simJobName=fileList[fileSelected].name;
                     _tab=0; filePreviewMode=false; _previewShowPath=false;
-                    // Send all pre-run commands to FluidNC — it queues them internally
-                    send_line("G90");
-                    send_line("G53 G0 Z0");
-                    send_line("G0 X0 Y0");
+                    // Pre-run: retract Z to machine home, then move XY to WCS 0
+                    send_line("G90");                // absolute mode
+                    send_line("G53 G0 Z0");          // retract Z to machine home (endstop) — always safe
+                    send_line("G0 X0 Y0");           // move XY to WCS zero
                     std::string rpath=filePath+"/"+simJobName;
                     send_linef("$Localfs/Run=%s",rpath.c_str());
                     termLines.push_back({"> Run: "+simJobName,COL_DIM2});
