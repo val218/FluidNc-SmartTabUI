@@ -319,14 +319,20 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,YELLOW);
         txt("INTERRUPTED JOB FOUND", cx, py+16, YELLOW);
         txt0(_cp.jobPath, cx, py+32, C_DIM);
+        // Connection status indicator
+        bool connected = (state != Disconnected);
+        uint16_t stcol = connected ? GREEN : RED;
+        const char* ststr = connected ? "FluidNC Connected" : "FluidNC Not Connected";
+        canvas->fillCircle(px+14, py+48, 5, stcol);
+        txt0(ststr, px+24, py+48, stcol, 4);  // 4=middle_left
         // Stats
         char line1[48]; snprintf(line1,sizeof(line1),"Last line: %u", _cp.lastLine);
         char line2[48];
         float x2=_cp.axisX/10000.0f, y2=_cp.axisY/10000.0f, z2=_cp.axisZ/10000.0f;
         snprintf(line2,sizeof(line2),"Position: X%.2f Y%.2f Z%.2f",x2,y2,z2);
-        txt0(line1, cx, py+50, C_WHITE);
-        txt0(line2, cx, py+64, C_WHITE);
-        txt0("Resume this job?", cx, py+82, CYAN);
+        txt0(line1, cx, py+64, C_WHITE);
+        txt0(line2, cx, py+78, C_WHITE);
+        txt0("Resume this job?", cx, py+96, CYAN);
         int bw2=(pw-18)/2, by2=py+avH-bh-8;
         btn(_btnA, px+6,        by2, bw2, bh, GREEN,  GREEN,  "YES - Resume",  0x0000);
         btn(_btnB, px+12+bw2,   by2, bw2, bh, C_PANEL, RED,  "NO - Discard",  RED);

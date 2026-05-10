@@ -2162,8 +2162,8 @@ public:
             _zNudgeOffset += move;
             // $J=G91 G21 Zx.xx Fxxxx — incremental jog, works during Hold
             char cmd[48];
-            snprintf(cmd, sizeof(cmd), "$J=G91 G21 Z%.4f F%d",
-                     move, (int)(3000 * step / 0.01f));  // speed scales with step size
+            int feed = step <= 0.011f ? 200 : step <= 0.11f ? 500 : 2000;
+            snprintf(cmd, sizeof(cmd), "$J=G91 G21 Z%.4f F%d", move, feed);
             send_line(cmd);
             reDisplay();
             return;
@@ -2727,9 +2727,6 @@ public:
             case 4: drawMacrosScreen();   break;
         }
         if (_probeOpen)              drawProbeOverlay();
-        // Job recovery wizard overlay (full screen, drawn last)
-        if (jobrecov_getPhase() != RecoveryPhase::None)
-            jobrecov_draw(&canvas, W, H, TOP, NAV_Y);
         if (_runStep > 0) {
             uint32_t el = millis() - _runStartMs;
             // Hard timeout: close overlay after 8s regardless
@@ -2749,8 +2746,13 @@ public:
         }
         if (_zNudgeOpen)             drawZNudgeOverlay();
         if (_alarmOpen || _forceAlarm) drawAlarmOverlay(_forceAlarm && simMode_active());
-        if (state == Disconnected && !simMode_active()) drawDisconnectedOverlay();
+        // Don't show disconnected overlay while recovery prompt is shown
+        if (state == Disconnected && !simMode_active() &&
+            jobrecov_getPhase() == RecoveryPhase::None) drawDisconnectedOverlay();
         drawNav();
+        // Recovery wizard drawn absolutely last — on top of everything including disconnected
+        if (jobrecov_getPhase() != RecoveryPhase::None)
+            jobrecov_draw(&canvas, W, H, TOP, NAV_Y);
         refreshDisplay();
         _inRedisplay = false;
     }

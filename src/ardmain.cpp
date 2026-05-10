@@ -459,6 +459,7 @@ static void runSettingsMenu(AppSettings& s) {
 
     int _settingsScroll = 0;
     int _lastTouchY = -1;
+    bool _didDrag = false;
     auto drawSettings = [&]() {
         drawSettingsMenu(s, mpgOk, _settingsScroll);
     };
