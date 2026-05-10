@@ -1807,57 +1807,54 @@ private:
 
     // ── Alarm overlay ─────────────────────────────────────────────────────────
     void drawAlarmOverlay(bool estopOnly = false) {
-        canvas.fillRect(0, TOP, W, NAV_Y - TOP, 0x8000);
+        // Dim background
+        canvas.fillRect(0, TOP, W, NAV_Y-TOP, 0x8000);
 
-        bool estopPressed = mpgEstopActive;
-        bool estopRecovery = (_estopRecovery >= 1 && !estopPressed);  // estop was pressed, now released
+        int pw = W-20, cx = W/2;
+        int avH = NAV_Y - TOP - 4;
 
-        // Taller panel for recovery options
-        int ph = estopRecovery ? 196 : 130;
-        int pw = W - 20;
-        int cx = W/2, cy = (NAV_Y+TOP)/2;
-        int px = cx-pw/2, py = cy-ph/2;
-        fillR(px,py,pw,ph,8,0x2800);
-        strokeR(px,py,pw,ph,8,RED);
-
-        if (estopPressed) {
-            // E-stop currently held — just show status
-            f2("! E-STOP ACTIVE", cx, py+20, RED);
-            f2("Release e-stop to see options", cx, py+44, COL_WHITE2);
-        } else if (estopRecovery) {
-            // E-stop released — recovery menu
-            f2("! E-STOP RELEASED", cx, py+16, YELLOW);
-            f2("Choose recovery:", cx, py+32, COL_WHITE2);
-            // Three stacked buttons — much easier to read than cramped row
-            int bh3=30, bw3=pw-16, bby=py+46;
-            // Resume if safe
-            canvas.fillRoundRect(px+8,bby,       bw3,bh3,3,GREEN);
-            f2("Resume if safe  (~)",cx,bby+bh3/2,COL_BG,middle_center);
-            _unlockBtn={px+8,bby,bw3,bh3};
-            bby+=bh3+4;
-            // Rehome
-            canvas.fillRoundRect(px+8,bby,       bw3,bh3,3,COL_AX_Z);
-            f2("Rehome  ($H)",cx,bby+bh3/2,COL_BG,middle_center);
-            _rehomeBtn={px+8,bby,bw3,bh3};
-            bby+=bh3+4;
-            // Rehome + Resume
-            canvas.fillRoundRect(px+8,bby,       bw3,bh3,3,ORANGE);
-            f2("Rehome + Resume job",cx,bby+bh3/2,COL_BG,middle_center);
-            _rehomeResBtn={px+8,bby,bw3,bh3};
-            bby+=bh3+4;
-            // Plain unlock
-            canvas.fillRoundRect(px+8,bby,       bw3,bh3,3,COL_PANEL2);
-            canvas.drawRoundRect(px+8,bby,       bw3,bh3,3,RED);
+        if (_showEstopRecovery) {
+            // ── E-stop recovery menu ──────────────────────────────────────
+            int ph = avH;  // use full available height
+            int px = cx-pw/2, py = TOP+2;
+            fillR(px,py,pw,ph,6,0x2800); strokeR(px,py,pw,ph,6,YELLOW);
+            f2("! E-STOP RELEASED",cx,py+14,YELLOW,middle_center);
+            f2("Choose action:",cx,py+28,COL_WHITE2,middle_center);
+            // 4 stacked buttons filling the space
+            int bx=px+6, bw3=pw-12, bh3=(ph-48)/4-2, bby=py+40;
+            canvas.fillRoundRect(bx,bby,bw3,bh3,3,GREEN);
+            f2("Resume if safe  (~)",cx,bby+bh3/2,0x0000,middle_center);
+            _unlockBtn={bx,bby,bw3,bh3};  bby+=bh3+3;
+            canvas.fillRoundRect(bx,bby,bw3,bh3,3,COL_AX_Z);
+            f2("Rehome  ($H)",cx,bby+bh3/2,0x0000,middle_center);
+            _rehomeBtn={bx,bby,bw3,bh3};  bby+=bh3+3;
+            canvas.fillRoundRect(bx,bby,bw3,bh3,3,ORANGE);
+            f2("Rehome + Resume job",cx,bby+bh3/2,0x0000,middle_center);
+            _rehomeResBtn={bx,bby,bw3,bh3};  bby+=bh3+3;
+            canvas.fillRoundRect(bx,bby,bw3,bh3,3,COL_PANEL2);
+            canvas.drawRoundRect(bx,bby,bw3,bh3,3,RED);
             f2("Just Unlock  ($X)",cx,bby+bh3/2,COL_WHITE,middle_center);
-            _unlockBtnFull={px+8,bby,bw3,bh3};
+            _unlockBtnFull={bx,bby,bw3,bh3};
+        } else if (mpgEstopActive) {
+            // ── E-stop held ───────────────────────────────────────────────
+            int ph=90, px=cx-pw/2, py=(NAV_Y+TOP)/2-ph/2;
+            fillR(px,py,pw,ph,6,0x2800); strokeR(px,py,pw,ph,6,RED);
+            f2("! E-STOP ACTIVE",cx,py+20,RED,middle_center);
+            f2("Release e-stop",cx,py+44,COL_WHITE2,middle_center);
+            f2("to see recovery options",cx,py+62,COL_DIM,middle_center);
+            _unlockBtn={0,0,0,0}; _rehomeBtn={0,0,0,0};
+            _rehomeResBtn={0,0,0,0}; _unlockBtnFull={0,0,0,0};
         } else {
-            // Normal FluidNC alarm
-            f2("! ALARM", cx, py+22, RED);
-            f2("Clear alarm with $X", cx, py+44, COL_WHITE2);
-            int ubw2=pw-16, ubh2=36, ubx2=px+8, uby2=py+ph-ubh2-10;
-            _unlockBtn={ubx2,uby2,ubw2,ubh2};
-            tintStrokeR(ubx2,uby2,ubw2,ubh2,6,RED,RED,60);
-            f2("UNLOCK  ($X)",cx,uby2+ubh2/2,COL_WHITE,middle_center);
+            // ── Normal FluidNC alarm ──────────────────────────────────────
+            int ph=110, px=cx-pw/2, py=(NAV_Y+TOP)/2-ph/2;
+            fillR(px,py,pw,ph,6,0x2800); strokeR(px,py,pw,ph,6,RED);
+            f2("! ALARM",cx,py+20,RED,middle_center);
+            f2("Press UNLOCK to clear",cx,py+44,COL_WHITE2,middle_center);
+            int ux=px+8, uy=py+ph-44, uw=pw-16, uh=34;
+            _unlockBtn={ux,uy,uw,uh};
+            tintStrokeR(ux,uy,uw,uh,6,RED,RED,60);
+            f2("UNLOCK  ($X)",cx,uy+uh/2,COL_WHITE,middle_center);
+            _rehomeBtn={0,0,0,0}; _rehomeResBtn={0,0,0,0}; _unlockBtnFull={0,0,0,0};
         }
     }
 
@@ -2239,48 +2236,43 @@ public:
 
         // Alarm/E-stop overlay — intercepts all touches
         if (_alarmOpen || _forceAlarm) {
-            bool estopReleased = (_estopRecovery >= 1 && !mpgEstopActive);
-
-            if (estopReleased) {
-                // Recovery buttons
+            if (_showEstopRecovery) {
+                // Recovery menu — handle 4 buttons
                 if (hit(_unlockBtn, x, y)) {
-                    // "Resume if safe"
-                    send_line("$X"); delay(80); fnc_realtime((realtime_cmd_t)'~');
+                    send_line("$X"); delay(80);
+                    fnc_realtime((realtime_cmd_t)'~');
                     fnc_term_inject("> Resume after e-stop");
-                    _estopRecovery=0; _showEstopRecovery=false; _alarmOpen=false; markDirty(); return;
+                    _showEstopRecovery=false; _estopRecovery=0; _alarmOpen=false; markDirty(); return;
                 }
                 if (hit(_rehomeBtn, x, y)) {
-                    // Rehome
                     send_line("$X"); delay(80); send_line("$H");
                     fnc_term_inject("> Rehome after e-stop");
-                    _estopRecovery=0; _showEstopRecovery=false; markDirty(); return;
+                    _showEstopRecovery=false; _estopRecovery=0; markDirty(); return;
                 }
                 if (hit(_rehomeResBtn, x, y)) {
-                    // Rehome + re-run job
                     send_line("$X"); delay(80); send_line("$H");
                     if (!simJobName.empty()) {
-                        delay(200);
-                        std::string rpath = filePath + "/" + simJobName;
+                        delay(300);
+                        std::string rpath = filePath+"/"+simJobName;
                         send_linef("$Localfs/Run=%s", rpath.c_str());
-                        _jobSentToFluidNC = true;
-                        fnc_term_inject(("> Rehome+Resume: " + simJobName).c_str());
+                        _jobSentToFluidNC=true;
+                        fnc_term_inject(("> Rehome+Resume: "+simJobName).c_str());
                     }
-                    _estopRecovery=0; _showEstopRecovery=false; markDirty(); return;
+                    _showEstopRecovery=false; _estopRecovery=0; markDirty(); return;
                 }
                 if (hit(_unlockBtnFull, x, y)) {
-                    // Plain unlock
                     send_line("$X"); fnc_term_inject("> $X");
-                    _estopRecovery=0; _showEstopRecovery=false; _alarmOpen=false; markDirty(); return;
+                    _showEstopRecovery=false; _estopRecovery=0; _alarmOpen=false; markDirty(); return;
                 }
             } else if (!mpgEstopActive) {
-                // Standard alarm — just unlock
+                // Normal FluidNC alarm
                 if (hit(_unlockBtn, x, y)) {
                     send_line("$X"); fnc_term_inject("> $X");
                     termLines.push_back({"[MSG:Unlocked]", GREEN});
                     _alarmOpen=false; markDirty();
                 }
             }
-            return;  // consume all touches while overlay is open
+            return;
         }
 
         // Probe overlay

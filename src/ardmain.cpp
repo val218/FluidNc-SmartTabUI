@@ -636,9 +636,11 @@ static void mpgTask(void*) {
         }
 
         if (estopHigh && !lastEstop) {
-            // E-stop RELEASED: wait for FluidNC to finish last reset boot, then clear
+            // E-stop RELEASED: show recovery menu immediately, then wait for FluidNC boot
+            extern void tabui_setEstopRecovery();
+            tabui_setEstopRecovery();   // show recovery options right away
             resumeTime = now + 800;
-            fnc_term_inject("> E-STOP released: waiting for boot...");
+            fnc_term_inject("> E-STOP released — choose recovery option");
         }
 
         lastEstop = estopHigh;
