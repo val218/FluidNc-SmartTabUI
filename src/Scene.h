@@ -48,6 +48,7 @@ public:
     virtual void onUpFlick() { onTouchFlick(); }
     virtual void onDownFlick() { onTouchFlick(); }
     virtual void onTouchFlick() {}
+    virtual void onScrollDrag(int dy) {}
 
     virtual void onError(const char* errstr) {}
 
