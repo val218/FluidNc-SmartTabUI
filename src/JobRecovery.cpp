@@ -546,3 +546,5 @@ void jobrecov_scroll(int delta) {
         markDirty();
     }
 }
+bool jobrecov_wantsProbe() { return _wantsProbe; }
+void jobrecov_clearProbe() { _wantsProbe = false; }

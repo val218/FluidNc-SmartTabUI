@@ -54,3 +54,5 @@ void     jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y);
 // Touch handler — returns true if touch consumed
 bool     jobrecov_onTouch(int x, int y);
 void     jobrecov_showPrompt();
+bool     jobrecov_wantsProbe();
+void     jobrecov_clearProbe();
