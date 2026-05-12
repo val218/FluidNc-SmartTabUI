@@ -28,7 +28,8 @@ static uint32_t      _linesSinceLastSave = 0;
 static std::string   _jobPath;
 // Last 10 lines of G-code for display
 static std::vector<std::string> _lastLines;
-static uint32_t      _resumeLine = 0;   // user-confirmed resume line
+static uint32_t      _resumeLine = 0;
+static int           _lineScroll = 0;  // ShowLines MPG scroll offset   // user-confirmed resume line
 
 // Rect struct for touch zones
 struct Rect { int x, y, w, h; };
@@ -254,7 +255,11 @@ void jobrecov_advance(int choice) {
         break;
 
     case RecoveryPhase::ToolChange:
-        if (choice == 0) {           // Tool changed + probed
+        if (choice == 0) {           // Open Probe — flag it, caller opens probe overlay
+            // Phase stays ToolChange, caller checks jobrecov_wantsProbe()
+            _wantsProbe = true;
+        } else if (choice == 1) {    // Done - Z probed
+            _wantsProbe = false;
             _phase = RecoveryPhase::Confirm;
         }
         break;
@@ -528,6 +533,15 @@ bool jobrecov_onTouch(int x, int y) {
 void jobrecov_showPrompt() {
     if (_hasCheckpoint && _cp.dirty) {
         _phase = RecoveryPhase::Prompt;
+        markDirty();
+    }
+}
+
+void jobrecov_scroll(int delta) {
+    if (_phase == RecoveryPhase::ShowLines) {
+        _lineScroll = std::max(0, std::min(3, _lineScroll + delta));
+        uint32_t base = (_cp.lastLine>9)?_cp.lastLine-9:0;
+        _resumeLine = base + _lineScroll + 4;  // select middle of visible window
         markDirty();
     }
 }

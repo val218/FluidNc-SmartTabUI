@@ -491,6 +491,7 @@ private:
     int  _tab      = 0;
     int  _vizView  = 0;
     bool _probeOpen = false;
+    bool _probeOpenForRecovery = false;  // probe opened from recovery wizard
     bool _alarmOpen = false;
 
     struct Rect { int x, y, w, h; };
@@ -2370,7 +2371,11 @@ public:
 
         // Probe overlay
         if (_probeOpen) {
-            if (hit(_probeClose, x, y)) { _probeOpen = false; reDisplay(); return; }
+            if (hit(_probeClose, x, y)) {
+                _probeOpen = false;
+                if (_probeOpenForRecovery) { _probeOpenForRecovery = false; markDirty(); }
+                reDisplay(); return;
+            }
             for (int i = 0; i < N_PROBE_OPTS; i++) {
                 if (hit(_probeRows[i], x, y)) {
                     _probeOpen = false;
@@ -2381,7 +2386,9 @@ public:
                     reDisplay(); return;
                 }
             }
-            _probeOpen = false; reDisplay(); return;
+            _probeOpen = false;
+            if (_probeOpenForRecovery) { _probeOpenForRecovery = false; }
+            reDisplay(); return;
         }
 
         // Nav bar — Hold/Abort (when job active) or tab switch
@@ -2763,9 +2770,16 @@ public:
         if (state == Disconnected && !simMode_active() &&
             jobrecov_getPhase() == RecoveryPhase::None) drawDisconnectedOverlay();
         drawNav();
-        // Recovery wizard drawn absolutely last — on top of everything including disconnected
-        if (jobrecov_getPhase() != RecoveryPhase::None)
+        // Recovery wizard drawn absolutely last
+        if (jobrecov_getPhase() != RecoveryPhase::None) {
             jobrecov_draw(&canvas, W, H, TOP, NAV_Y);
+            // If user tapped "Open Probe" in ToolChange screen
+            if (jobrecov_wantsProbe()) {
+                jobrecov_clearProbe();
+                _probeOpen = true;
+                _probeOpenForRecovery = true;
+            }
+        }
         refreshDisplay();
         _inRedisplay = false;
     }
