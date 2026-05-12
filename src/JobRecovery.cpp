@@ -29,7 +29,8 @@ static std::string   _jobPath;
 // Last 10 lines of G-code for display
 static std::vector<std::string> _lastLines;
 static uint32_t      _resumeLine = 0;
-static int           _lineScroll = 0;  // ShowLines MPG scroll offset   // user-confirmed resume line
+static int           _lineScroll = 0;  // ShowLines MPG scroll offset
+static bool          _wantsProbe = false;
 
 // Rect struct for touch zones
 struct Rect { int x, y, w, h; };
