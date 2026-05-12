@@ -424,54 +424,94 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
 
     case RecoveryPhase::ManualJog: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,RED);
-        txt("MANUAL JOG REQUIRED", cx, py+14, RED);
-        txt0_safe("Machine stopped mid-cut.", px+6, py+30, C_WHITE);
-        txt0_safe("Use MPG wheel to:", px+6, py+46, YELLOW);
-        txt0_safe("1. Jog Z UP to clear workpiece", px+16, py+62, C_WHITE);
-        txt0_safe("2. Jog X/Y clear of workpiece", px+16, py+78, C_WHITE);
-        txt0_safe("DO NOT auto-move — path may be blocked", px+6, py+94, RED);
-        btn(_btnA, px+6, py+avH-bh-8, pw-12, bh, GREEN, GREEN, "Done — machine is clear", 0x0000);
+        txt("MANUAL JOG REQUIRED", cx, py+13, RED);
+        int bx=px+8, by=py+24, hw=(pw-20)/2;
+        // Step 1 box
+        canvas->fillRoundRect(bx,by,hw,36,4,0x2800);
+        canvas->drawRoundRect(bx,by,hw,36,4,GREEN);
+        txt0("1. Select Z",bx+hw/2,by+12,GREEN);
+        txt0("Jog UP clear",bx+hw/2,by+26,GREEN);
+        // Arrow
+        canvas->drawLine(bx+hw+2,by+18,bx+hw+10,by+18,C_DIM);
+        canvas->fillTriangle(bx+hw+14,by+18,bx+hw+9,by+14,bx+hw+9,by+22,C_DIM);
+        // Step 2 box
+        int bx2=bx+hw+16;
+        canvas->fillRoundRect(bx2,by,hw-4,36,4,0x001A);
+        canvas->drawRoundRect(bx2,by,hw-4,36,4,CYAN);
+        txt0("2. Select X/Y",bx2+(hw-4)/2,by+12,CYAN);
+        txt0("Jog clear",bx2+(hw-4)/2,by+26,CYAN);
+        // Warning bar
+        canvas->fillRoundRect(bx,by+42,pw-16,26,3,0x4000);
+        canvas->drawRoundRect(bx,by+42,pw-16,26,3,RED);
+        txt0("! Never auto-move — path may be blocked",cx,by+56,RED);
+        txt0("Use MPG wheel — DRO shows live position",cx,by+70,C_DIM);
+        btn(_btnA, px+6, py+avH-bh-6, pw-12, bh, GREEN, GREEN, "Done — machine is clear", 0x0000);
         break;
     }
+
+
 
     case RecoveryPhase::ToolChange: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,ORANGE);
-        txt("TOOL CHANGE REQUIRED", cx, py+14, ORANGE);
-        txt0_safe("Insert new tool, then set Z0:", px+6, py+30, C_WHITE);
-        // Option A: probe
-        int bh2=26, bh3=26, gap2=4;
-        int by2 = py+avH - bh2 - bh3 - bh3 - gap2*2 - 8;
-        txt0_safe("Option 1 — Auto probe:", px+6, by2-14, YELLOW);
-        btn(_btnB, px+6, by2, pw-12, bh2, 0x0019, CYAN, "Open Home Tab → Run Probe", C_WHITE);
-        by2 += bh2+gap2;
-        txt0_safe("Option 2 — Manual: jog Z to surface, then:", px+6, by2-14, YELLOW);
-        // Set Z0 manually
-        btn(_btnC, px+6, by2, pw-12, bh3, 0x2800, GREEN, "Set Z0 here  (G10 L20 P1 Z0)", C_WHITE);
-        by2 += bh3+gap2;
-        // Done
-        btn(_btnA, px+6, by2, pw-12, bh3, ORANGE, ORANGE, "Done — Z0 is set, continue", 0x0000);
+        txt("TOOL CHANGE", cx, py+13, ORANGE);
+        // Left: steps | Right: probe diagram
+        txt0("1. Insert new tool",px+8,py+30,C_WHITE,4);
+        txt0("2. Tap PROBE to set Z",px+8,py+44,C_WHITE,4);
+        txt0("3. Verify Z0 in DRO",px+8,py+58,C_WHITE,4);
+        char tlast[24]; snprintf(tlast,24,"Last: T%u",_cp.tool);
+        txt0(tlast,px+8,py+72,C_DIM,4);
+        // Probe diagram (right side)
+        int dx=px+pw-52, dy=py+24;
+        canvas->fillRoundRect(dx+4,dy,16,28,3,COL_AX_Z);   // tool body
+        canvas->fillRoundRect(dx+7,dy+28,10,18,2,COL_AX_Z); // tool tip
+        canvas->fillRoundRect(dx,dy+48,24,8,2,COL_BORDER);  // probe block
+        canvas->drawRoundRect(dx,dy+48,24,8,2,COL_AX_Z);
+        canvas->drawLine(dx+12,dy+35,dx+12,dy+46,YELLOW);
+        canvas->fillTriangle(dx+12,dy+48,dx+9,dy+43,dx+15,dy+43,YELLOW);
+        txt0("Z0",dx+28,dy+52,COL_AX_Z,4);
+        int bw2=(pw-18)/2, by2=py+avH-bh-6;
+        btn(_btnA, px+4,      by2, bw2, bh, ORANGE, ORANGE, "Open Probe",     0x0000);
+        btn(_btnB, px+10+bw2, by2, bw2, bh, GREEN,  GREEN,  "Done — probed",  0x0000);
         break;
     }
 
+
+
     case RecoveryPhase::Confirm: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,GREEN);
-        txt("READY TO RESUME", cx, py+14, GREEN);
-        txt0_safe("The pendant will execute:", px+6, py+30, C_WHITE);
-        txt0_safe("1. Home Z for reference", px+16, py+46, C_DIM);
-        char pos[48];
-        float rx=_cp.axisX/10000.0f, ry2=_cp.axisY/10000.0f, rz=_cp.axisZ/10000.0f;
-        snprintf(pos,sizeof(pos),"2. X%.2f Y%.2f",rx,ry2);
-        txt0_safe(pos, px+16, py+60, C_DIM);
-        snprintf(pos,sizeof(pos),"3. Z %.2f at F%u",rz,_cp.feedRate);
-        txt0_safe(pos, px+16, py+74, C_DIM);
-        char rline[32]; snprintf(rline,sizeof(rline),"4. Resume ~line %u",_resumeLine);
-        txt0_safe(rline, px+16, py+88, C_DIM);
-        if(_toolBreak) txt0_safe("(Tool re-probed, Z offset applied)", px+6, py+104, YELLOW);
-        int bw2=(pw-18)/2, by2=py+avH-bh-8;
-        btn(_btnA, px+6,      by2, bw2, bh, GREEN,  GREEN, "CONFIRM RESUME", 0x0000);
-        btn(_btnB, px+12+bw2, by2, bw2, bh, C_PANEL, RED,  "CANCEL",         RED);
+        txt("READY TO RESUME", cx, py+13, GREEN);
+        // 4 sequence boxes
+        float rx2=_cp.axisX/10000.0f,ry2=_cp.axisY/10000.0f,rz=_cp.axisZ/10000.0f;
+        int sbw=(pw-20)/4, sby=py+24, sbh=38;
+        const uint16_t sbg[4]={0x0440,0x001A,0x4220,0x0440};
+        const uint16_t sbc[4]={GREEN,CYAN,YELLOW,GREEN};
+        const char*sl1[4]={"Home Z","Go XY","Lower Z","Run"};
+        const char*sl2[4]={"reference","rapid","plunge","file"};
+        for(int i=0;i<4;i++){
+            int sx=px+4+i*(sbw+3);
+            canvas->fillRoundRect(sx,sby,sbw,sbh,3,sbg[i]);
+            canvas->drawRoundRect(sx,sby,sbw,sbh,3,sbc[i]);
+            canvas->setFont(&fonts::Font0); canvas->setTextDatum(middle_center);
+            canvas->setTextColor(sbc[i]); canvas->drawString(sl1[i],sx+sbw/2,sby+12);
+            canvas->setTextColor(C_DIM);  canvas->drawString(sl2[i],sx+sbw/2,sby+26);
+            if(i<3) canvas->drawLine(sx+sbw+1,sby+sbh/2,sx+sbw+2,sby+sbh/2,C_DIM);
+        }
+        // Data row
+        char p1[40]; snprintf(p1,40,"X%.1f Y%.1f Z%.2f",rx2,ry2,rz);
+        txt0(p1,cx,sby+sbh+12,C_DIM);
+        char p2[40]; snprintf(p2,40,"F%u  line ~%u",_cp.feedRate,_resumeLine);
+        txt0(p2,cx,sby+sbh+24,C_DIM);
+        if(_toolBreak){
+            canvas->fillRoundRect(px+4,sby+sbh+32,pw-8,16,3,0x4220);
+            txt0("Tool re-probed: Z offset applied",cx,sby+sbh+40,YELLOW);
+        }
+        int bw2=(pw-18)/2, by2=py+avH-bh-6;
+        btn(_btnA, px+4,      by2, bw2, bh, GREEN,  GREEN, "CONFIRM RESUME", 0x0000);
+        btn(_btnB, px+10+bw2, by2, bw2, bh, C_PANEL, RED,  "CANCEL",         RED);
         break;
     }
+
+
 
     default: break;
     }

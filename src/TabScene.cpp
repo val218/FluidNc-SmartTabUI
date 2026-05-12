@@ -2309,8 +2309,8 @@ public:
         int x = touchX, y = touchY;
         beep_ui(600, 8);   // subtle click
 
-        // Job recovery wizard intercepts all touches when active
-        if (jobrecov_getPhase() != RecoveryPhase::None) {
+        // Job recovery wizard intercepts touches — but not when probe overlay is open
+        if (jobrecov_getPhase() != RecoveryPhase::None && !_probeOpen) {
             jobrecov_onTouch(x, y);
             markDirty(); return;
         }
