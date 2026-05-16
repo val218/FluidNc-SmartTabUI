@@ -590,3 +590,12 @@ bool jobrecov_onTouch(int x, int y) {
 }
 
 
+
+bool jobrecov_wantsProbe()  { return _wantsProbe; }
+void jobrecov_clearProbe()  { _wantsProbe = false; }
+void jobrecov_showPrompt()  {
+    if (_hasCheckpoint && _cp.dirty) {
+        _phase = RecoveryPhase::Prompt;
+        markDirty();
+    }
+}
