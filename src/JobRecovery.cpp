@@ -31,15 +31,14 @@ static std::vector<std::string> _lastLines;
 static uint32_t      _resumeLine = 0;
 static int           _lineScroll = 0;  // ShowLines MPG scroll offset
 static bool          _wantsProbe = false;
-static Rect          _lineRects[7] = {};  // set in ShowLines draw
 
-// Rect struct for touch zones
+// Rect struct for touch zones — must be declared before use
 struct Rect { int x, y, w, h; };
-static Rect _btnA = {0,0,0,0}, _btnB = {0,0,0,0}, _btnC = {0,0,0,0};
-
 static bool inRect(const Rect& r, int x, int y) {
     return x>=r.x && x<r.x+r.w && y>=r.y && y<r.y+r.h;
 }
+static Rect _btnA = {0,0,0,0}, _btnB = {0,0,0,0}, _btnC = {0,0,0,0};
+static Rect _lineRects[7] = {};  // set in ShowLines draw
 
 // ── LittleFS helpers ──────────────────────────────────────────────────────────
 static void saveCheckpoint() {
@@ -555,23 +554,39 @@ bool jobrecov_onTouch(int x, int y) {
 
     switch (_phase) {
     case RecoveryPhase::Prompt:
-        if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }  // YES
-        if (inRect(_btnB,x,y)) { jobrecov_advance(1); return true; }  // NO
+        if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }
+        if (inRect(_btnB,x,y)) { jobrecov_advance(1); return true; }
         break;
     case RecoveryPhase::AskToolBreak:
-        if (inRect(_btnA,x,y)) { jobrecov_advance(1); return true; }  // YES tool break
-        if (inRect(_btnB,x,y)) { jobrecov_advance(0); return true; }  // NO clean stop
+        if (inRect(_btnA,x,y)) { jobrecov_advance(1); return true; }
+        if (inRect(_btnB,x,y)) { jobrecov_advance(0); return true; }
         break;
     case RecoveryPhase::ShowLines: {
-        // Tap on a line row to select it, tap Confirm to advance
-        uint32_t lastLine = (_cp.lastLine > 100000) ? (_cp.lastLine/1000)*100 : _cp.lastLine;
-        uint32_t base = (lastLine > 9) ? lastLine - 9 : 0;
+        uint32_t lastLine = (_cp.lastLine>100000)?(_cp.lastLine/1000)*100:_cp.lastLine;
+        uint32_t base = (lastLine>9)?lastLine-9:0;
         for(int i=0;i<7;i++){
             if(inRect(_lineRects[i],x,y)){
-                _resumeLine = base + (uint32_t)_lineScroll + i;
+                _resumeLine = base+(uint32_t)_lineScroll+i;
                 markDirty(); return true;
             }
         }
         if(inRect(_btnA,x,y)){ jobrecov_advance(0); return true; }
         break;
     }
+    case RecoveryPhase::ManualJog:
+        if(inRect(_btnA,x,y)){ jobrecov_advance(0); return true; }
+        break;
+    case RecoveryPhase::ToolChange:
+        if(inRect(_btnA,x,y)){ jobrecov_advance(0); return true; }  // Open Probe
+        if(inRect(_btnB,x,y)){ jobrecov_advance(1); return true; }  // Done
+        break;
+    case RecoveryPhase::Confirm:
+        if(inRect(_btnA,x,y)){ jobrecov_advance(0); return true; }  // CONFIRM
+        if(inRect(_btnB,x,y)){ jobrecov_advance(1); return true; }  // CANCEL
+        break;
+    default: break;
+    }
+    return true;  // consume all touches while overlay active
+}
+
+
