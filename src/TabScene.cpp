@@ -2823,6 +2823,8 @@ void tabui_setEstopRecovery() {
     markDirty();
 }
 
+static void tabui_saveHourMeter();  // forward declaration
+
 void tabui_checkPressExpiry() {
     uint32_t now = millis();
     if (g_pressExpiryMs > 0 && now >= g_pressExpiryMs) {

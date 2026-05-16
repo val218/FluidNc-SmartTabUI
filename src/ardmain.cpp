@@ -141,10 +141,10 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     if (y+rowH > 0 && y < H) {
         int mw=(bW-8)/3;
         const char* ml[]={"CNC","Plotter","Laser"};
-        uint16_t mc[]={COL_AX_X, COL_AX_Y, ORANGE};
+        uint16_t mc[]={0x06BF, 0x07E0, ORANGE};
         for(int i=0;i<3;i++){
             bool sel=((int)s.machineType==i);
-            sB(bx0+i*(mw+4),y+4,mw,optH,sel?mc[i]:COL_PANEL2,sel?mc[i]:COL_BORDER,ml[i],sel?COL_BG:COL_DIM);
+            sB(bx0+i*(mw+4),y+4,mw,optH,sel?mc[i]:S_PANEL,sel?mc[i]:S_BORDER,ml[i],sel?S_BG:S_DIM);
         }
     } y += rowH;
 
