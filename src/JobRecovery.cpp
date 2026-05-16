@@ -573,3 +573,5 @@ bool jobrecov_onTouch(int x, int y) {
             }
         }
         if(inRect(_btnA,x,y)){ jobrecov_advance(0); return true; }
+        break;
+    }
