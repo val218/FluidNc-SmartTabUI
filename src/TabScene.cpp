@@ -12,6 +12,7 @@
 #include "System.h"
 #include "Hardware2432.hpp"
 #include "JobRecovery.h"
+#include "NVS.h"
 extern volatile uint32_t fnc_tx_count;
 extern override_percent_t mySro;
 extern override_percent_t myRro;
@@ -123,7 +124,14 @@ static int  _droAxesMode = 0;  // 0=XYZ 1=XYZA 2=XY 3=XYYZ (dual Y)
 static char _axisLetters[6];   // axis letters from FluidNC: X,Y,Z,A,B,C
 static bool _axisAutoDetected; // true when letters received from FluidNC
 
-static int _currentTheme = 0;  // 0=dark 1=neutral 2=light
+static int _currentTheme = 0;
+static int _machineType  = 0;  // 0=CNC 1=Plotter 2=Laser
+// ── Hour meter ────────────────────────────────────────────────────────────────
+static uint32_t _jobSeconds    = 0;   // total job runtime seconds (Cycle state)
+static uint32_t _maintDueSecs  = 0;   // seconds at which maintenance is due
+static int      _maintIntervalH= 50;  // maintenance interval in hours
+static bool     _maintNotified  = false; // suppresses repeat notification
+static uint32_t _cycleSecLast   = 0;  // millis() snapshot for second counting  // 0=dark 1=neutral 2=light
 
 // Called by Settings to apply theme colours
 void tabui_setTheme(int t) {
@@ -672,7 +680,8 @@ private:
         hline(0, NAV_Y, W, COL_BORDER);
 
         // When job running on DRO tab: show Hold and Abort instead of tab bar
-        bool jobActive = (state == Cycle || (state == Hold && _jobSentToFluidNC) || simJobRunning);
+        // Show Hold/Resume/Abort whenever machine is in Cycle or Hold on DRO tab
+        bool jobActive = (state == Cycle || state == Hold || simJobRunning);
         if (jobActive && _tab == 0) {
             int half = W / 2;
             bool inHold = (state == Hold);
@@ -1120,11 +1129,21 @@ private:
 
         vline(px2-1, fy+4, fh, COL_BORDER2);
 
-        // SPND
-        { int col=(mySro<80)?RED:(mySro>120)?ORANGE:0xF81F;
-          char v[10]; snprintf(v,sizeof(v),"%d%%",(int)mySro);
-          _spndPill={px2,fy,pillW3,FEED_H};
-          drawPill3(px2,pillW3,"SPND",v,col,_barSel==3); }
+        // SPND or LASER (depending on machine type)
+        if (_machineType == 2) {
+            // Laser mode: show laser power (S value as % of max 1000)
+            int laserPct = (int)((mySpeed * 100UL) / 1000UL);
+            if (laserPct > 100) laserPct = 100;
+            int lcol = laserPct > 80 ? RED : laserPct > 40 ? ORANGE : COL_DIM2;
+            char v[10]; snprintf(v,sizeof(v),"%d%%",laserPct);
+            _spndPill={px2,fy,pillW3,FEED_H};
+            drawPill3(px2,pillW3,"LASER",v,lcol,_barSel==3);
+        } else {
+            int col=(mySro<80)?RED:(mySro>120)?ORANGE:0xF81F;
+            char v[10]; snprintf(v,sizeof(v),"%d%%",(int)mySro);
+            _spndPill={px2,fy,pillW3,FEED_H};
+            drawPill3(px2,pillW3,"SPND",v,col,_barSel==3);
+        }
     }  // end drawDROScreen
 
     // ── Probe screen ─────────────────────────────────────────────────────────
@@ -2426,13 +2445,14 @@ public:
         if (_tab == 0) {
             // Clear [×] button — top-right of viz area (clears loaded G-code path)
             // Viz area: double-tap = fullscreen toggle, [×] corner = clear path
+            // Z nudge: intercept ALL DRO tab touches when open
+            if (_zNudgeOpen) {
+                if (hit(_zCloseBtn,x,y))  { _zNudgeOpen=false; markDirty(); return; }
+                if (hit(_zResumeBtn,x,y)) { _zNudgeOpen=false; _zNudgeOffset=0; fnc_realtime((realtime_cmd_t)'~'); markDirty(); return; }
+                return;  // consume all touch while Z nudge open
+            }
+
             if (x >= VIZ_X && x < VIZ_X+VIZ_W && y >= VIZ_Y && y < VIZ_Y+VIZ_H) {
-                // Z nudge: open if in Hold state, close if already open
-                if (_zNudgeOpen) {
-                    if (hit(_zCloseBtn,x,y))  { _zNudgeOpen=false; markDirty(); return;}
-                    if (hit(_zResumeBtn,x,y)) { _zNudgeOpen=false; _zNudgeOffset=0; fnc_realtime((realtime_cmd_t)'~'); markDirty(); return;}
-                    return;  // consume touch while Z nudge open
-                }
                 if (state == Hold) {
                     _zNudgeOpen=true; _zNudgeOffset=0.0f; markDirty(); return;
                 }
@@ -2815,6 +2835,27 @@ void tabui_checkPressExpiry() {
         _lastChkptSave = now;
         jobrecov_saveNow();
     }
+    // Hour meter: accumulate job seconds when machine is in Cycle state
+    if (state == Cycle) {
+        if (_cycleSecLast == 0) _cycleSecLast = now;
+        if (now - _cycleSecLast >= 1000) {
+            uint32_t secs = (now - _cycleSecLast) / 1000;
+            _jobSeconds += secs;
+            _cycleSecLast = now - ((now - _cycleSecLast) % 1000);
+            // Save every 30 seconds
+            static uint32_t _lastHrSave = 0;
+            if (now - _lastHrSave > 60000) { _lastHrSave = now; tabui_saveHourMeter(); }
+            // Check maintenance due
+            if (!_maintNotified && _maintDueSecs > 0 && _jobSeconds >= _maintDueSecs) {
+                _maintNotified = true;
+                beep_ui(880, 200);
+                markDirty();
+            }
+        }
+    } else {
+        _cycleSecLast = 0;
+    }
+
     // Alarm two-tone beep (4 pairs)
     if (_alarmBeepCount > 0 && now >= _alarmBeepNext) {
         beep_ui(880,  60);
@@ -2874,6 +2915,38 @@ void tabui_checkPressExpiry() {
 void tabui_setVolume(int v) {
     _volumeLevel = (v < 0) ? 0 : (v > 9) ? 9 : v;
 }
+void tabui_setMachineType(int t) { _machineType = t; }
+
+// Hour meter — load/save from NVS
+void tabui_loadHourMeter() {
+    nvs_handle_t h = nvs_init("tabui_hrs");
+    if (!h) return;
+    int32_t v=0;
+    nvs_get_i32(h, "jobSecs", &v); _jobSeconds = (uint32_t)v;
+    v=0; nvs_get_i32(h, "maintDue", &v); _maintDueSecs = (uint32_t)v;
+    // Auto-arm on first boot: if no due time set, arm from current hours
+    if (_maintDueSecs == 0 && _maintIntervalH > 0) {
+        _maintDueSecs = _jobSeconds + (uint32_t)(_maintIntervalH * 3600);
+        tabui_saveHourMeter();
+    }
+}
+void tabui_saveHourMeter() {
+    nvs_handle_t h = nvs_init("tabui_hrs");
+    if (!h) return;
+    nvs_set_i32(h, "jobSecs",  (int32_t)_jobSeconds);
+    nvs_set_i32(h, "maintDue", (int32_t)_maintDueSecs);
+    nvs_commit(h);
+}
+void tabui_resetMaintenance() {
+    _maintDueSecs = _jobSeconds + (uint32_t)(_maintIntervalH * 3600);
+    _maintNotified = false;
+    tabui_saveHourMeter();
+}
+void tabui_setMaintInterval(int h) {
+    _maintIntervalH = h;
+}
+uint32_t tabui_getJobSeconds() { return _jobSeconds; }
+bool     tabui_maintDue()      { return _maintDueSecs > 0 && _jobSeconds >= _maintDueSecs; }
 
 void tabui_resetJobState() {
     // Clear stale job state flags — call on boot or mode switch

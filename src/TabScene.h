@@ -26,3 +26,10 @@ void   tabui_setVolume(int v);  // 0=mute 1-9
 void   tabui_checkPressExpiry();
 void   tabui_resetJobState();
 void   tabui_setEstopRecovery();
+void   tabui_setMachineType(int t);  // 0=CNC 1=Plotter 2=Laser
+void     tabui_loadHourMeter();
+void     tabui_saveHourMeter();
+void     tabui_resetMaintenance();
+void     tabui_setMaintInterval(int hours);
+uint32_t tabui_getJobSeconds();
+bool     tabui_maintDue();

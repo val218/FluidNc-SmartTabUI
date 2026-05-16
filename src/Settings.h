@@ -4,6 +4,12 @@
 enum class Theme   { Dark = 0, Neutral = 1, Light = 2 };
 enum class DROAxes { XYZ = 0, XYZA = 1, XY = 2, XYYZ = 3 };
 
+enum class MachineType {
+    CNC    = 0,  // standard CNC mill/router
+    Plotter= 1,  // pen plotter (no Z feed needed)
+    Laser  = 2,  // laser cutter/engraver (laser power instead of spindle)
+};
+
 enum class EnableMode {
     EnableGate  = 0,
     TouchOnly   = 1,
@@ -29,8 +35,10 @@ struct AppSettings {
     // Machine work area
     int        workX       = 1250;   // mm — short axis
     int        workY       = 2500;   // mm — long axis
-    HomeCorner homeCorner  = HomeCorner::BottomLeft;
-    int        brightness  = 200;   // backlight 10-255
+    HomeCorner  homeCorner    = HomeCorner::BottomLeft;
+    MachineType machineType   = MachineType::CNC;
+    int         brightness    = 200;
+    int         maintInterval = 50;    // maintenance interval in hours (default 50h)   // backlight 10-255
     int        volume      = 5;     // beep volume 0-9 (0=mute)
 };
 

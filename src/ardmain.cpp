@@ -103,6 +103,51 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
         _sBuf->drawString(mpgOk?"MPG: Connected":"MPG: Not detected", cx, 30-scrollY);
     }
 
+    // HOUR METER (read-only display)
+    lbTxt(y, "JOB HRS");
+    if (y+rowH > 0 && y < H) {
+        uint32_t secs = tabui_getJobSeconds();
+        uint32_t hrs  = secs / 3600;
+        uint32_t mins = (secs % 3600) / 60;
+        char hbuf[24]; snprintf(hbuf,sizeof(hbuf),"%uh %02um",hrs,mins);
+        // Show with maintenance status
+        bool due = tabui_maintDue();
+        uint16_t hcol = due ? ORANGE : GREEN;
+        _sBuf->setFont(&fonts::Font2); _sBuf->setTextDatum(middle_left);
+        _sBuf->setTextColor(hcol);
+        _sBuf->drawString(hbuf, bx0+4, y+rowH/2);
+        if(due){
+            _sBuf->setTextColor(ORANGE);
+            _sBuf->drawString("MAINT DUE!", bx0+100, y+rowH/2);
+        }
+    } y += rowH;
+
+    // MAINTENANCE INTERVAL
+    lbTxt(y, "MAINT");
+    if (y+rowH > 0 && y < H) {
+        int bw2=36, lx=bx0;
+        sB(lx,       y+8,bw2,optH-8,S_PANEL,S_BORDER,"-",S_WHITE); lx+=bw2+4;
+        char mb[16]; snprintf(mb,sizeof(mb),"%dh",s.maintInterval);
+        _sBuf->setFont(&fonts::Font2); _sBuf->setTextDatum(middle_center);
+        _sBuf->setTextColor(S_WHITE);
+        _sBuf->drawString(mb, lx+30, y+rowH/2);
+        lx+=64;
+        sB(lx,       y+8,bw2,optH-8,S_PANEL,S_BORDER,"+",S_WHITE); lx+=bw2+12;
+        sB(lx,       y+8,bW-lx+bx0-4,optH-8,0x0C00,GREEN,"Reset Maint",GREEN);
+    } y += rowH;
+
+    // MACHINE TYPE
+    lbTxt(y, "MACHINE");
+    if (y+rowH > 0 && y < H) {
+        int mw=(bW-8)/3;
+        const char* ml[]={"CNC","Plotter","Laser"};
+        uint16_t mc[]={COL_AX_X, COL_AX_Y, ORANGE};
+        for(int i=0;i<3;i++){
+            bool sel=((int)s.machineType==i);
+            sB(bx0+i*(mw+4),y+4,mw,optH,sel?mc[i]:COL_PANEL2,sel?mc[i]:COL_BORDER,ml[i],sel?COL_BG:COL_DIM);
+        }
+    } y += rowH;
+
     // SIM
     lbTxt(y, "SIM");
     { int bw2=(bW-4)/2;
@@ -183,7 +228,7 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     sB(cx+50, y,96,28,0x0C00, S_GREEN, "Save & Boot",S_GREEN);
 
     // Scroll indicator
-    { int totalH = 36 + 10*rowH + 32;
+    { int totalH = 36 + 13*rowH + 32;
       if (totalH > H) {
         int tH = std::max(8, H*H/totalH);
         int tY = scrollY*(H-tH)/std::max(1,totalH-H);
@@ -498,7 +543,7 @@ static void runSettingsMenu(AppSettings& s) {
             int ty2 = t.y + _settingsScroll;  // content coords
             int rowH2 = 48, bx0_2 = 68, bW2 = W - bx0_2 - 4;
             // Brightness slider drag  (row 6 = after SIM,THEME,P6,WX,WY,HOME)
-            { int yBr = 36+6*rowH2+8;
+            { int yBr = 36+9*rowH2+8;
               if (ty2 >= yBr && ty2 < yBr+38 && t.x >= bx0_2 && t.x < bx0_2+bW2) {
                   s.brightness = std::max(10, std::min(255, (t.x-bx0_2)*255/bW2));
                   display.setBrightness(s.brightness);
@@ -506,7 +551,7 @@ static void runSettingsMenu(AppSettings& s) {
               }
             }
             // Volume slider drag  (row 7)
-            { int yVol = 36+7*rowH2+8;
+            { int yVol = 36+9*rowH2+8;
               if (ty2 >= yVol && ty2 < yVol+38 && t.x >= bx0_2 && t.x < bx0_2+bW2) {
                   s.volume = std::max(0, std::min(9, (t.x-bx0_2)*9/bW2));
                   tabui_setVolume(s.volume);
@@ -528,6 +573,30 @@ static void runSettingsMenu(AppSettings& s) {
 
         int y = 36, rowH = 48, optH = 36;
         int bx0 = 68, bW = W - bx0 - 4;
+
+        // Hour meter row — read only, no touch needed
+        y += rowH;
+
+        // Maintenance interval row
+        { int bw2=36, lx=bx0;
+          if (touchIn(tx,ty, lx, y+8, bw2, optH-8) && s.maintInterval > 1)  { s.maintInterval--; tabui_setMaintInterval(s.maintInterval); }
+          lx+=bw2+4+64;
+          if (touchIn(tx,ty, lx, y+8, bw2, optH-8) && s.maintInterval < 999) { s.maintInterval++; tabui_setMaintInterval(s.maintInterval); }
+          lx+=bw2+12;
+          int resetW=bW-lx+bx0-4;
+          if (touchIn(tx,ty, lx, y+8, resetW, optH-8)) {
+              tabui_setMaintInterval(s.maintInterval);
+              tabui_resetMaintenance();
+          }
+        }
+        y += rowH;
+
+        // Machine type row
+        { int mw=(bW-8)/3;
+          for(int i=0;i<3;i++)
+            if(touchIn(tx,ty,bx0+i*(mw+4),y+4,mw,optH)){ s.machineType=(MachineType)i; tabui_setMachineType(i); }
+        }
+        y += rowH;
 
         // Sim mode row
         { int bw2=(bW-4)/2;
@@ -576,19 +645,19 @@ static void runSettingsMenu(AppSettings& s) {
         y += 4;
 
         // Input Monitor
-        if (touchIn(tx,ty, cx-156, 36+8*rowH+4, 96, 28)) {
+        if (touchIn(tx,ty, cx-156, 36+10*rowH+4, 96, 28)) {
             runInputMonitor();
             drawSettings();
             continue;
         }
         // UART Monitor
-        if (touchIn(tx,ty, cx-54, 36+8*rowH+4, 96, 28)) {
+        if (touchIn(tx,ty, cx-54, 36+10*rowH+4, 96, 28)) {
             runUartMonitor();
             drawSettings();
             continue;
         }
         // Save & Boot — save then restart for clean state
-        if (touchIn(tx,ty, cx+50, 36+8*rowH+4, 96, 28)) {
+        if (touchIn(tx,ty, cx+50, 36+10*rowH+4, 96, 28)) {
             settings_save(s);
             esp_restart();
         }
@@ -751,6 +820,9 @@ void setup() {
     tabui_setEnableMode((int)s.enableMode, s.enableMacro);
     tabui_setWorkArea(s.workX, s.workY, (int)s.homeCorner);
     tabui_setVolume(s.volume);
+    tabui_setMachineType((int)s.machineType);
+    tabui_setMaintInterval(s.maintInterval);
+    tabui_loadHourMeter();
     display.setBrightness(s.brightness);
 
     if (enterSettings) {

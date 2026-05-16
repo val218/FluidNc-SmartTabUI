@@ -350,143 +350,155 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
 
     case RecoveryPhase::Prompt: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,YELLOW);
-        txt("INTERRUPTED JOB FOUND", cx, py+16, YELLOW);
-        txt0(_cp.jobPath, cx, py+32, C_DIM);
-        // Connection status indicator
-        bool connected = (state != Disconnected);
-        uint16_t stcol = connected ? GREEN : RED;
-        const char* ststr = connected ? "FluidNC Connected" : "FluidNC Not Connected";
-        canvas->fillCircle(cx-60, py+48, 5, stcol);
-        txt0(ststr, cx-48, py+48, stcol, 4);  // middle_left aligned near center
-        // Stats
-        char line1[48];
-        // Detect if lastLine is encoded percent (value > 100000 means percent*1000)
-        if (_cp.lastLine > 100000) {
-            uint32_t pct = _cp.lastLine / 1000;
-            snprintf(line1,sizeof(line1),"Progress: ~%u%%", pct);
-        } else if (_cp.lastLine > 0) {
-            snprintf(line1,sizeof(line1),"Last line: %u", _cp.lastLine);
-        } else {
-            snprintf(line1,sizeof(line1),"Progress: unknown");
-        }
-        char line2[48];
-        float x2=_cp.axisX/10000.0f, y2=_cp.axisY/10000.0f, z2=_cp.axisZ/10000.0f;
-        snprintf(line2,sizeof(line2),"X%.2f Y%.2f Z%.2f",x2,y2,z2);
-        txt0(line1, cx, py+64, C_WHITE);
-        txt0(line2, cx, py+78, C_WHITE);
-        txt0("Resume this job?", cx, py+96, CYAN);
-        int bw2=(pw-18)/2, by2=py+avH-bh-8;
-        btn(_btnA, px+6,        by2, bw2, bh, GREEN,  GREEN,  "YES - Resume",  0x0000);
-        btn(_btnB, px+12+bw2,   by2, bw2, bh, C_PANEL, RED,  "NO - Discard",  RED);
+        // Title
+        canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
+        canvas->setTextColor(YELLOW);
+        canvas->drawString("INTERRUPTED JOB FOUND", cx, py+12);
+        // File path (truncated)
+        std::string jp=_cp.jobPath; if(jp.size()>36) jp=jp.substr(jp.size()-36);
+        canvas->setFont(&fonts::Font0); canvas->setTextColor(C_DIM);
+        canvas->drawString(jp.c_str(), cx, py+26);
+        // Connection status
+        bool conn=(state!=Disconnected);
+        canvas->fillCircle(px+14, py+40, 5, conn?GREEN:RED);
+        canvas->setTextDatum(middle_left);
+        canvas->setTextColor(conn?GREEN:RED);
+        canvas->drawString(conn?"FluidNC: Connected":"FluidNC: NOT Connected", px+24, py+40);
+        // Progress and position
+        char prog[32];
+        if(_cp.lastLine>100000) snprintf(prog,32,"Progress: ~%u%%",_cp.lastLine/1000);
+        else if(_cp.lastLine>0) snprintf(prog,32,"Line: %u",_cp.lastLine);
+        else snprintf(prog,32,"Progress: unknown");
+        canvas->setTextDatum(middle_center);
+        canvas->setTextColor(C_WHITE);
+        canvas->drawString(prog, cx, py+56);
+        float x2=_cp.axisX/10000.0f,y2=_cp.axisY/10000.0f,z2=_cp.axisZ/10000.0f;
+        char pos[40]; snprintf(pos,40,"X%.2f  Y%.2f  Z%.2f",x2,y2,z2);
+        canvas->setTextColor(C_DIM);
+        canvas->drawString(pos, cx, py+70);
+        canvas->setTextColor(CYAN);
+        canvas->drawString("Resume this job?", cx, py+86);
+        // Buttons
+        int bw2=(pw-18)/2, by2=py+avH-bh-6;
+        btn(_btnA, px+6,      by2, bw2, bh, GREEN, GREEN,  "YES — Resume", 0x0000);
+        btn(_btnB, px+12+bw2, by2, bw2, bh, C_PANEL, RED,  "NO — Discard", RED);
         break;
     }
 
     case RecoveryPhase::AskToolBreak: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,ORANGE);
-        txt("TOOL BREAK OR E-STOP?", cx, py+16, ORANGE);
-        txt0_safe("Was this job stopped due to:", px+6, py+34, C_WHITE);
-        txt0_safe("tool break, E-stop, power loss,", px+6, py+48, C_WHITE);
-        txt0_safe("or any sudden stop?", px+6, py+62, C_WHITE);
-        txt0_safe("YES = manual jog + tool change required", px+6, py+80, YELLOW);
-        txt0_safe("NO  = standard resume (clean stop)", px+6, py+94, C_DIM);
-        int bw2=(pw-18)/2, by2=py+avH-bh-8;
-        btn(_btnA, px+6,      by2, bw2, bh, 0xC000, RED,   "YES (Tool Break)",  C_WHITE);
-        btn(_btnB, px+12+bw2, by2, bw2, bh, GREEN,  GREEN, "NO (Clean Stop)",   0x0000);
+        canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
+        canvas->setTextColor(ORANGE);
+        canvas->drawString("TOOL BREAK / E-STOP?", cx, py+12);
+        canvas->setFont(&fonts::Font0); canvas->setTextColor(C_WHITE);
+        canvas->drawString("Was this job stopped by:", cx, py+28);
+        canvas->drawString("tool break, E-stop, power loss, crash?", cx, py+42);
+        canvas->setTextColor(YELLOW);
+        canvas->drawString("YES: manual jog + tool change required", cx, py+58);
+        canvas->setTextColor(C_DIM);
+        canvas->drawString("NO:  safe auto-resume", cx, py+72);
+        int bw2=(pw-18)/2, by2=py+avH-bh-6;
+        btn(_btnA, px+6,      by2, bw2, bh, 0xC000, RED,   "YES — Unsafe stop", C_WHITE);
+        btn(_btnB, px+12+bw2, by2, bw2, bh, GREEN,  GREEN, "NO — Clean stop",   0x0000);
         break;
     }
 
     case RecoveryPhase::ShowLines: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,CYAN);
-        txt("SELECT RESUME LINE", cx, py+14, CYAN);
-        txt0_safe("Tap a line to select, then confirm:", px+6, py+28, C_WHITE);
-        // Decode lastLine — may be encoded percent
-        uint32_t baseLine = (_cp.lastLine > 100000) ? (_cp.lastLine/1000)*30 : _cp.lastLine;
-        int lineH=18, startY=py+42;
-        int nLines = std::min(7, (avH-42-bh-8)/lineH);
-        uint32_t startLine = (baseLine > (uint32_t)(nLines-1)) ? baseLine-(nLines-1) : 0;
-        // Store line rects for touch
-        static Rect _lineRects[7];
-        for(int i=0;i<nLines;i++){
-            uint32_t ln = startLine+i;
-            bool isSel=(ln==_resumeLine);
-            int ly=startY+i*lineH;
-            _lineRects[i]={px+4,ly-1,pw-8,lineH-1};
-            canvas->fillRoundRect(px+4,ly-1,pw-8,lineH-1,2,isSel?0x0019:C_PANEL);
-            if(isSel) canvas->drawRoundRect(px+4,ly-1,pw-8,lineH-1,2,CYAN);
-            char lb[32]; snprintf(lb,sizeof(lb),"Line %u%s",ln,isSel?" ◄":"");
-            canvas->setFont(&fonts::Font0); canvas->setTextDatum(4);
-            canvas->setTextColor(isSel?YELLOW:C_DIM);
-            canvas->drawString(lb,cx,ly+lineH/2);
+        canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
+        canvas->setTextColor(CYAN);
+        canvas->drawString("RESUME LINE", cx, py+12);
+        canvas->setFont(&fonts::Font0); canvas->setTextColor(C_DIM);
+        canvas->drawString("Turn MPG to select line, tap to confirm", cx, py+26);
+        // 7 lines, scrollable
+        int lineH=18, listY=py+36, numShow=7;
+        uint32_t base=(_cp.lastLine>9)?_cp.lastLine-9:0;
+        for(int i=0;i<numShow;i++){
+            uint32_t ln=base+_lineScroll+i;
+            bool sel=(ln==_resumeLine);
+            int ly=listY+i*lineH;
+            if(sel) canvas->fillRoundRect(px+4,ly,pw-8,lineH-1,2,0x2106);
+            canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
+            canvas->setTextColor(sel?YELLOW:C_DIM);
+            char lb[28]; snprintf(lb,28,"Line %u%s",ln,sel?" ◄":"");
+            canvas->drawString(lb, cx, ly+lineH/2-1);
         }
-        btn(_btnA, px+6, py+avH-bh-8, pw-12, bh, CYAN, CYAN, "Resume from selected line", 0x0000);
+        btn(_btnA, px+4, py+avH-bh-4, pw-8, bh, CYAN, CYAN, "Confirm this line", 0x0000);
         break;
     }
 
     case RecoveryPhase::ManualJog: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,RED);
-        txt("MANUAL JOG REQUIRED", cx, py+13, RED);
-        int bx=px+8, by=py+24, hw=(pw-20)/2;
-        // Step 1 box
-        canvas->fillRoundRect(bx,by,hw,36,4,0x2800);
-        canvas->drawRoundRect(bx,by,hw,36,4,GREEN);
-        txt0("1. Select Z",bx+hw/2,by+12,GREEN);
-        txt0("Jog UP clear",bx+hw/2,by+26,GREEN);
-        // Arrow
-        canvas->drawLine(bx+hw+2,by+18,bx+hw+10,by+18,C_DIM);
-        canvas->fillTriangle(bx+hw+14,by+18,bx+hw+9,by+14,bx+hw+9,by+22,C_DIM);
-        // Step 2 box
-        int bx2=bx+hw+16;
-        canvas->fillRoundRect(bx2,by,hw-4,36,4,0x001A);
-        canvas->drawRoundRect(bx2,by,hw-4,36,4,CYAN);
-        txt0("2. Select X/Y",bx2+(hw-4)/2,by+12,CYAN);
-        txt0("Jog clear",bx2+(hw-4)/2,by+26,CYAN);
-        // Warning bar
-        canvas->fillRoundRect(bx,by+42,pw-16,26,3,0x4000);
-        canvas->drawRoundRect(bx,by+42,pw-16,26,3,RED);
-        txt0("! Never auto-move — path may be blocked",cx,by+56,RED);
-        txt0("Use MPG wheel — DRO shows live position",cx,by+70,C_DIM);
-        btn(_btnA, px+6, py+avH-bh-6, pw-12, bh, GREEN, GREEN, "Done — machine is clear", 0x0000);
+        canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
+        canvas->setTextColor(RED);
+        canvas->drawString("MANUAL JOG REQUIRED", cx, py+12);
+        // Two step boxes side by side
+        int hw=(pw-20)/2, by0=py+26;
+        canvas->fillRoundRect(px+4,    by0,hw,36,4,0x2800); canvas->drawRoundRect(px+4,    by0,hw,36,4,GREEN);
+        canvas->fillRoundRect(px+12+hw,by0,hw,36,4,0x001A); canvas->drawRoundRect(px+12+hw,by0,hw,36,4,CYAN);
+        canvas->setFont(&fonts::Font0); canvas->setTextColor(GREEN);
+        canvas->drawString("1. Select Z",px+4+hw/2,by0+12);
+        canvas->drawString("Jog UP to clear",px+4+hw/2,by0+26);
+        canvas->setTextColor(CYAN);
+        canvas->drawString("2. Select X/Y",px+12+hw+hw/2,by0+12);
+        canvas->drawString("Jog clear of part",px+12+hw+hw/2,by0+26);
+        // Arrow between boxes
+        canvas->drawLine(px+4+hw+2,by0+18,px+10+hw,by0+18,C_DIM);
+        canvas->fillTriangle(px+12+hw,by0+18,px+9+hw,by0+14,px+9+hw,by0+22,C_DIM);
+        // Warning
+        canvas->fillRoundRect(px+4,by0+42,pw-8,26,3,0x4000);
+        canvas->drawRoundRect(px+4,by0+42,pw-8,26,3,RED);
+        canvas->setTextColor(RED);
+        canvas->drawString("! Never auto-move after crash",cx,by0+54);
+        canvas->setTextColor(C_DIM);
+        canvas->drawString("Path may be blocked by debris",cx,by0+66);
+        btn(_btnA, px+4, py+avH-bh-4, pw-8, bh, GREEN, GREEN, "Done — machine is clear", 0x0000);
         break;
     }
-
-
 
     case RecoveryPhase::ToolChange: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,ORANGE);
-        txt("TOOL CHANGE", cx, py+13, ORANGE);
-        // Left: steps | Right: probe diagram
-        txt0("1. Insert new tool",px+8,py+30,C_WHITE,4);
-        txt0("2. Tap PROBE to set Z",px+8,py+44,C_WHITE,4);
-        txt0("3. Verify Z0 in DRO",px+8,py+58,C_WHITE,4);
+        canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
+        canvas->setTextColor(ORANGE);
+        canvas->drawString("TOOL CHANGE", cx, py+12);
+        // Steps (left side)
+        canvas->setFont(&fonts::Font0); canvas->setTextDatum(middle_left);
+        canvas->setTextColor(C_WHITE);
+        canvas->drawString("1. Insert new tool",   px+8, py+30);
+        canvas->drawString("2. Tap PROBE → set Z", px+8, py+44);
+        canvas->drawString("3. Verify Z=0 in DRO", px+8, py+58);
         char tlast[24]; snprintf(tlast,24,"Last: T%u",_cp.tool);
-        txt0(tlast,px+8,py+72,C_DIM,4);
+        canvas->setTextColor(C_DIM);
+        canvas->drawString(tlast, px+8, py+72);
         // Probe diagram (right side)
-        int dx=px+pw-52, dy=py+24;
-        canvas->fillRoundRect(dx+4,dy,16,28,3,COL_AX_Z);   // tool body
-        canvas->fillRoundRect(dx+7,dy+28,10,18,2,COL_AX_Z); // tool tip
-        canvas->fillRoundRect(dx,dy+48,24,8,2,COL_BORDER);  // probe block
-        canvas->drawRoundRect(dx,dy+48,24,8,2,COL_AX_Z);
+        int dx=cx+50, dy=py+24;
+        canvas->fillRoundRect(dx+4,dy,    16,28,3,0xFEE8);  // tool body
+        canvas->fillRoundRect(dx+7,dy+28, 10,18,2,0xFEE8);  // tip
+        canvas->fillRoundRect(dx,dy+48,   24, 8,2,0x2965);  // probe block
+        canvas->drawRoundRect(dx,dy+48,   24, 8,2,0xFEE8);
         canvas->drawLine(dx+12,dy+35,dx+12,dy+46,YELLOW);
         canvas->fillTriangle(dx+12,dy+48,dx+9,dy+43,dx+15,dy+43,YELLOW);
-        txt0("Z0",dx+28,dy+52,COL_AX_Z,4);
-        int bw2=(pw-18)/2, by2=py+avH-bh-6;
-        btn(_btnA, px+4,      by2, bw2, bh, ORANGE, ORANGE, "Open Probe",     0x0000);
-        btn(_btnB, px+10+bw2, by2, bw2, bh, GREEN,  GREEN,  "Done — probed",  0x0000);
+        canvas->setTextDatum(middle_left);
+        canvas->setTextColor(0xFEE8);
+        canvas->drawString("Z0",dx+26,dy+52);
+        // Two buttons
+        int bw2=(pw-18)/2, by2=py+avH-bh-4;
+        btn(_btnA, px+4,      by2, bw2, bh, ORANGE, ORANGE, "Open Probe",    0x0000);
+        btn(_btnB, px+10+bw2, by2, bw2, bh, GREEN,  GREEN,  "Done — probed", 0x0000);
         break;
     }
 
-
-
     case RecoveryPhase::Confirm: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,GREEN);
-        txt("READY TO RESUME", cx, py+13, GREEN);
+        canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
+        canvas->setTextColor(GREEN);
+        canvas->drawString("READY TO RESUME", cx, py+12);
         // 4 sequence boxes
-        float rx2=_cp.axisX/10000.0f,ry2=_cp.axisY/10000.0f,rz=_cp.axisZ/10000.0f;
-        int sbw=(pw-20)/4, sby=py+24, sbh=38;
+        int sbw=(pw-20)/4, sby=py+26, sbh=38;
         const uint16_t sbg[4]={0x0440,0x001A,0x4220,0x0440};
         const uint16_t sbc[4]={GREEN,CYAN,YELLOW,GREEN};
         const char*sl1[4]={"Home Z","Go XY","Lower Z","Run"};
-        const char*sl2[4]={"reference","rapid","plunge","file"};
+        const char*sl2[4]={"home","rapid","plunge","file"};
         for(int i=0;i<4;i++){
             int sx=px+4+i*(sbw+3);
             canvas->fillRoundRect(sx,sby,sbw,sbh,3,sbg[i]);
@@ -494,24 +506,26 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
             canvas->setFont(&fonts::Font0); canvas->setTextDatum(middle_center);
             canvas->setTextColor(sbc[i]); canvas->drawString(sl1[i],sx+sbw/2,sby+12);
             canvas->setTextColor(C_DIM);  canvas->drawString(sl2[i],sx+sbw/2,sby+26);
-            if(i<3) canvas->drawLine(sx+sbw+1,sby+sbh/2,sx+sbw+2,sby+sbh/2,C_DIM);
+            if(i<3){canvas->drawLine(sx+sbw,sby+sbh/2,sx+sbw+3,sby+sbh/2,C_DIM);}
         }
-        // Data row
+        // Data
+        float rx2=_cp.axisX/10000.0f,ry2=_cp.axisY/10000.0f,rz=_cp.axisZ/10000.0f;
         char p1[40]; snprintf(p1,40,"X%.1f Y%.1f Z%.2f",rx2,ry2,rz);
-        txt0(p1,cx,sby+sbh+12,C_DIM);
         char p2[40]; snprintf(p2,40,"F%u  line ~%u",_cp.feedRate,_resumeLine);
-        txt0(p2,cx,sby+sbh+24,C_DIM);
+        canvas->setFont(&fonts::Font0); canvas->setTextDatum(middle_center);
+        canvas->setTextColor(C_DIM);
+        canvas->drawString(p1,cx,sby+sbh+12);
+        canvas->drawString(p2,cx,sby+sbh+24);
         if(_toolBreak){
             canvas->fillRoundRect(px+4,sby+sbh+32,pw-8,16,3,0x4220);
-            txt0("Tool re-probed: Z offset applied",cx,sby+sbh+40,YELLOW);
+            canvas->setTextColor(YELLOW);
+            canvas->drawString("Tool re-probed — Z offset applied",cx,sby+sbh+40);
         }
-        int bw2=(pw-18)/2, by2=py+avH-bh-6;
+        int bw2=(pw-18)/2, by2=py+avH-bh-4;
         btn(_btnA, px+4,      by2, bw2, bh, GREEN,  GREEN, "CONFIRM RESUME", 0x0000);
         btn(_btnB, px+10+bw2, by2, bw2, bh, C_PANEL, RED,  "CANCEL",         RED);
         break;
     }
-
-
 
     default: break;
     }
