@@ -31,6 +31,7 @@ static std::vector<std::string> _lastLines;
 static uint32_t      _resumeLine = 0;
 static int           _lineScroll = 0;  // ShowLines MPG scroll offset
 static bool          _wantsProbe = false;
+static Rect          _lineRects[7] = {};  // set in ShowLines draw
 
 // Rect struct for touch zones
 struct Rect { int x, y, w, h; };
@@ -243,9 +244,7 @@ void jobrecov_advance(int choice) {
         break;
 
     case RecoveryPhase::ShowLines:
-        // choice = selected resume line offset (0-9 = last 10 lines)
-        _resumeLine = (_cp.lastLine > (uint32_t)(9 - choice)) ?
-                      (_cp.lastLine - (uint32_t)(9 - choice)) : 0;
+        // _resumeLine already set by scroll/tap — just advance
         _phase = RecoveryPhase::ManualJog;
         break;
 
@@ -405,28 +404,48 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
 
     case RecoveryPhase::ShowLines: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,CYAN);
+        // Title
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(CYAN);
-        canvas->drawString("RESUME LINE", cx, py+12);
+        canvas->drawString("SELECT RESUME LINE", cx, py+12);
         canvas->setFont(&fonts::Font0); canvas->setTextColor(C_DIM);
-        canvas->drawString("Turn MPG to select line, tap to confirm", cx, py+26);
-        // 7 lines, scrollable
-        int lineH=18, listY=py+36, numShow=7;
-        uint32_t base=(_cp.lastLine>9)?_cp.lastLine-9:0;
+        canvas->drawString("Turn MPG encoder to scroll, tap line to select", cx, py+24);
+        // Work out actual last line (may be encoded percent)
+        uint32_t lastLine = (_cp.lastLine > 100000) ? (_cp.lastLine/1000)*100 : _cp.lastLine;
+        uint32_t base = (lastLine > 9) ? lastLine - 9 : 0;
+        // 7 selectable line rows
+        int lineH=19, listY=py+34, numShow=7;
         for(int i=0;i<numShow;i++){
-            uint32_t ln=base+_lineScroll+i;
-            bool sel=(ln==_resumeLine);
-            int ly=listY+i*lineH;
-            if(sel) canvas->fillRoundRect(px+4,ly,pw-8,lineH-1,2,0x2106);
-            canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
+            uint32_t ln = base + (uint32_t)_lineScroll + i;
+            bool sel = (ln == _resumeLine);
+            int lx=px+4, ly=listY+i*lineH, lw=pw-8;
+            _lineRects[i] = {lx, ly, lw, lineH-1};
+            if(sel){
+                canvas->fillRoundRect(lx,ly,lw,lineH-1,2,0x2106);
+                canvas->drawRoundRect(lx,ly,lw,lineH-1,2,CYAN);
+            } else {
+                canvas->drawRoundRect(lx,ly,lw,lineH-1,2,0x1082);
+            }
+            canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_left);
             canvas->setTextColor(sel?YELLOW:C_DIM);
-            char lb[28]; snprintf(lb,28,"Line %u%s",ln,sel?" ◄":"");
-            canvas->drawString(lb, cx, ly+lineH/2-1);
+            char lb[32]; snprintf(lb,32,"  Line %u",ln);
+            canvas->drawString(lb, lx+4, ly+lineH/2-1);
+            if(sel){
+                canvas->setTextDatum(middle_right);
+                canvas->setTextColor(CYAN);
+                canvas->drawString("◄ selected  ", lx+lw-4, ly+lineH/2-1);
+            }
+            // Default marker
+            if(ln == lastLine){
+                canvas->setTextDatum(middle_right);
+                canvas->setTextColor(0x7BEF);
+                canvas->drawString("last saved", lx+lw-4, ly+lineH/2-1);
+            }
         }
-        btn(_btnA, px+4, py+avH-bh-4, pw-8, bh, CYAN, CYAN, "Confirm this line", 0x0000);
+        // Confirm button
+        btn(_btnA, px+4, py+avH-bh-4, pw-8, bh, CYAN, CYAN, "Confirm selected line", 0x0000);
         break;
     }
-
     case RecoveryPhase::ManualJog: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,RED);
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
@@ -544,61 +563,13 @@ bool jobrecov_onTouch(int x, int y) {
         if (inRect(_btnB,x,y)) { jobrecov_advance(0); return true; }  // NO clean stop
         break;
     case RecoveryPhase::ShowLines: {
-        // Check individual line rows
-        uint32_t baseLine = (_cp.lastLine > 100000) ? (_cp.lastLine/1000)*30 : _cp.lastLine;
-        static Rect _lineRects[7];  // defined in draw, reused here
-        int nLines = 7;
-        uint32_t startLine = (baseLine > (uint32_t)(nLines-1)) ? baseLine-(nLines-1) : 0;
-        for(int i=0;i<nLines;i++){
-            int lineH=18, startY=44+4;  // matches draw: startY=py+42, py=TOP+4=24
-            int ly = 24+42+i*lineH;
-            Rect r={12,ly-1,296,lineH-1};
-            if(inRect(r,x,y)){ _resumeLine=startLine+i; return true; }
+        // Tap on a line row to select it, tap Confirm to advance
+        uint32_t lastLine = (_cp.lastLine > 100000) ? (_cp.lastLine/1000)*100 : _cp.lastLine;
+        uint32_t base = (lastLine > 9) ? lastLine - 9 : 0;
+        for(int i=0;i<7;i++){
+            if(inRect(_lineRects[i],x,y)){
+                _resumeLine = base + (uint32_t)_lineScroll + i;
+                markDirty(); return true;
+            }
         }
-        if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }
-        break;
-    }
-    case RecoveryPhase::ManualJog:
-        if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }
-        break;
-    case RecoveryPhase::ToolChange:
-        if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }  // Done
-        if (inRect(_btnB,x,y)) {
-            // Open Home tab for probing — recovery stays active
-            extern int _tabFromRecovery;
-            _tabFromRecovery = 1;
-            return true;
-        }
-        if (inRect(_btnC,x,y)) {
-            // Manual Z0 — send G10 L20 P1 Z0 to set current position as Z zero
-            send_line("G10 L20 P1 Z0");
-            fnc_term_inject("> G10 L20 P1 Z0: Z0 set at current position");
-            return true;
-        }
-        break;
-    case RecoveryPhase::Confirm:
-        if (inRect(_btnA,x,y)) { jobrecov_advance(0); return true; }  // CONFIRM
-        if (inRect(_btnB,x,y)) { jobrecov_advance(1); return true; }  // CANCEL
-        break;
-    default: break;
-    }
-    return true;  // consume all touches while overlay is active
-}
-
-void jobrecov_showPrompt() {
-    if (_hasCheckpoint && _cp.dirty) {
-        _phase = RecoveryPhase::Prompt;
-        markDirty();
-    }
-}
-
-void jobrecov_scroll(int delta) {
-    if (_phase == RecoveryPhase::ShowLines) {
-        _lineScroll = std::max(0, std::min(3, _lineScroll + delta));
-        uint32_t base = (_cp.lastLine>9)?_cp.lastLine-9:0;
-        _resumeLine = base + _lineScroll + 4;  // select middle of visible window
-        markDirty();
-    }
-}
-bool jobrecov_wantsProbe() { return _wantsProbe; }
-void jobrecov_clearProbe() { _wantsProbe = false; }
+        if(inRect(_btnA,x,y)){ jobrecov_advance(0); return true; }

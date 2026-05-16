@@ -530,45 +530,56 @@ static void runSettingsMenu(AppSettings& s) {
         }
         auto t = touch.getDetail();
 
+        int rowH2 = 48;
         // MPG encoder scroll
         { int16_t enc = get_encoder();
           if (enc != 0) {
-              _settingsScroll = std::max(0, std::min(300, _settingsScroll + enc * 8));
+              { int maxS=std::max(0,36+13*rowH2+32-240);
+              _settingsScroll = std::max(0, std::min(maxS, _settingsScroll + enc * 8)); }
               drawSettings(); delay(8); continue;
           }
         }
-        // Touch scroll: track finger Y while pressed, update on move
-        if (t.wasPressed()) { _lastTouchY = t.y; delay(8); continue; }
+        // Touch handling — track drag and tap separately
+        int rowH2 = 48, bx0_2 = 68, bW2 = W - bx0_2 - 4;
+        int maxScroll = std::max(0, 36 + 13*rowH2 + 32 - 240);  // totalH - screenH
+
+        if (t.wasPressed()) {
+            _lastTouchY = t.y;
+            _didDrag = false;
+            delay(5); continue;
+        }
         if (t.isPressed() && _lastTouchY >= 0) {
-            int ty2 = t.y + _settingsScroll;  // content coords
-            int rowH2 = 48, bx0_2 = 68, bW2 = W - bx0_2 - 4;
-            // Brightness slider drag  (row 6 = after SIM,THEME,P6,WX,WY,HOME)
-            { int yBr = 36+9*rowH2+8;
-              if (ty2 >= yBr && ty2 < yBr+38 && t.x >= bx0_2 && t.x < bx0_2+bW2) {
-                  s.brightness = std::max(10, std::min(255, (t.x-bx0_2)*255/bW2));
-                  display.setBrightness(s.brightness);
-                  drawSettings(); delay(8); continue;
-              }
-            }
-            // Volume slider drag  (row 7)
-            { int yVol = 36+9*rowH2+8;
-              if (ty2 >= yVol && ty2 < yVol+38 && t.x >= bx0_2 && t.x < bx0_2+bW2) {
-                  s.volume = std::max(0, std::min(9, (t.x-bx0_2)*9/bW2));
-                  tabui_setVolume(s.volume);
-                  drawSettings(); delay(8); continue;
-              }
-            }
-            // Otherwise scroll
             int delta = _lastTouchY - t.y;
-            if (abs(delta) >= 3) {
-                _settingsScroll = std::max(0, std::min(300, _settingsScroll + delta));
+            int ty2 = t.y + _settingsScroll;
+            // Brightness slider drag (row 11 = index from top: 0=JOB,1=MAINT,2=MACH,3=SIM,4=THEME,5=P6,6=Xmm,7=Ymm,8=HOME,9=BRIGHT,10=VOL)
+            { int yBr = 36+9*rowH2+8;
+              if (!_didDrag && ty2>=yBr && ty2<yBr+38 && t.x>=bx0_2 && t.x<bx0_2+bW2) {
+                  s.brightness = std::max(10,std::min(255,(t.x-bx0_2)*255/bW2));
+                  display.setBrightness(s.brightness);
+                  drawSettings(); delay(5); continue;
+              }
+            }
+            // Volume slider drag (row 10)
+            { int yVol = 36+10*rowH2+8;
+              if (!_didDrag && ty2>=yVol && ty2<yVol+38 && t.x>=bx0_2 && t.x<bx0_2+bW2) {
+                  s.volume = std::max(0,std::min(9,(t.x-bx0_2)*9/bW2));
+                  tabui_setVolume(s.volume);
+                  drawSettings(); delay(5); continue;
+              }
+            }
+            // Scroll drag
+            if (abs(delta) >= 4) {
+                _didDrag = true;
+                _settingsScroll = std::max(0, std::min(maxScroll, _settingsScroll + delta));
                 _lastTouchY = t.y;
                 drawSettings();
             }
-            delay(8); continue;
+            delay(5); continue;
         }
-        if (t.isReleased()) _lastTouchY = -1;
-        if (!t.wasClicked()) { delay(15); continue; }
+        if (t.isReleased()) { _lastTouchY = -1; }
+        // Skip click if this was a drag
+        if (_didDrag) { _didDrag = false; delay(5); continue; }
+        if (!t.wasClicked()) { delay(10); continue; }
         int tx = t.x, ty = t.y + _settingsScroll;
 
         int y = 36, rowH = 48, optH = 36;
