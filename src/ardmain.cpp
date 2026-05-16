@@ -530,7 +530,7 @@ static void runSettingsMenu(AppSettings& s) {
         }
         auto t = touch.getDetail();
 
-        int rowH2 = 48;
+        int rowH2 = 48, bx0_2 = 68, bW2 = W - bx0_2 - 4;
         // MPG encoder scroll
         { int16_t enc = get_encoder();
           if (enc != 0) {
@@ -540,7 +540,7 @@ static void runSettingsMenu(AppSettings& s) {
           }
         }
         // Touch handling — track drag and tap separately
-        int rowH2 = 48, bx0_2 = 68, bW2 = W - bx0_2 - 4;
+        bx0_2 = 68; bW2 = W - bx0_2 - 4;
         int maxScroll = std::max(0, 36 + 13*rowH2 + 32 - 240);  // totalH - screenH
 
         if (t.wasPressed()) {
