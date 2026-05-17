@@ -221,11 +221,12 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
         _sBuf->setTextColor(S_WHITE); _sBuf->drawString(vb,barX+barW/2,y+rowH/2);
     } y += rowH;
 
-    // Bottom buttons
-    y += 4;
-    sB(cx-156,y,96,28,S_PANEL,S_CYAN,  "Inputs",     S_CYAN);
-    sB(cx-54, y,96,28,S_PANEL,S_ORANGE,"UART",       S_ORANGE);
-    sB(cx+50, y,96,28,0x0C00, S_GREEN, "Save & Boot",S_GREEN);
+    // Bottom buttons — drawn at FIXED screen position (always visible)
+    { int btnY = H - 34;
+      sB(cx-156,btnY,96,28,S_PANEL,S_CYAN,  "Inputs",      S_CYAN);
+      sB(cx-54, btnY,96,28,S_PANEL,S_ORANGE,"UART",        S_ORANGE);
+      sB(cx+50, btnY,96,28,0x0C00, S_GREEN, "Save & Boot", S_GREEN);
+    }
 
     // Scroll indicator
     { int totalH = 36 + 13*rowH + 32;
@@ -293,27 +294,28 @@ static void runUartMonitor() {
         if (now - lastDraw < 150) { delay(10); }
         else {
             lastDraw = now;
-            display.fillScreen(S_BG);
+            if (!_sBuf) { _sBuf = new lgfx::LGFX_Sprite(&display); _sBuf->setColorDepth(8); _sBuf->createSprite(display.width(), display.height()); }
+            _sBuf->fillSprite(S_BG);
             int cx = display.width() / 2;
             int W  = display.width();
 
             // Title
-            display.setFont(&fonts::Font2);
-            display.setTextDatum(middle_center);
-            display.setTextColor(S_WHITE);
-            display.drawString("UART Monitor", cx, 11);
+            _sBuf->setFont(&fonts::Font2);
+            _sBuf->setTextDatum(middle_center);
+            _sBuf->setTextColor(S_WHITE);
+            _sBuf->drawString("UART Monitor", cx, 11);
 
             // Baud rate selector
             int bx = 4, by = 23, bw = 36, bh = 14, bg = 6;
-            display.setFont(&fonts::Font0);
-            display.setTextDatum(middle_left);
-            display.setTextColor(S_DIM);
-            display.drawString("Baud:", bx, by + bh/2);
+            _sBuf->setFont(&fonts::Font0);
+            _sBuf->setTextDatum(middle_left);
+            _sBuf->setTextColor(S_DIM);
+            _sBuf->drawString("Baud:", bx, by + bh/2);
             bx += 30;
             for (int i = 0; i < nBauds; i++) {
                 bool sel = (i == selBaud);
-                display.fillRoundRect(bx, by, bw, bh, 2, sel ? 0x0019 : S_PANEL);
-                display.drawRoundRect(bx, by, bw, bh, 2, sel ? S_CYAN : S_BORDER);
+                _sBuf->fillRoundRect(bx, by, bw, bh, 2, sel ? 0x0019 : S_PANEL);
+                _sBuf->drawRoundRect(bx, by, bw, bh, 2, sel ? S_CYAN : S_BORDER);
                 char bb[12];
                 if (baudOpts[i] >= 1000000)
                     snprintf(bb, sizeof(bb), "%dM", (int)(baudOpts[i]/1000000));
@@ -321,25 +323,25 @@ static void runUartMonitor() {
                     snprintf(bb, sizeof(bb), "%dk", (int)(baudOpts[i]/1000));
                 else
                     snprintf(bb, sizeof(bb), "%d", (int)baudOpts[i]);
-                display.setTextDatum(middle_center);
-                display.setTextColor(sel ? S_WHITE : S_DIM);
-                display.drawString(bb, bx + bw/2, by + bh/2);
+                _sBuf->setTextDatum(middle_center);
+                _sBuf->setTextColor(sel ? S_WHITE : S_DIM);
+                _sBuf->drawString(bb, bx + bw/2, by + bh/2);
                 bx += bw + bg;
             }
 
             // Current baud confirmation
             char baudStr[24];
             snprintf(baudStr, sizeof(baudStr), "Active: %lu", (unsigned long)baud);
-            display.setTextDatum(middle_right);
-            display.setTextColor(S_DIM);
-            display.drawString(baudStr, W - 4, by + bh/2);
+            _sBuf->setTextDatum(middle_right);
+            _sBuf->setTextColor(S_DIM);
+            _sBuf->drawString(baudStr, W - 4, by + bh/2);
 
             // Divider
-            display.drawFastHLine(0, 40, W, S_BORDER);
+            _sBuf->drawFastHLine(0, 40, W, S_BORDER);
 
             // Received lines
             int lineY = 42, lh = 13;
-            display.setFont(&fonts::Font0);
+            _sBuf->setFont(&fonts::Font0);
             for (int i = 0; i < nLines; i++) {
                 // Colour by first char
                 int col = S_DIM2;
@@ -347,22 +349,23 @@ static void runUartMonitor() {
                 else if (lines[i][0] == '[') col = S_CYAN;
                 else if (lines[i][0] == 'e' || lines[i][0] == 'E') col = S_RED;
                 else if (lines[i][0] == 'o') col = S_WHITE;
-                display.setTextDatum(middle_left);
-                display.setTextColor(col);
-                display.drawString(lines[i], 2, lineY + i * lh);
+                _sBuf->setTextDatum(middle_left);
+                _sBuf->setTextColor(col);
+                _sBuf->drawString(lines[i], 2, lineY + i * lh);
             }
 
             // Partial current line (dim)
             if (lineLen > 0) {
                 lineBuf[lineLen] = 0;
-                display.setTextColor(S_DIM);
-                display.drawString(lineBuf, 2, lineY + nLines * lh);
+                _sBuf->setTextColor(S_DIM);
+                _sBuf->drawString(lineBuf, 2, lineY + nLines * lh);
             }
 
             // Exit hint
-            display.setTextDatum(middle_center);
-            display.setTextColor(S_DIM);
-            display.drawString("Hold e-stop 2s to exit", cx, display.height() - 6);
+            _sBuf->setTextDatum(middle_center);
+            _sBuf->setTextColor(S_DIM);
+            _sBuf->drawString("Hold e-stop 2s to exit", cx, display.height()-6);
+            _sBuf->pushSprite(0,0);  // single DMA push — no flicker
         }
 
         // Touch for baud rate selection
@@ -535,7 +538,7 @@ static void runSettingsMenu(AppSettings& s) {
         { int16_t enc = get_encoder();
           if (enc != 0) {
               { int maxS=std::max(0,36+13*rowH2+32-240);
-              _settingsScroll = std::max(0, std::min(maxS, _settingsScroll + enc * 8)); }
+              _settingsScroll = std::max(0, std::min(maxS, _settingsScroll + enc * 4)); }
               drawSettings(); delay(8); continue;
           }
         }
@@ -553,15 +556,17 @@ static void runSettingsMenu(AppSettings& s) {
             int ty2 = t.y + _settingsScroll;
             // Brightness slider drag (row 11 = index from top: 0=JOB,1=MAINT,2=MACH,3=SIM,4=THEME,5=P6,6=Xmm,7=Ymm,8=HOME,9=BRIGHT,10=VOL)
             { int yBr = 36+9*rowH2+8;
-              if (!_didDrag && ty2>=yBr && ty2<yBr+38 && t.x>=bx0_2 && t.x<bx0_2+bW2) {
+              if (ty2>=yBr && ty2<yBr+38 && t.x>=bx0_2 && t.x<bx0_2+bW2) {
+                  _didDrag = true;  // prevent click firing after slider
                   s.brightness = std::max(10,std::min(255,(t.x-bx0_2)*255/bW2));
                   display.setBrightness(s.brightness);
                   drawSettings(); delay(5); continue;
               }
             }
-            // Volume slider drag (row 10)
+            // Volume slider drag (row 10 = after BRIGHT)
             { int yVol = 36+10*rowH2+8;
-              if (!_didDrag && ty2>=yVol && ty2<yVol+38 && t.x>=bx0_2 && t.x<bx0_2+bW2) {
+              if (ty2>=yVol && ty2<yVol+38 && t.x>=bx0_2 && t.x<bx0_2+bW2) {
+                  _didDrag = true;  // prevent click firing after slider
                   s.volume = std::max(0,std::min(9,(t.x-bx0_2)*9/bW2));
                   tabui_setVolume(s.volume);
                   drawSettings(); delay(5); continue;
@@ -653,24 +658,17 @@ static void runSettingsMenu(AppSettings& s) {
         }
         y += rowH;
 
-        y += 4;
-
-        // Input Monitor
-        if (touchIn(tx,ty, cx-156, 36+10*rowH+4, 96, 28)) {
-            runInputMonitor();
-            drawSettings();
-            continue;
+        // Bottom buttons at FIXED screen position (not scrollable)
+        // Use t.x, t.y directly (not scrolled ty)
+        int btnY = display.height() - 36;  // fixed 36px from bottom of screen
+        if (touchIn(t.x, t.y, cx-156, btnY, 96, 28)) {
+            runInputMonitor(); drawSettings(); continue;
         }
-        // UART Monitor
-        if (touchIn(tx,ty, cx-54, 36+10*rowH+4, 96, 28)) {
-            runUartMonitor();
-            drawSettings();
-            continue;
+        if (touchIn(t.x, t.y, cx-54, btnY, 96, 28)) {
+            runUartMonitor(); drawSettings(); continue;
         }
-        // Save & Boot — save then restart for clean state
-        if (touchIn(tx,ty, cx+50, 36+10*rowH+4, 96, 28)) {
-            settings_save(s);
-            esp_restart();
+        if (touchIn(t.x, t.y, cx+50, btnY, 96, 28)) {
+            settings_save(s); esp_restart();
         }
 
         drawSettings();

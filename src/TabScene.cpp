@@ -353,6 +353,9 @@ static std::vector<std::string> previewLines; // loaded gcode lines
 static std::vector<std::pair<float,float>> vizPath;   // path for DRO viz overlay
 static std::string vizJobName;              // filename shown on DRO viz
 static int  vizPathExecuted  = 0;           // segments drawn as "executed" (green)
+static bool _pathJogMode    = false;  // jog-along-toolpath mode active
+static int  _pathJogIdx     = 0;     // current position index in vizPath
+static float _pathJogAccum  = 0.0f;  // sub-segment accumulator (encoder remainder)
 static int  previewScroll   = 0;           // first visible preview line
 static int  previewFirstLine = 0;           // line offset in file
 static std::vector<std::string> allFileLines;  // accumulated lines across batches
@@ -858,6 +861,17 @@ private:
                         _lastSavedPct = myPercent;
                         uint32_t estLine = (uint32_t)(allFileLines.size() * myPercent / 100.0f);
                         jobrecov_lineExecuted(estLine);
+                        // Scan ±10 lines around checkpoint for G41/G42
+                        bool g4142 = false;
+                        int nLines = (int)allFileLines.size();
+                        int lo = std::max(0, (int)estLine - 10);
+                        int hi = std::min(nLines-1, (int)estLine + 2);
+                        for (int li = lo; li <= hi && !g4142; li++) {
+                            const auto& ln = allFileLines[li];
+                            if (ln.find("G41") != std::string::npos ||
+                                ln.find("G42") != std::string::npos) g4142 = true;
+                        }
+                        jobrecov_setG4142Warning(g4142);
                     }
                 }
             }
@@ -2453,7 +2467,19 @@ public:
             }
 
             if (x >= VIZ_X && x < VIZ_X+VIZ_W && y >= VIZ_Y && y < VIZ_Y+VIZ_H) {
-                if (state == Hold) {
+                if (state == Hold && !_pathJogMode && !_zNudgeOpen) {
+                    // First tap: Z nudge. But if viz already loaded and Hold,
+                    // long-hold or second mechanism needed for path jog.
+                    // Use: tap bottom-half of viz = Z nudge, top-half = path jog
+                    if (y < VIZ_Y + VIZ_H/2) {
+                        // Top half: enter path jog mode
+                        if (!vizPath.empty()) {
+                            _pathJogMode = true;
+                            _pathJogIdx = std::max(0, vizPathExecuted);
+                            markDirty(); return;
+                        }
+                    }
+                    // Bottom half: Z nudge
                     _zNudgeOpen=true; _zNudgeOffset=0.0f; markDirty(); return;
                 }
                 // Normal viz tap — clear or double-tap fullscreen
@@ -2784,7 +2810,8 @@ public:
                 drawRunSequenceOverlay();
             }
         }
-        if (_zNudgeOpen)             drawZNudgeOverlay();
+        if (_pathJogMode)            drawPathJogOverlay();
+        if (_zNudgeOpen && !_pathJogMode) drawZNudgeOverlay();
         if (_alarmOpen || _forceAlarm) drawAlarmOverlay(_forceAlarm && simMode_active());
         // Don't show disconnected overlay while recovery prompt is shown
         if (state == Disconnected && !simMode_active() &&

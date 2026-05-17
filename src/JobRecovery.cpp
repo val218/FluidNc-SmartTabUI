@@ -30,7 +30,10 @@ static std::string   _jobPath;
 static std::vector<std::string> _lastLines;
 static uint32_t      _resumeLine = 0;
 static int           _lineScroll = 0;  // ShowLines MPG scroll offset
-static bool          _wantsProbe = false;
+static bool          _wantsProbe  = false;
+static int           _backupLines  = 5;    // configurable 1-20
+static bool          _dryRun       = false; // dry-run mode
+static bool          _g4142Warning = false; // G41/G42 detected near resume
 
 // Rect struct for touch zones — must be declared before use
 struct Rect { int x, y, w, h; };
@@ -38,7 +41,7 @@ static bool inRect(const Rect& r, int x, int y) {
     return x>=r.x && x<r.x+r.w && y>=r.y && y<r.y+r.h;
 }
 static Rect _btnA = {0,0,0,0}, _btnB = {0,0,0,0}, _btnC = {0,0,0,0};
-static Rect _lineRects[7] = {};  // set in ShowLines draw
+static Rect _lineRects[9] = {};  // set in ShowLines draw
 
 // ── LittleFS helpers ──────────────────────────────────────────────────────────
 static void saveCheckpoint() {
@@ -134,6 +137,8 @@ void jobrecov_jobStarted(const char* path) {
     saveCheckpoint();
 }
 
+void jobrecov_setG4142Warning(bool w) { _g4142Warning = w; }
+
 void jobrecov_lineExecuted(uint32_t line) {
     _currentLine = line;
     _linesSinceLastSave++;
@@ -161,9 +166,12 @@ void jobrecov_cancelResume() {
 
 void jobrecov_startResume(bool toolBreak) {
     _toolBreak = toolBreak;
-    // Calculate resume line — back up 5 lines from checkpoint
-    uint32_t backoff = 5;
-    _resumeLine = (_cp.lastLine > backoff) ? (_cp.lastLine - backoff) : 0;
+    _dryRun = false;
+    _g4142Warning = false;
+    // Back up _backupLines from checkpoint
+    uint32_t lastLine = (_cp.lastLine>100000)?(_cp.lastLine/1000)*100:_cp.lastLine;
+    _resumeLine = (lastLine > (uint32_t)_backupLines) ? (lastLine - _backupLines) : 0;
+    _lineScroll = 0;
     if (_toolBreak) {
         _phase = RecoveryPhase::ManualJog;
     } else {
@@ -177,49 +185,58 @@ static void sendResumePreamble() {
     float ay = _cp.axisY / 10000.0f;
     float az = _cp.axisZ / 10000.0f;
 
-    // 1. Restore modal state
-    char preamble[512];
-    snprintf(preamble, sizeof(preamble),
-        "%s\n"          // WCS (G54-G59)
-        "%s\n"          // Units (G20/G21)
-        "G90\n"         // Always use absolute for the approach
-        "T%u M6\n"      // Tool number
-        "M3 S%u\n"      // Spindle on at last known speed (M3 = CW)
-        "%s\n"          // Coolant
-        "G53 G0 Z0\n"   // Retract Z to machine home
-        "G0 X%.4f Y%.4f\n"  // Move XY to resume position
-        "G1 Z%.4f F%u\n"    // Lower Z to cutting depth at feed rate
-        "%s\n",         // Restore distance mode (G90/G91)
-        _cp.wcs,
-        _cp.units,
-        _cp.tool,
-        _cp.spindleSpeed > 0 ? _cp.spindleSpeed : 1000u,
-        _cp.coolant,
-        ax, ay,
-        az,
-        _cp.feedRate > 0 ? _cp.feedRate : 500u,
-        _cp.distMode
-    );
+    auto sl = [](const char* s){ send_line(s); };
+    char buf[80];
 
-    // Send line by line
-    char* p = preamble;
-    while (*p) {
-        char* nl = strchr(p, '\n');
-        if (!nl) break;
-        *nl = '\0';
-        if (*p) send_line(p);
-        p = nl + 1;
+    // 1. Restore WCS, units, absolute mode
+    sl(_cp.wcs);
+    sl(_cp.units);
+    sl("G90");
+
+    // 2. Tool
+    if (_cp.tool > 0) {
+        snprintf(buf,sizeof(buf),"T%u M6", _cp.tool);
+        sl(buf);
     }
-    // Then run the job from resume line
-    char runcmd[160];
-    snprintf(runcmd, sizeof(runcmd), "$Localfs/Run=%s", _cp.jobPath);
-    // Note: actual line seeking not supported in FluidNC — operator must
-    // manually confirm the resume line in their CAM or we restart from line 0
-    // For now we send the file and note the resume line in terminal
+
+    if (_dryRun) {
+        // Dry run: move to position at safe Z, no spindle/coolant, no Z plunge
+        fnc_term_inject("> DRY RUN: no spindle, no Z plunge");
+        sl("G53 G0 Z0");
+        snprintf(buf,sizeof(buf),"G0 X%.4f Y%.4f", ax, ay);
+        sl(buf);
+        fnc_term_inject("> Dry run complete — verify position, then Confirm Resume");
+        return;
+    }
+
+    // 3. Spindle on + warm-up dwell (3 seconds)
+    if (_cp.spindleSpeed > 0) {
+        snprintf(buf,sizeof(buf),"M3 S%u", _cp.spindleSpeed);
+        sl(buf);
+        sl("G4 P3");  // 3-second dwell for spindle to reach speed
+        fnc_term_inject("> Spindle warm-up: 3s dwell");
+    }
+
+    // 4. Coolant
+    sl(_cp.coolant);
+
+    // 5. Safe Z retract → move XY → plunge Z
+    sl("G53 G0 Z0");
+    snprintf(buf,sizeof(buf),"G0 X%.4f Y%.4f", ax, ay);
+    sl(buf);
+    snprintf(buf,sizeof(buf),"G1 Z%.4f F%u", az,
+             _cp.feedRate > 0 ? _cp.feedRate : 500u);
+    sl(buf);
+
+    // 6. Restore distance mode
+    sl(_cp.distMode);
+
+    // 7. Run the file
     char linemsg[64];
-    snprintf(linemsg, sizeof(linemsg), "> Resume from approx. line %u", _resumeLine);
+    snprintf(linemsg,sizeof(linemsg),"> Resume from approx. line %u", _resumeLine);
     fnc_term_inject(linemsg);
-    send_line(runcmd);
+    snprintf(buf,sizeof(buf),"$Localfs/Run=%s", _cp.jobPath);
+    sl(buf);
 }
 
 void jobrecov_advance(int choice) {
@@ -289,14 +306,15 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
 
     // Colours
     const uint16_t C_BG    = 0x0862;
-    const uint16_t C_PANEL = 0x10A3;
+    const uint16_t C_PANEL = 0x18C3;  // slightly lighter panel
     const uint16_t C_WHITE = 0xFFFF;
-    const uint16_t C_DIM   = 0x4A4A;
+    const uint16_t C_DIM   = 0x8410;  // brighter dim — more readable
     const uint16_t GREEN   = 0x07E0;
     const uint16_t RED     = 0xF800;
     const uint16_t YELLOW  = 0xFFE0;
     const uint16_t ORANGE  = 0xFD20;
     const uint16_t CYAN    = 0x07FF;
+    const uint16_t C_LABEL = 0xC618;  // light grey for body text
 
     // Full-screen dim
     canvas->fillRect(0, TOP, W, NAV_Y - TOP, 0x8000);
@@ -339,7 +357,9 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         r = {x,y,w,h};
         fillR(x,y,w,h,4,fill);
         strokeR(x,y,w,h,4,border);
-        txt(label, x+w/2, y+h/2, tc);
+        // Use Font0 so label always fits within button width
+        canvas->setFont(&fonts::Font0); canvas->setTextDatum(middle_center);
+        canvas->setTextColor(tc); canvas->drawString(label, x+w/2, y+h/2);
     };
 
     int bh = 30, gap = 6;
@@ -348,38 +368,37 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
 
     case RecoveryPhase::Prompt: {
         fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,YELLOW);
-        // Title
+        // Title bar
+        canvas->fillRoundRect(px,py,pw,20,6,0x8400);
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(YELLOW);
-        canvas->drawString("INTERRUPTED JOB FOUND", cx, py+12);
-        // File path (truncated)
-        std::string jp=_cp.jobPath; if(jp.size()>36) jp=jp.substr(jp.size()-36);
-        canvas->setFont(&fonts::Font0); canvas->setTextColor(C_DIM);
-        canvas->drawString(jp.c_str(), cx, py+26);
-        // Connection status
+        canvas->drawString("INTERRUPTED JOB FOUND", cx, py+10);
+        // File path
+        std::string jp=_cp.jobPath; if(jp.size()>34) jp=jp.substr(jp.size()-34);
+        canvas->setFont(&fonts::Font0); canvas->setTextColor(0xAD75);
+        canvas->drawString(jp.c_str(), cx, py+28);
+        // Connection dot
         bool conn=(state!=Disconnected);
-        canvas->fillCircle(px+14, py+40, 5, conn?GREEN:RED);
-        canvas->setTextDatum(middle_left);
-        canvas->setTextColor(conn?GREEN:RED);
-        canvas->drawString(conn?"FluidNC: Connected":"FluidNC: NOT Connected", px+24, py+40);
-        // Progress and position
+        canvas->fillCircle(px+12, py+42, 4, conn?GREEN:RED);
+        canvas->setTextDatum(middle_left); canvas->setTextColor(conn?GREEN:RED);
+        canvas->drawString(conn?"Connected":"NOT Connected", px+22, py+42);
+        // Progress
         char prog[32];
         if(_cp.lastLine>100000) snprintf(prog,32,"Progress: ~%u%%",_cp.lastLine/1000);
-        else if(_cp.lastLine>0) snprintf(prog,32,"Line: %u",_cp.lastLine);
+        else if(_cp.lastLine>0) snprintf(prog,32,"At line: %u",_cp.lastLine);
         else snprintf(prog,32,"Progress: unknown");
-        canvas->setTextDatum(middle_center);
-        canvas->setTextColor(C_WHITE);
+        canvas->setTextDatum(middle_center); canvas->setTextColor(C_WHITE);
         canvas->drawString(prog, cx, py+56);
+        // Position
         float x2=_cp.axisX/10000.0f,y2=_cp.axisY/10000.0f,z2=_cp.axisZ/10000.0f;
-        char pos[40]; snprintf(pos,40,"X%.2f  Y%.2f  Z%.2f",x2,y2,z2);
-        canvas->setTextColor(C_DIM);
-        canvas->drawString(pos, cx, py+70);
-        canvas->setTextColor(CYAN);
-        canvas->drawString("Resume this job?", cx, py+86);
-        // Buttons
-        int bw2=(pw-18)/2, by2=py+avH-bh-6;
-        btn(_btnA, px+6,      by2, bw2, bh, GREEN, GREEN,  "YES — Resume", 0x0000);
-        btn(_btnB, px+12+bw2, by2, bw2, bh, C_PANEL, RED,  "NO — Discard", RED);
+        char pos[40]; snprintf(pos,40,"X%.2f Y%.2f Z%.2f",x2,y2,z2);
+        canvas->setTextColor(0xAD75); canvas->drawString(pos, cx, py+70);
+        // Question
+        canvas->setTextColor(CYAN); canvas->drawString("Resume this job?", cx, py+88);
+        // Buttons - full width, stacked
+        int bby=py+avH-bh*2-10;
+        btn(_btnA, px+6, bby,      pw-12, bh, 0x0340, GREEN,  "YES — Resume job",  GREEN);
+        btn(_btnB, px+6, bby+bh+4, pw-12, bh, 0x4000, RED,    "NO — Discard",      RED);
         break;
     }
 
@@ -407,7 +426,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(CYAN);
         canvas->drawString("SELECT RESUME LINE", cx, py+12);
-        canvas->setFont(&fonts::Font0); canvas->setTextColor(C_DIM);
+        canvas->setFont(&fonts::Font0); canvas->setTextColor(C_LABEL);
         canvas->drawString("Turn MPG encoder to scroll, tap line to select", cx, py+24);
         // Work out actual last line (may be encoded percent)
         uint32_t lastLine = (_cp.lastLine > 100000) ? (_cp.lastLine/1000)*100 : _cp.lastLine;
@@ -534,14 +553,28 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         canvas->setTextColor(C_DIM);
         canvas->drawString(p1,cx,sby+sbh+12);
         canvas->drawString(p2,cx,sby+sbh+24);
+        int notesY = sby+sbh+10;
         if(_toolBreak){
-            canvas->fillRoundRect(px+4,sby+sbh+32,pw-8,16,3,0x4220);
+            canvas->fillRoundRect(px+4,notesY,pw-8,14,2,0x4220);
             canvas->setTextColor(YELLOW);
-            canvas->drawString("Tool re-probed — Z offset applied",cx,sby+sbh+40);
+            canvas->drawString("Tool re-probed",cx,notesY+7);
+            notesY+=16;
         }
+        if(_g4142Warning){
+            canvas->fillRoundRect(px+4,notesY,pw-8,14,2,0x6000);
+            canvas->setTextColor(RED);
+            canvas->drawString("! G41/G42 detected near resume line",cx,notesY+7);
+            notesY+=16;
+        }
+        // Dry-run toggle
+        canvas->fillRoundRect(px+4,notesY,pw-8,14,2,_dryRun?0x001A:0x18C3);
+        canvas->drawRoundRect(px+4,notesY,pw-8,14,2,_dryRun?CYAN:0x4208);
+        canvas->setTextColor(_dryRun?CYAN:0x8410);
+        canvas->drawString(_dryRun?"DRY RUN ON — no cut, verify position":"DRY RUN: tap to enable",cx,notesY+7);
+        _lineRects[0]={px+4,notesY,pw-8,14};  // dry-run toggle rect
         int bw2=(pw-18)/2, by2=py+avH-bh-4;
-        btn(_btnA, px+4,      by2, bw2, bh, GREEN,  GREEN, "CONFIRM RESUME", 0x0000);
-        btn(_btnB, px+10+bw2, by2, bw2, bh, C_PANEL, RED,  "CANCEL",         RED);
+        btn(_btnA, px+4,      by2, bw2, bh, GREEN,  GREEN, "CONFIRM", 0x0000);
+        btn(_btnB, px+10+bw2, by2, bw2, bh, C_PANEL, RED,  "CANCEL",  RED);
         break;
     }
 
@@ -564,6 +597,18 @@ bool jobrecov_onTouch(int x, int y) {
     case RecoveryPhase::ShowLines: {
         uint32_t lastLine = (_cp.lastLine>100000)?(_cp.lastLine/1000)*100:_cp.lastLine;
         uint32_t base = (lastLine>9)?lastLine-9:0;
+        // Backup line [-] [+] buttons (stored in _lineRects[7] and [8])
+        if(inRect(_lineRects[7],x,y) && _backupLines>1){
+            _backupLines--;
+            _resumeLine=(lastLine>(uint32_t)_backupLines)?(lastLine-_backupLines):0;
+            markDirty(); return true;
+        }
+        if(inRect(_lineRects[8],x,y) && _backupLines<20){
+            _backupLines++;
+            _resumeLine=(lastLine>(uint32_t)_backupLines)?(lastLine-_backupLines):0;
+            markDirty(); return true;
+        }
+        // Line row taps
         for(int i=0;i<7;i++){
             if(inRect(_lineRects[i],x,y)){
                 _resumeLine = base+(uint32_t)_lineScroll+i;
@@ -581,6 +626,7 @@ bool jobrecov_onTouch(int x, int y) {
         if(inRect(_btnB,x,y)){ jobrecov_advance(1); return true; }  // Done
         break;
     case RecoveryPhase::Confirm:
+        if(inRect(_lineRects[0],x,y)){ _dryRun=!_dryRun; markDirty(); return true; }
         if(inRect(_btnA,x,y)){ jobrecov_advance(0); return true; }  // CONFIRM
         if(inRect(_btnB,x,y)){ jobrecov_advance(1); return true; }  // CANCEL
         break;
@@ -598,4 +644,15 @@ void jobrecov_showPrompt()  {
         _phase = RecoveryPhase::Prompt;
         markDirty();
     }
+}
+
+void jobrecov_scroll(int delta) {
+    if (_phase != RecoveryPhase::ShowLines) return;
+    uint32_t lastLine = (_cp.lastLine>100000)?(_cp.lastLine/1000)*100:_cp.lastLine;
+    uint32_t base = (lastLine>9) ? lastLine-9 : 0;
+    // Scroll the visible window (3 positions: 0,1,2,3 → lines base+0..base+3+6)
+    _lineScroll = std::max(0, std::min(3, _lineScroll + delta));
+    // Keep selected line tracking the scroll (middle of visible window)
+    _resumeLine = base + (uint32_t)_lineScroll + 3;
+    markDirty();
 }

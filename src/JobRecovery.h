@@ -56,3 +56,5 @@ bool     jobrecov_onTouch(int x, int y);
 void     jobrecov_showPrompt();
 bool     jobrecov_wantsProbe();
 void     jobrecov_clearProbe();
+void     jobrecov_setG4142Warning(bool w);
+void     jobrecov_scroll(int delta);
