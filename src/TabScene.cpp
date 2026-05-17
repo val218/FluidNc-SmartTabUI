@@ -531,6 +531,8 @@ private:
     Rect _unlockBtnFull={0,0,0,0};
     Rect _zCloseBtn={0,0,0,0};
     Rect _zResumeBtn={0,0,0,0};
+    Rect _pathJogExitBtn={0,0,0,0};
+    Rect _pathJogResumeBtn={0,0,0,0};
     Rect _probeClose;
     Rect _probeRows[N_PROBE_OPTS];
     Rect _cmdBtns[N_QUICK_CMDS];
@@ -1990,6 +1992,68 @@ private:
         _zResumeBtn ={vx+7+bw3, bby,bw3,bh3};
     }
 
+    void drawPathJogOverlay() {
+        int vx=VIZ_X, vy=VIZ_Y, vw=VIZ_W, vh=VIZ_H;
+        int total = (int)vizPath.size();
+        if (total == 0) { _pathJogMode = false; return; }
+
+        canvas.fillRect(vx, vy, vw, vh, COL_PANEL);
+        canvas.drawRect(vx, vy, vw, vh, CYAN);
+
+        // Title bar
+        canvas.fillRect(vx, vy, vw, 16, CYAN);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_BG);
+        canvas.drawString("PATH JOG", vx+vw/2, vy+8);
+
+        // Step / jump size label
+        float stepVal = mpgSteps[(int)mpgStepIdx];
+        int pts = (stepVal <= 0.011f) ? 1 : (stepVal <= 0.11f) ? 5 : 20;
+        char stepBuf[32]; snprintf(stepBuf, sizeof(stepBuf), "Step: %d pt%s", pts, pts>1?"s":"");
+        canvas.setTextColor(COL_DIM2); canvas.drawString(stepBuf, vx+vw/2, vy+26);
+
+        // Index / total
+        int idx = std::max(0, std::min(_pathJogIdx, total-1));
+        char idxBuf[24]; snprintf(idxBuf, sizeof(idxBuf), "%d / %d", idx, total-1);
+        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(CYAN);
+        canvas.drawString(idxBuf, vx+vw/2, vy+44);
+
+        // Target XY position
+        float tx = vizPath[idx].first;
+        float ty = vizPath[idx].second;
+        char xbuf[20], ybuf[20];
+        snprintf(xbuf, sizeof(xbuf), "X %.3f", tx);
+        snprintf(ybuf, sizeof(ybuf), "Y %.3f", ty);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_AX_X);
+        canvas.drawString(xbuf, vx+vw/2, vy+60);
+        canvas.setTextColor(COL_AX_Y);
+        canvas.drawString(ybuf, vx+vw/2, vy+72);
+
+        // Progress bar
+        int pbw = vw-12;
+        canvas.drawRect(vx+6, vy+82, pbw, 8, COL_BORDER2);
+        int fill = total > 1 ? (idx * pbw / (total-1)) : pbw;
+        if (fill > 0) canvas.fillRect(vx+6, vy+82, fill, 8, CYAN);
+
+        // Hints
+        canvas.setTextColor(COL_DIM);
+        canvas.drawString("CW=fwd  CCW=bwd", vx+vw/2, vy+100);
+        canvas.drawString("Step switch = jump size", vx+vw/2, vy+112);
+
+        // Buttons: Exit | Resume here
+        int bw3=(vw-10)/2, bh3=22, bby=vy+vh-bh3-3;
+        canvas.fillRoundRect(vx+3,     bby, bw3, bh3, 3, COL_PANEL2);
+        canvas.drawRoundRect(vx+3,     bby, bw3, bh3, 3, COL_BORDER2);
+        canvas.setTextColor(COL_WHITE); canvas.drawString("Exit", vx+3+bw3/2, bby+bh3/2);
+        canvas.fillRoundRect(vx+7+bw3, bby, bw3, bh3, 3, GREEN);
+        canvas.setTextColor(COL_BG);   canvas.drawString("Resume here", vx+7+bw3+bw3/2, bby+bh3/2);
+
+        _pathJogExitBtn   = {vx+3,     bby, bw3, bh3};
+        _pathJogResumeBtn = {vx+7+bw3, bby, bw3, bh3};
+    }
+
 
 public:
     TabScene() : Scene("TabUI", 4) {}  // encoder_scale=4: X4 PCNT quadrature, 1 detent = 1 step
@@ -2191,6 +2255,26 @@ public:
     void onEncoder(int delta) override {
         mpgLastDir = (delta > 0) ? 1 : -1;
         mpgDirTime = millis();
+
+        // Path jog: move machine along loaded toolpath while in Hold
+        if (_pathJogMode && _tab == 0) {
+            float stepVal = mpgSteps[(int)mpgStepIdx];
+            int pts = (stepVal <= 0.011f) ? 1 : (stepVal <= 0.11f) ? 5 : 20;
+            int total = (int)vizPath.size();
+            _pathJogIdx = std::max(0, std::min(_pathJogIdx + delta * pts, total-1));
+            // Send jog to the target path point
+            if (total > 0) {
+                int idx = std::max(0, std::min(_pathJogIdx, total-1));
+                float tx = vizPath[idx].first;
+                float ty = vizPath[idx].second;
+                int feed = (stepVal <= 0.011f) ? 300 : (stepVal <= 0.11f) ? 1000 : 3000;
+                char cmd[64];
+                snprintf(cmd, sizeof(cmd), "$J=G90 G21 X%.3f Y%.3f F%d", tx, ty, feed);
+                send_line(cmd);
+            }
+            markDirty();
+            return;
+        }
 
         // Z nudge: shift WCS Z so job resumes at new height
         // G10 L20 P1 adjusts WCS so current machine pos = new value
@@ -2459,6 +2543,13 @@ public:
         if (_tab == 0) {
             // Clear [×] button — top-right of viz area (clears loaded G-code path)
             // Viz area: double-tap = fullscreen toggle, [×] corner = clear path
+            // Path jog: intercept ALL DRO tab touches when open
+            if (_pathJogMode) {
+                if (hit(_pathJogExitBtn, x, y))   { _pathJogMode = false; markDirty(); return; }
+                if (hit(_pathJogResumeBtn, x, y)) { _pathJogMode = false; fnc_realtime((realtime_cmd_t)'~'); markDirty(); return; }
+                return;  // consume all touch while path jog open
+            }
+
             // Z nudge: intercept ALL DRO tab touches when open
             if (_zNudgeOpen) {
                 if (hit(_zCloseBtn,x,y))  { _zNudgeOpen=false; markDirty(); return; }
