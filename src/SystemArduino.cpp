@@ -157,8 +157,11 @@ void init_fnc_uart(int uart_num, int tx_pin, int rx_pin) {
         while (1) {}
         return;
     };
-    uart_driver_install(fnc_uart_port, 256, 0, 0, NULL, ESP_INTR_FLAG_IRAM);
-    uart_set_sw_flow_ctrl(fnc_uart_port, true, 64, 120);
+    // 2048-byte RX buffer: at 1Mbaud = 20ms headroom vs 2.56ms for 256 bytes
+    // Threshold 64→XOFF (tells FluidNC to pause), 120→XON (resume)
+    // This prevents RX overrun even during worst-case LCD redraw frames
+    uart_driver_install(fnc_uart_port, 2048, 0, 0, NULL, ESP_INTR_FLAG_IRAM);
+    uart_set_sw_flow_ctrl(fnc_uart_port, true, 256, 1792);
     uint32_t baud;
     uart_get_baudrate(fnc_uart_port, &baud);
 }

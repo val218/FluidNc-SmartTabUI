@@ -13,6 +13,7 @@
 #include "Hardware2432.hpp"
 #include "JobRecovery.h"
 #include "NVS.h"
+#include <Esp.h>  // ESP.getFreeHeap, ESP.getMinFreeHeap
 extern volatile uint32_t fnc_tx_count;
 extern override_percent_t mySro;
 extern override_percent_t myRro;
@@ -356,9 +357,12 @@ static int  vizPathExecuted  = 0;           // segments drawn as "executed" (gre
 static bool _pathJogMode    = false;  // jog-along-toolpath mode active
 static int  _pathJogIdx     = 0;     // current position index in vizPath
 static float _pathJogAccum  = 0.0f;  // sub-segment accumulator (encoder remainder)
+static bool _pathJogAborted = false; // true once Ctrl-X+$X done, machine is Idle for jogging
 static int  previewScroll   = 0;           // first visible preview line
 static int  previewFirstLine = 0;           // line offset in file
 static std::vector<std::string> allFileLines;  // accumulated lines across batches
+static bool _allFileLinesComplete = false;   // true = full file loaded; false = truncated/large
+static constexpr int MAX_REWIND_LINES = 4000; // heap safety cap — ~120KB at 30B/line
 static std::string _loadingPath;            // path being batch-loaded
 static std::string _vizSidecarPath;         // real .nc path when trying sidecar first
 static int  _loadingBatch = 0;              // next batch start line
@@ -377,7 +381,8 @@ static int  _estopRecovery = 0;
 static bool _showEstopRecovery = false;
 int _tabFromRecovery = -1;  // set by JobRecovery to request tab switch  // set by tabui_setEstopRecovery, read by class
 static int  _pendingAction = 0;  // 0=none 1=rehome 2=rehome+resume after $X clears alarm  // 0=none 1=alarmed 2=released    // Z nudge overlay during job
-static float _zNudgeOffset = 0.0f;  // accumulated Z nudge     // waiting for run confirmation
+static float _zNudgeOffset = 0.0f;  // accumulated Z nudge offset (mm)
+static float _zNudgeBaseZ = 0.0f;   // WCS Z captured when nudge opened
 static uint32_t _lastVizTap = 0;    // for double-tap detection
 
 static uint32_t vizCacheKey(const std::string& name, int size) {
@@ -533,6 +538,7 @@ private:
     Rect _zResumeBtn={0,0,0,0};
     Rect _pathJogExitBtn={0,0,0,0};
     Rect _pathJogResumeBtn={0,0,0,0};
+    int _rewindFileLine=0;  // allFileLines index written to /rewind.nc
     Rect _probeClose;
     Rect _probeRows[N_PROBE_OPTS];
     Rect _cmdBtns[N_QUICK_CMDS];
@@ -1960,27 +1966,42 @@ private:
         float stepVal=mpgSteps[(int)mpgStepIdx];
         char stepBuf[20]; snprintf(stepBuf,sizeof(stepBuf),"Step: %.3fmm",stepVal);
         canvas.setTextColor(COL_DIM2); canvas.drawString(stepBuf,vx+vw/2,vy+28);
-        // Current / New / Offset
-        // myAxes is e4 fixed point (×10000) — divide to get mm
-        float curZ = myAxes[2] / 10000.0f;
-        float newZ = curZ + _zNudgeOffset;  // both now in mm
-        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
-        canvas.setTextColor(COL_DIM2); canvas.drawString("Current Z:",vx+4,vy+44);
+        // Display: base Z, offset (big), new Z
+        float newZ = _zNudgeBaseZ + _zNudgeOffset;
+        int offsetCol = _zNudgeOffset > 0.0005f ? GREEN
+                      : _zNudgeOffset < -0.0005f ? RED : COL_WHITE;
+
+        // "Hold Z" row
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+        canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Hold Z:", vx+4, vy+38);
         canvas.setTextDatum(middle_right); canvas.setTextColor(COL_AX_Z);
-        char cb[12]; snprintf(cb,12,"%.2f",curZ); canvas.drawString(cb,vx+vw-4,vy+44);
-        canvas.setTextDatum(middle_left); canvas.setTextColor(COL_DIM2);
-        canvas.drawString("New Z:",vx+4,vy+60);
-        canvas.setTextDatum(middle_right);
-        canvas.setTextColor(_zNudgeOffset>0.0005f?GREEN:_zNudgeOffset<-0.0005f?RED:COL_WHITE);
-        char nb[12]; snprintf(nb,12,"%.2f",newZ); canvas.drawString(nb,vx+vw-4,vy+60);
+        char cb[14]; snprintf(cb,14,"%.3f mm",_zNudgeBaseZ);
+        canvas.drawString(cb, vx+vw-4, vy+38);
+
+        // Big offset display
+        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(offsetCol);
+        char ob[16]; snprintf(ob,16,"%+.3f", _zNudgeOffset);
+        canvas.drawString(ob, vx+vw/2, vy+60);
         canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
-        canvas.setTextColor(COL_DIM2); canvas.drawString("Offset:",vx+vw/2,vy+76);
-        canvas.setFont(&fonts::Font2);
-        canvas.setTextColor(_zNudgeOffset>0.0005f?GREEN:_zNudgeOffset<-0.0005f?RED:COL_DIM);
-        char ob[12]; snprintf(ob,12,"%+.3f",_zNudgeOffset); canvas.drawString(ob,vx+vw/2,vy+90);
-        canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
-        canvas.drawString("Turn encoder to adjust",vx+vw/2,vy+106);
-        canvas.drawString("Step switch = increment",vx+vw/2,vy+118);
+        canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Z offset (mm)", vx+vw/2, vy+72);
+
+        // "New Z" row
+        canvas.setTextDatum(middle_left); canvas.setTextColor(COL_DIM2);
+        canvas.drawString("New Z:", vx+4, vy+86);
+        canvas.setTextDatum(middle_right); canvas.setTextColor(offsetCol);
+        char nb[14]; snprintf(nb,14,"%.3f mm", newZ);
+        canvas.drawString(nb, vx+vw-4, vy+86);
+
+        // Hints
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_DIM);
+        canvas.drawString("CCW = deeper   CW = shallower", vx+vw/2, vy+102);
+        canvas.drawString("Step switch = increment", vx+vw/2, vy+114);
+        canvas.setTextColor(GREEN);
+        canvas.drawString("Spindle stays ON during adjust", vx+vw/2, vy+126);
         // Buttons
         int bw3=(vw-10)/2, bh3=22, bby=vy+vh-bh3-3;
         canvas.fillRoundRect(vx+3,    bby,bw3,bh3,3,COL_PANEL2);
@@ -2001,23 +2022,29 @@ private:
         canvas.drawRect(vx, vy, vw, vh, CYAN);
 
         // Title bar
-        canvas.fillRect(vx, vy, vw, 16, CYAN);
+        int titleCol = _pathJogAborted ? CYAN : YELLOW;
+        canvas.fillRect(vx, vy, vw, 16, titleCol);
         canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
         canvas.setTextColor(COL_BG);
-        canvas.drawString("PATH JOG", vx+vw/2, vy+8);
+        canvas.drawString(_pathJogAborted ? "LIVE REWIND" : "LIVE REWIND (aborting...)", vx+vw/2, vy+8);
 
-        // Step / jump size label
+        // Step switch controls jog feed speed (not jump size — always 1 pt per detent)
         float stepVal = mpgSteps[(int)mpgStepIdx];
-        int pts = (stepVal <= 0.011f) ? 1 : (stepVal <= 0.11f) ? 5 : 20;
-        char stepBuf[32]; snprintf(stepBuf, sizeof(stepBuf), "Step: %d pt%s", pts, pts>1?"s":"");
-        canvas.setTextColor(COL_DIM2); canvas.drawString(stepBuf, vx+vw/2, vy+26);
+        const char* speedLabel = (stepVal <= 0.011f) ? "Speed: SLOW" : (stepVal <= 0.11f) ? "Speed: MED" : "Speed: FAST";
+        canvas.setTextColor(COL_DIM2); canvas.drawString(speedLabel, vx+vw/2, vy+26);
 
         // Index / total
         int idx = std::max(0, std::min(_pathJogIdx, total-1));
-        char idxBuf[24]; snprintf(idxBuf, sizeof(idxBuf), "%d / %d", idx, total-1);
+        // Show direction arrow + warn if file too large for rewind
+        char idxBuf[32]; snprintf(idxBuf, sizeof(idxBuf), "%s%d / %d%s",
+            idx < vizPathExecuted ? "<<" : "", idx, total-1, idx > vizPathExecuted ? ">>" : "");
         canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
-        canvas.setTextColor(CYAN);
+        canvas.setTextColor(idx == vizPathExecuted ? CYAN : YELLOW);
         canvas.drawString(idxBuf, vx+vw/2, vy+44);
+        if (!_allFileLinesComplete) {
+            canvas.setFont(&fonts::Font0); canvas.setTextColor(RED);
+            canvas.drawString("File too large — resume restarts job", vx+vw/2, vy+57);
+        }
 
         // Target XY position
         float tx = vizPath[idx].first;
@@ -2037,18 +2064,27 @@ private:
         int fill = total > 1 ? (idx * pbw / (total-1)) : pbw;
         if (fill > 0) canvas.fillRect(vx+6, vy+82, fill, 8, CYAN);
 
-        // Hints
+        // Status + hints
         canvas.setTextColor(COL_DIM);
-        canvas.drawString("CW=fwd  CCW=bwd", vx+vw/2, vy+100);
-        canvas.drawString("Step switch = jump size", vx+vw/2, vy+112);
+        if (!_pathJogAborted) {
+            canvas.setTextColor(YELLOW);
+            canvas.drawString("Stopping job — please wait", vx+vw/2, vy+100);
+            canvas.setTextColor(COL_DIM);
+            canvas.drawString("MPG active once ready", vx+vw/2, vy+112);
+        } else {
+            canvas.drawString("CCW=rewind  CW=forward", vx+vw/2, vy+100);
+            canvas.drawString("Step=speed  1pt/detent", vx+vw/2, vy+112);
+        }
 
-        // Buttons: Exit | Resume here
+        // Buttons: Cancel | Resume here (dimmed until abort complete)
         int bw3=(vw-10)/2, bh3=22, bby=vy+vh-bh3-3;
         canvas.fillRoundRect(vx+3,     bby, bw3, bh3, 3, COL_PANEL2);
         canvas.drawRoundRect(vx+3,     bby, bw3, bh3, 3, COL_BORDER2);
-        canvas.setTextColor(COL_WHITE); canvas.drawString("Exit", vx+3+bw3/2, bby+bh3/2);
-        canvas.fillRoundRect(vx+7+bw3, bby, bw3, bh3, 3, GREEN);
-        canvas.setTextColor(COL_BG);   canvas.drawString("Resume here", vx+7+bw3+bw3/2, bby+bh3/2);
+        canvas.setTextColor(COL_WHITE); canvas.drawString("Cancel", vx+3+bw3/2, bby+bh3/2);
+        int resumeBtnCol = _pathJogAborted ? (int)GREEN : (int)COL_DIM;
+        canvas.fillRoundRect(vx+7+bw3, bby, bw3, bh3, 3, resumeBtnCol);
+        canvas.setTextColor(_pathJogAborted ? (int)COL_BG : (int)COL_PANEL2);
+        canvas.drawString("Resume here", vx+7+bw3+bw3/2, bby+bh3/2);
 
         _pathJogExitBtn   = {vx+3,     bby, bw3, bh3};
         _pathJogResumeBtn = {vx+7+bw3, bby, bw3, bh3};
@@ -2087,14 +2123,39 @@ public:
             _alarmOpen = true;
             _alarmBeepCount = 4;
             _alarmBeepNext = millis();
-            if (mpgEstopActive) _estopRecovery = 1;  // e-stop caused alarm
+            if (mpgEstopActive) {
+                _estopRecovery = 1;
+                // E-stop: cancel any pending action sequence to avoid conflicts
+                _pendingAction = 0;
+            }
+            // Bug 4+5: clear overlays on Alarm — alarm overlay must take over
+            if (_zNudgeOpen) {
+                // Undo any queued G10 WCS shift that won't now execute
+                char undo[48];
+                snprintf(undo, sizeof(undo), "G10 L20 P1 Z%.4f", _zNudgeBaseZ);
+                send_line(undo);
+                _zNudgeOpen = false; _zNudgeOffset = 0.0f;
+            }
+            if (_pathJogMode) {
+                fnc_realtime((realtime_cmd_t)0x85);  // cancel any in-progress jog
+                _pathJogMode = false;
+                _pathJogAborted = false;
+            }
+            _runStep = 0;  // close pre-run overlay
         }
         else {
             // Keep alarm open if estop recovery is pending
             if (!_showEstopRecovery) _alarmOpen = false;
         }
         if (state == Idle && !_showEstopRecovery) {
-            _jobSentToFluidNC = false; _estopRecovery = 0; _zNudgeOffset=0;
+            // Don't clear _jobSentToFluidNC mid-sequence (rewind abort, homing, etc.)
+            if (_pendingAction == 0 && !_pathJogMode) {
+                _jobSentToFluidNC = false;
+            }
+            _estopRecovery = 0; _zNudgeOffset = 0;
+        }
+        if (state == Disconnected) {
+            _runStep = 0;  // close pre-run overlay on disconnect
         }
 
         // Pending actions now handled in tabui_checkPressExpiry (polled each dispatch cycle)
@@ -2207,23 +2268,33 @@ public:
             // First batch — reset accumulator
             allFileLines.clear();
             previewLines.clear();
+            _allFileLinesComplete = false;
             _loadingDone = false;
             previewFirstLine = 0;
             previewScroll = 0;
         }
 
         // Accumulate into both allFileLines and previewLines
+        // Cap both vectors to prevent OOM on large files
+        static constexpr int MAX_PREVIEW_LINES = 2000;
+        bool hitCap = false;
         for (auto& l : lines) {
-            allFileLines.push_back(l);
-            previewLines.push_back(l);
+            if ((int)allFileLines.size() < MAX_REWIND_LINES)
+                allFileLines.push_back(l);
+            else
+                hitCap = true;
+            if ((int)previewLines.size() < MAX_PREVIEW_LINES)
+                previewLines.push_back(l);
         }
 
-        if ((int)lines.size() >= 60 && !_loadingPath.empty()) {
-            // More lines available — request next batch
+        bool moreAvailable = ((int)lines.size() >= 60 && !_loadingPath.empty());
+        if (moreAvailable && !hitCap) {
+            // More lines available and cap not hit — request next batch
             _loadingBatch = firstLine + (int)lines.size();
             request_file_preview(_loadingPath.c_str(), _loadingBatch, BATCH);
         } else {
-            // End of file — parse viz path ONCE at EOF only
+            // End of file OR cap hit — stop loading
+            _allFileLinesComplete = !hitCap && !moreAvailable;
             _loadingDone = true;
             _loadingBatch = 0;
             _loadingPath = "";  // clear so stale batches from old files are ignored
@@ -2247,7 +2318,8 @@ public:
             fe.name  = fileVector[i].fileName;
             fe.isDir = fileVector[i].isDir();
             fe.size  = fe.isDir ? 0 : fileVector[i].fileSize;
-            fileList.push_back(fe);
+            if ((int)fileList.size() < 500)  // cap ~500 entries to prevent OOM
+                fileList.push_back(fe);
         }
         if (_tab == 2) reDisplay();
     }
@@ -2257,21 +2329,41 @@ public:
         mpgDirTime = millis();
 
         // Path jog: move machine along loaded toolpath while in Hold
+        // While in Hold and no overlay open: first MPG turn opens the overlay
+        // CW (delta>0) → path jog (if path loaded);  CCW (delta<0) → Z nudge
+        // Hold state — open path jog (CW) or Z nudge (CCW)
+        if (_tab == 0 && state == Hold && !_pathJogMode && !_zNudgeOpen) {
+            if (delta > 0 && !vizPath.empty()) {
+                _pathJogMode = true;
+                _pathJogAborted = false;
+                _pathJogIdx = std::max(0, vizPathExecuted);
+                fnc_realtime((realtime_cmd_t)0x18);  // Ctrl-X → Alarm
+                _pendingAction = 8;  // on Alarm: $X → Idle → pathJogAborted=true
+                fnc_term_inject("> Live rewind: aborting hold to enable jogging...");
+            } else if (delta < 0) {
+                _zNudgeOpen = true;
+                _zNudgeOffset = 0.0f;
+                _zNudgeBaseZ = myAxes[2] / 10000.0f;
+            }
+        }
+
         if (_pathJogMode && _tab == 0) {
-            float stepVal = mpgSteps[(int)mpgStepIdx];
-            int pts = (stepVal <= 0.011f) ? 1 : (stepVal <= 0.11f) ? 5 : 20;
             int total = (int)vizPath.size();
-            _pathJogIdx = std::max(0, std::min(_pathJogIdx + delta * pts, total-1));
-            // Send jog to the target path point
-            if (total > 0) {
-                int idx = std::max(0, std::min(_pathJogIdx, total-1));
+            // Always 1 path point per encoder detent for precise line selection
+            _pathJogIdx = std::max(0, std::min(_pathJogIdx + delta, total-1));
+            // Only send $J jog once machine is Idle (after abort+$X sequence).
+            // FluidNC rejects $J in Hold or Alarm states.
+            if (_pathJogAborted && total > 0) {
+                int idx = _pathJogIdx;
                 float tx = vizPath[idx].first;
                 float ty = vizPath[idx].second;
+                float stepVal = mpgSteps[(int)mpgStepIdx];
                 int feed = (stepVal <= 0.011f) ? 300 : (stepVal <= 0.11f) ? 1000 : 3000;
                 char cmd[64];
                 snprintf(cmd, sizeof(cmd), "$J=G90 G21 X%.3f Y%.3f F%d", tx, ty, feed);
                 send_line(cmd);
             }
+            // If not yet aborted, encoder still updates the index/display — jog fires once ready
             markDirty();
             return;
         }
@@ -2281,20 +2373,12 @@ public:
         // This permanently shifts all subsequent job Z moves by 'move' amount
         if (_zNudgeOpen && _tab == 0) {
             float step = mpgSteps[(int)mpgStepIdx];
-            float move = delta * step;
-            _zNudgeOffset += move;
-            // Current WCS Z in mm
-            float curZ_mm = myAxes[2] / 10000.0f;
-            // Shift WCS: tell machine "current Z position = curZ + move"
-            // This offsets all future absolute Z moves by 'move'
+            _zNudgeOffset += delta * step;
+            // Queue G10 L20 P1 into FluidNC's serial buffer.
+            // During Hold, FluidNC buffers this and applies it on ~ resume.
             char cmd[64];
-            snprintf(cmd, sizeof(cmd), "G10 L20 P1 Z%.4f", curZ_mm + move);
+            snprintf(cmd, sizeof(cmd), "G10 L20 P1 Z%.4f", _zNudgeBaseZ + _zNudgeOffset);
             send_line(cmd);
-            // Also physically jog Z to the new position so machine is at right height
-            int feed = step <= 0.011f ? 200 : step <= 0.11f ? 500 : 2000;
-            char jog[48];
-            snprintf(jog, sizeof(jog), "$J=G91 G21 Z%.4f F%d", move, feed);
-            send_line(jog);
             reDisplay();
             return;
         }
@@ -2422,6 +2506,132 @@ public:
         }
     }
 
+    // Shared handler for overlay button taps — called from both onTouchClick and onTouchHold
+    // Returns true if the tap was consumed by an overlay.
+    bool handleOverlayTap(int x, int y) {
+        if (_tab != 0) return false;
+        if (_pathJogMode) {
+            if (hit(_pathJogExitBtn, x, y)) {
+                // Cancel rewind: stop any in-progress jog, close overlay.
+                // Job was already aborted (Ctrl-X+$X) when rewind opened.
+                // Machine is Idle — user must re-run the job manually from Files tab.
+                fnc_realtime((realtime_cmd_t)0x85);  // Jog cancel (0x85)
+                _pathJogMode = false;
+                _pathJogAborted = false;
+                _pendingAction = 0;  // cancel any pending abort sequence
+                fnc_term_inject("> Rewind cancelled. Re-run job from Files tab.");
+                markDirty();
+                return true;
+            }
+            if (hit(_pathJogResumeBtn, x, y)) {
+                // "Resume here" — live rewind resume:
+                // 1. Write remaining G-code from _pathJogIdx onwards to LittleFS /rewind.nc
+                // 2. Ctrl-X abort the held job (→ Alarm)
+                // 3. pendingAction 6: $X to clear Alarm → Idle
+                // 4. pendingAction 7: run /rewind.nc — machine is already at the chosen point
+                //
+                // Spindle is kept running by FluidNC during Hold.
+                // After Ctrl-X the spindle stops — so the resume file starts with M3 Sx to restart it.
+                _pathJogMode = false;
+
+                // Map vizPath index → allFileLines index proportionally
+                int nViz  = (int)vizPath.size();
+                int nFile = (int)allFileLines.size();
+                int rewindLine = 0;
+                if (nViz > 0 && nFile > 0)
+                    rewindLine = (int)((int64_t)_pathJogIdx * nFile / nViz);
+                rewindLine = std::max(0, std::min(rewindLine, nFile - 1));
+
+                bool useRewindNc = _allFileLinesComplete && nFile > 0;
+
+                if (useRewindNc) {
+                    // Check LittleFS free space before writing
+                    size_t lfsAvail = LittleFS.totalBytes() - LittleFS.usedBytes();
+                    size_t estBytes = 60 + (size_t)(nFile - rewindLine) * 32;
+                    if (lfsAvail < estBytes + 8192) {  // require 8KB headroom
+                        fnc_term_inject("> Rewind: LittleFS low — re-running from start");
+                        useRewindNc = false;
+                    } else {
+                        LittleFS.remove("/rewind.nc");  // free old before writing new
+                        File f = LittleFS.open("/rewind.nc", FILE_WRITE);
+                        if (f) {
+                            f.println("G90");
+                            if (mySpeed > 0) {
+                                char sline[32];
+                                snprintf(sline, sizeof(sline), "M3 S%u", (unsigned)mySpeed);
+                                f.println(sline);
+                                f.println("G4 P1");
+                            }
+                            bool writeOk = true;
+                            for (int li = rewindLine; li < nFile && writeOk; li++) {
+                                if (f.println(allFileLines[li].c_str()) == 0)
+                                    writeOk = false;
+                            }
+                            f.close();
+                            if (writeOk) {
+                                char msg[64];
+                                snprintf(msg, sizeof(msg),
+                                    "> Rewind: resume from line %d of %d", rewindLine, nFile);
+                                fnc_term_inject(msg);
+                                _pendingAction = _pathJogAborted ? 7 : 6;
+                                if (!_pathJogAborted) fnc_realtime((realtime_cmd_t)0x18);
+                                _pathJogAborted = false;
+                                markDirty(); return true;
+                            } else {
+                                LittleFS.remove("/rewind.nc");
+                                fnc_term_inject("> Rewind: write failed — re-running from start");
+                                useRewindNc = false;
+                            }
+                        } else {
+                            fnc_term_inject("> Rewind: LittleFS open failed — re-running");
+                            useRewindNc = false;
+                        }
+                    }
+                }
+
+                // Large file fallback — re-run original job from beginning.
+                // Machine is already at the chosen XY; job re-runs from line 0.
+                // Pre-run sequence: safe Z → XY zero → run original file.
+                fnc_term_inject("> File too large for rewind — re-running from start");
+                _pendingAction = _pathJogAborted ? 3 : 6;
+                if (!_pathJogAborted) fnc_realtime((realtime_cmd_t)0x18);
+                _pathJogAborted = false;
+                markDirty();
+                return true;
+            }
+            return true;  // consume all touches while open
+        }
+        if (_zNudgeOpen) {
+            if (hit(_zCloseBtn, x, y)) {
+                char undo[48];
+                snprintf(undo, sizeof(undo), "G10 L20 P1 Z%.4f", _zNudgeBaseZ);
+                send_line(undo);
+                _zNudgeOpen = false;
+                _zNudgeOffset = 0.0f;
+                markDirty();
+                return true;
+            }
+            if (hit(_zResumeBtn, x, y)) {
+                char finalG10[48];
+                snprintf(finalG10, sizeof(finalG10), "G10 L20 P1 Z%.4f",
+                         _zNudgeBaseZ + _zNudgeOffset);
+                send_line(finalG10);
+                _zNudgeOpen = false;
+                _zNudgeOffset = 0.0f;
+                fnc_realtime((realtime_cmd_t)'~');  // resume job
+                markDirty();
+                return true;
+            }
+            return true;  // consume all touches while open
+        }
+        return false;
+    }
+
+    void onTouchHold() override {
+        // Relay hold-taps to overlay handler so slow presses still work
+        if (handleOverlayTap(touchX, touchY)) return;
+    }
+
     void onTouchClick() override {
         int x = touchX, y = touchY;
         beep_ui(600, 8);   // subtle click
@@ -2530,6 +2740,7 @@ public:
             for (int i = 0; i < N_TABS; i++) {
                 if (hit(_navTabs[i], x, y)) {
                     _tab = i;
+                    _confirmRun = false;  // reset two-tap confirm on any tab switch
                     if (_tab == 2) {
                         request_file_list(filePath.c_str());
                     }
@@ -2541,37 +2752,17 @@ public:
 
         // DRO screen
         if (_tab == 0) {
-            // Clear [×] button — top-right of viz area (clears loaded G-code path)
-            // Viz area: double-tap = fullscreen toggle, [×] corner = clear path
-            // Path jog: intercept ALL DRO tab touches when open
-            if (_pathJogMode) {
-                if (hit(_pathJogExitBtn, x, y))   { _pathJogMode = false; markDirty(); return; }
-                if (hit(_pathJogResumeBtn, x, y)) { _pathJogMode = false; fnc_realtime((realtime_cmd_t)'~'); markDirty(); return; }
-                return;  // consume all touch while path jog open
-            }
-
-            // Z nudge: intercept ALL DRO tab touches when open
-            if (_zNudgeOpen) {
-                if (hit(_zCloseBtn,x,y))  { _zNudgeOpen=false; markDirty(); return; }
-                if (hit(_zResumeBtn,x,y)) { _zNudgeOpen=false; _zNudgeOffset=0; fnc_realtime((realtime_cmd_t)'~'); markDirty(); return; }
-                return;  // consume all touch while Z nudge open
-            }
+            // Overlay intercept: path jog and Z nudge buttons handled here and in onTouchHold
+            if (handleOverlayTap(x, y)) return;
 
             if (x >= VIZ_X && x < VIZ_X+VIZ_W && y >= VIZ_Y && y < VIZ_Y+VIZ_H) {
+                // Path jog and Z nudge are entered via MPG encoder only (not touch),
+                // to prevent accidental activation when trying to tap Resume/buttons.
+                // Entry: while in Hold, turn MPG CW to open path-jog (if path loaded)
+                //        or MPG CCW to open Z nudge.
                 if (state == Hold && !_pathJogMode && !_zNudgeOpen) {
-                    // First tap: Z nudge. But if viz already loaded and Hold,
-                    // long-hold or second mechanism needed for path jog.
-                    // Use: tap bottom-half of viz = Z nudge, top-half = path jog
-                    if (y < VIZ_Y + VIZ_H/2) {
-                        // Top half: enter path jog mode
-                        if (!vizPath.empty()) {
-                            _pathJogMode = true;
-                            _pathJogIdx = std::max(0, vizPathExecuted);
-                            markDirty(); return;
-                        }
-                    }
-                    // Bottom half: Z nudge
-                    _zNudgeOpen=true; _zNudgeOffset=0.0f; markDirty(); return;
+                    // Touch in viz area while hold = ignored (MPG opens these modes)
+                    markDirty(); return;
                 }
                 // Normal viz tap — clear or double-tap fullscreen
                 if (!vizPath.empty() && x >= VIZ_X+VIZ_W-26 && y <= VIZ_Y+21) {
@@ -2992,10 +3183,54 @@ void tabui_checkPressExpiry() {
         markDirty();
     }
 
+    // ── Heap monitor — warn if heap critically low ───────────────────────────
+    {
+        static uint32_t _lastHeapCheck = 0;
+        if (now - _lastHeapCheck > 5000) {  // check every 5s
+            _lastHeapCheck = now;
+            uint32_t freeHeap = ESP.getFreeHeap();
+            uint32_t minFree  = ESP.getMinFreeHeap();  // all-time low water mark
+            if (freeHeap < 30000) {  // <30KB is critical
+                char hm[64];
+                snprintf(hm, sizeof(hm), "[WARN] Heap low: %luB free, min=%luB",
+                         (unsigned long)freeHeap, (unsigned long)minFree);
+                fnc_term_inject(hm);
+                // Trim caches to recover memory
+                if ((int)allFileLines.size() > 1000) {
+                    allFileLines.resize(1000);
+                    allFileLines.shrink_to_fit();
+                }
+                if ((int)previewLines.size() > 500) {
+                    previewLines.resize(500);
+                    previewLines.shrink_to_fit();
+                }
+            }
+        }
+    }
+
     // Pending action poll — fires when machine reaches Idle state
     // More reliable than onStateChange callback which can miss transitions
     static uint32_t _lastActionCheck = 0;
-    if (_pendingAction != 0 && state == Idle && now - _lastActionCheck > 300) {
+    // Actions 6 and 8 fire on Alarm OR Idle (Idle fallback if Alarm state was brief)
+    bool action68_trigger = (_pendingAction == 6 || _pendingAction == 8)
+                         && (state == Alarm || state == Idle)
+                         && now - _lastActionCheck > 300;
+    if (action68_trigger) {
+        _lastActionCheck = now;
+        int act = _pendingAction;
+        _pendingAction = 0;
+        if (state == Alarm) send_line("$X");  // clear alarm only if in Alarm state
+        if (act == 6) {
+            fnc_term_inject(state == Alarm ? "> $X: clearing alarm for rewind resume"
+                                           : "> Rewind: ready to run");
+            _pendingAction = 7;  // on Idle: run rewind.nc
+        } else {
+            fnc_term_inject(state == Alarm ? "> $X: machine clear — rewind jogging ready"
+                                           : "> Rewind: jog ready");
+            _pendingAction = 9;  // on Idle: set _pathJogAborted=true + send first jog
+        }
+    }
+    if (_pendingAction != 0 && _pendingAction != 6 && state == Idle && now - _lastActionCheck > 300) {
         _lastActionCheck = now;
         int action = _pendingAction;
         _pendingAction = 0;
@@ -3016,14 +3251,64 @@ void tabui_checkPressExpiry() {
             _pendingAction = 3;
         } else if (action == 3) {
             if (!simJobName.empty()) {
+                // Large-file rewind fallback: re-run original job from start.
+                // Spindle was stopped by the abort — restart it before running.
+                if (mySpeed > 0) {
+                    char sline[32];
+                    snprintf(sline, sizeof(sline), "M3 S%u", (unsigned)mySpeed);
+                    send_line(sline);
+                    send_line("G4 P2");  // 2s spindle spool-up
+                }
                 std::string rpath = filePath+"/"+simJobName;
                 send_linef("$Localfs/Run=%s", rpath.c_str());
                 _jobSentToFluidNC = true;
-                fnc_term_inject(("> Resume: "+simJobName).c_str());
+                _runStep = 1; _runStartMs = millis();
+                fnc_term_inject(("> Rerun from start: "+simJobName).c_str());
+            } else {
+                fnc_term_inject("> Cannot restart: no job name. Use Files tab to re-run.");
+                _jobSentToFluidNC = false;
             }
         } else if (action == 4) {
             fnc_realtime((realtime_cmd_t)'~');
             fnc_term_inject("> ~ Resume");
+        } else if (action == 7) {
+            // Path jog resume: run /rewind.nc from LittleFS
+            // Machine is already at the rewound XY position (jogged there by MPG).
+            if (LittleFS.exists("/rewind.nc")) {
+                send_line("G90");
+                send_line("$Localfs/Run=/rewind.nc");
+                fnc_term_inject("> Rewind resume: running /rewind.nc");
+                _jobSentToFluidNC = true;
+                _runStep = 1; _runStartMs = millis();
+            } else {
+                // /rewind.nc missing — fall back to re-running original job
+                fnc_term_inject("> Rewind file missing — re-running original job");
+                if (!simJobName.empty()) {
+                    std::string rpath = filePath+"/"+simJobName;
+                    send_linef("$Localfs/Run=%s", rpath.c_str());
+                    _jobSentToFluidNC = true;
+                    _runStep = 1; _runStartMs = millis();
+                } else {
+                    fnc_term_inject("> No job name — cannot restart. Re-run from Files tab.");
+                    _jobSentToFluidNC = false;
+                }
+            }
+        } else if (action == 9) {
+            // Path jog abort complete — machine now Idle, ready for $J jogging
+            _pathJogAborted = true;
+            fnc_term_inject("> Live rewind ready — turn MPG to jog along path");
+            // Send jog to current _pathJogIdx in case user already turned encoder
+            int total9 = (int)vizPath.size();
+            if (_pathJogMode && total9 > 0) {
+                int idx9 = std::max(0, std::min(_pathJogIdx, total9-1));
+                float tx9 = vizPath[idx9].first;
+                float ty9 = vizPath[idx9].second;
+                float sv9 = mpgSteps[(int)mpgStepIdx];
+                int fd9 = (sv9 <= 0.011f) ? 300 : (sv9 <= 0.11f) ? 1000 : 3000;
+                char c9[64];
+                snprintf(c9, sizeof(c9), "$J=G90 G21 X%.3f Y%.3f F%d", tx9, ty9, fd9);
+                send_line(c9);
+            }
         } else if (action == 10) {
             send_line("$HX"); send_line("$HY");
             fnc_term_inject("> $HX $HY");

@@ -47,6 +47,11 @@ static Rect _lineRects[9] = {};  // set in ShowLines draw
 static void saveCheckpoint() {
     memcpy(_cp.magic, "JCP", 4);
     _cp.savedAt = millis();
+    // Only write if LittleFS has sufficient space (checkpoint is ~100 bytes)
+    if (LittleFS.totalBytes() - LittleFS.usedBytes() < 4096) {
+        dbg_println("JobRecovery: LittleFS low — skipping checkpoint");
+        return;
+    }
     File f = LittleFS.open(CHKPT_PATH, FILE_WRITE);
     if (f) {
         f.write((const uint8_t*)&_cp, sizeof(_cp));
@@ -141,6 +146,8 @@ void jobrecov_setG4142Warning(bool w) { _g4142Warning = w; }
 
 void jobrecov_lineExecuted(uint32_t line) {
     _currentLine = line;
+    // Keep _lastLines bounded — it's a display buffer only
+    if ((int)_lastLines.size() > 20) _lastLines.erase(_lastLines.begin());
     _linesSinceLastSave++;
     if (_linesSinceLastSave >= SAVE_INTERVAL_LINES) {
         _linesSinceLastSave = 0;
