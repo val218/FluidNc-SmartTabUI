@@ -229,7 +229,7 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     }
 
     // Scroll indicator
-    { int totalH = 36 + 13*rowH + 32;
+    { int totalH = 36 + 11*rowH + 40;  // 11 rows + 8px bottom padding: JOB HRS,MAINT,MACHINE,SIM,THEME,P6,Xmm,Ymm,HOME,BRIGHT,VOL
       if (totalH > H) {
         int tH = std::max(8, H*H/totalH);
         int tY = scrollY*(H-tH)/std::max(1,totalH-H);
@@ -537,14 +537,14 @@ static void runSettingsMenu(AppSettings& s) {
         // MPG encoder scroll
         { int16_t enc = get_encoder();
           if (enc != 0) {
-              { int maxS=std::max(0,36+13*rowH2+32-240);
+              { int maxS=std::max(0,36+11*rowH2+40-240);  // 11 rows + 8px pad
               _settingsScroll = std::max(0, std::min(maxS, _settingsScroll + enc * 4)); }
               drawSettings(); delay(8); continue;
           }
         }
         // Touch handling — track drag and tap separately
         bx0_2 = 68; bW2 = W - bx0_2 - 4;
-        int maxScroll = std::max(0, 36 + 13*rowH2 + 32 - 240);  // totalH - screenH
+        int maxScroll = std::max(0, 36 + 11*rowH2 + 40 - 240);  // 11 rows + 8px pad
 
         if (t.wasPressed()) {
             _lastTouchY = t.y;
@@ -660,15 +660,17 @@ static void runSettingsMenu(AppSettings& s) {
 
         // Bottom buttons at FIXED screen position (not scrollable)
         // Use t.x, t.y directly (not scrolled ty)
-        int btnY = display.height() - 36;  // fixed 36px from bottom of screen
-        if (touchIn(t.x, t.y, cx-156, btnY, 96, 28)) {
-            runInputMonitor(); drawSettings(); continue;
-        }
-        if (touchIn(t.x, t.y, cx-54, btnY, 96, 28)) {
-            runUartMonitor(); drawSettings(); continue;
-        }
-        if (touchIn(t.x, t.y, cx+50, btnY, 96, 28)) {
-            settings_save(s); esp_restart();
+        // Bottom buttons — use same position as draw (btnY = H-34)
+        { int btnY = display.height() - 34;
+          if (touchIn(t.x, t.y, cx-156, btnY, 96, 28)) {
+              runInputMonitor(); drawSettings(); continue;
+          }
+          if (touchIn(t.x, t.y, cx-54,  btnY, 96, 28)) {
+              runUartMonitor(); drawSettings(); continue;
+          }
+          if (touchIn(t.x, t.y, cx+50,  btnY, 96, 28)) {
+              settings_save(s); esp_restart();
+          }
         }
 
         drawSettings();
