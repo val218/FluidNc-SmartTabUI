@@ -241,6 +241,11 @@ extern "C" void show_state(const char* state_string) {
 }
 
 extern "C" void handle_other(char* line) {
+    // Any line from FluidNC proves the connection is alive
+    // This catches welcome banners, ok responses, MSG lines, error lines —
+    // everything that isn't a status report or gcode modes response
+    mark_connected();
+
     int alarmlen = strlen("Active alarm: ");
     if (strncmp(line, "Active alarm: ", alarmlen) == 0) {
         lastAlarm = atoi(line + alarmlen);
@@ -253,6 +258,7 @@ extern "C" void handle_other(char* line) {
 }
 
 extern "C" void show_error(int error) {
+    mark_connected();  // error response = FluidNC is alive
     errorExpire = milliseconds() + 1000;
     lastError   = error;
     tabui_onFluidNCError(error);  // declared in System.h
@@ -262,7 +268,7 @@ extern "C" void show_error(int error) {
 extern "C" void show_timeout() {
     dbg_println("Timeout");
 }
-extern "C" void show_ok() {}
+extern "C" void show_ok() { mark_connected(); }
 
 extern "C" void end_status_report() {
     markDirty();

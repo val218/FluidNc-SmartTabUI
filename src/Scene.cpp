@@ -196,6 +196,14 @@ void dispatch_events() {
                 set_disconnected_state();
                 activate_at_top_level(getTabScene());
             }
+            // While disconnected: keep pinging so we catch FluidNC coming back online.
+            // request_status_report() is already called inside fnc_is_connected()
+            // but call it explicitly here too to be sure.
+        } else if (state == Disconnected) {
+            // fnc_is_connected() returned true (mark_connected was called)
+            // but state is still Disconnected — force a status request so
+            // show_state() fires and transitions state away from Disconnected
+            request_status_report();
         }
     }
 

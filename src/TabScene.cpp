@@ -2249,8 +2249,7 @@ public:
         }
         if (state == Disconnected) {
             _runStep = 0;  // close pre-run overlay on disconnect
-            // Switch to terminal tab so user can see the [DISC] diagnostic log
-            if (_tab != 3) _tab = 3;
+            // Do NOT force tab switch — let user stay on current tab
         }
 
         // Pending actions now handled in tabui_checkPressExpiry (polled each dispatch cycle)
