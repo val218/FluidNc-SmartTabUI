@@ -940,7 +940,8 @@ void loop() {
             simMode_tick();
             simMode_injectState();
         }
-    } else {
-        fnc_poll();     // UART parse — only when not in sim mode
     }
+    // fnc_poll() is now called from dispatch_events() before the connection check,
+    // ensuring UART is always drained before state is evaluated.
+    // No second fnc_poll() needed here.
 }

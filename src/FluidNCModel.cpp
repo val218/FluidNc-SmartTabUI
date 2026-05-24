@@ -75,6 +75,19 @@ bool decode_state_string(const char* state_string, state_t& state) {
 }
 
 void set_disconnected_state() {
+    // Guard: don't override a valid state if bytes are still flowing.
+    // If the ring buffer has unread bytes, fnc_poll() will restore state shortly.
+    // Check: if disconnect_ms is still in the future, a byte recently arrived
+    // via uart_reader_task — we're not truly disconnected.
+    extern uint32_t fnc_rx_count;
+    static uint32_t _lastRxCount = 0;
+    uint32_t currentRx = fnc_rx_count;
+    if (currentRx != _lastRxCount) {
+        // Bytes arrived since last check — connection is alive, don't disconnect
+        _lastRxCount = currentRx;
+        return;
+    }
+    _lastRxCount = currentRx;
     state           = Disconnected;
     my_state_string = "N/C";
 }
@@ -241,6 +254,8 @@ extern "C" void handle_other(char* line) {
 extern "C" void show_error(int error) {
     errorExpire = milliseconds() + 1000;
     lastError   = error;
+    extern void tabui_onFluidNCError(int);
+    tabui_onFluidNCError(error);
     current_scene->reDisplay();
 }
 
@@ -279,8 +294,8 @@ extern "C" void show_gcode_modes(struct gcode_modes* modes) {
     markDirty();
 }
 
-int disconnect_ms = 0;
-int next_ping_ms  = 0;
+uint32_t disconnect_ms = 0;
+uint32_t next_ping_ms  = 0;
 
 // If we haven't heard from FluidNC in 4 seconds for some other reason,
 // send a status report request.
@@ -301,43 +316,43 @@ static const int DISCONNECT_DEBOUNCE = 2;  // 2 consecutive timeouts = ~16s tota
 bool starting = true;
 
 void request_status_report() {
-    fnc_putchar(0x11);           // XON; request software flow control
-    fnc_realtime(StatusReport);  // Request fresh status
-    next_ping_ms = milliseconds() + ping_interval_ms;
+    fnc_realtime(StatusReport);
+    next_ping_ms = (uint32_t)milliseconds() + (uint32_t)ping_interval_ms;
 }
 
 bool fnc_is_connected() {
-    int now = milliseconds();
+    uint32_t now = (uint32_t)milliseconds();
     if (starting) {
         starting      = false;
-        disconnect_ms = now + (disconnect_interval_ms - ping_interval_ms);
-        request_status_report();  // sets next_ping_ms
-        return false;             // Do we need a value for "unknown"?
+        disconnect_ms = now + (uint32_t)disconnect_interval_ms;
+        request_status_report();
+        return false;
     }
-    if ((now - disconnect_ms) >= 0) {
-        next_ping_ms  = now + ping_interval_ms;
-        disconnect_ms = now + disconnect_interval_ms;
-        // Debounce: only declare disconnected after multiple consecutive timeouts
+    // Use subtraction comparison — safe against uint32_t wraparound
+    // (now - disconnect_ms) > 0 overflows correctly with unsigned arithmetic
+    if ((now - disconnect_ms) < 0x80000000UL) {
+        // Timed out
+        next_ping_ms  = now + (uint32_t)ping_interval_ms;
+        disconnect_ms = now + (uint32_t)disconnect_interval_ms;
         _disconnect_count++;
         if (_disconnect_count < DISCONNECT_DEBOUNCE) {
-            // Not yet convinced — send an extra ping and keep trying
             request_status_report();
-            return true;  // stay "connected" for now
+            return true;
         }
         _disconnect_count = 0;
         return false;
     }
-    _disconnect_count = 0;  // reset debounce on successful connection check
+    _disconnect_count = 0;
 
-    if ((now - next_ping_ms) >= 0) {
+    if ((now - next_ping_ms) < 0x80000000UL) {
         request_status_report();
     }
     return true;
 }
 
 void update_rx_time() {
-    int now       = milliseconds();
-    next_ping_ms  = now + ping_interval_ms;
-    disconnect_ms = now + disconnect_interval_ms;
-    _disconnect_count = 0;  // reset debounce — we have live data
+    uint32_t now  = (uint32_t)milliseconds();
+    next_ping_ms  = now + (uint32_t)ping_interval_ms;
+    disconnect_ms = now + (uint32_t)disconnect_interval_ms;
+    _disconnect_count = 0;
 }

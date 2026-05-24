@@ -185,7 +185,18 @@ void dispatch_events() {
     // MPG switch changed (set by Core 0) — redraw safely on Core 1
     if (mpgConsumeChanged() && current_scene) current_scene->reDisplay();
 
-    // On disconnect, stay on TabScene — skip in simulation (no real machine)
+    // Poll UART FIRST — parse any pending bytes and update machine state.
+    // This must happen before fnc_is_connected() so that if bytes arrived
+    // since the last loop, state is already updated before we check connection.
+    if (!simMode_active()) {
+        fnc_poll();
+    }
+
+    // Connection check — AFTER polling so state reflects latest received data.
+    // fnc_is_connected() returns false only if no bytes arrived in 8+ seconds
+    // AND update_rx_time() hasn't been called by uart_reader_task.
+    // With the ring buffer architecture, update_rx_time() fires the moment
+    // bytes enter the hardware UART buffer — so this should almost never fire.
     if (!simMode_active() && !fnc_is_connected()) {
         if (state != Disconnected) {
             set_disconnected_state();

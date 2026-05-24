@@ -359,6 +359,7 @@ static int  _pathJogIdx     = 0;     // retrace step counter (from FluidNC MSG r
 static int  _pathJogTotal   = 0;     // total steps buffered (from FluidNC MSG reports)
 static float _pathJogAccum  = 0.0f;  // unused (kept for compat)
 static bool _pathJogAborted = true;  // always true for plugin-based retrace
+static int  _retraceSupport = 0;     // 0=unknown 1=available 2=unavailable (error on $Retrace/Start)
 static int  previewScroll   = 0;           // first visible preview line
 static int  previewFirstLine = 0;           // line offset in file
 static std::vector<std::string> allFileLines;  // accumulated lines across batches
@@ -369,7 +370,9 @@ static std::string _loadingPath;            // path being batch-loaded
 
 // ── Viz file loading (from FluidNC VizGenerator plugin) ──────────────────────
 static std::string _vizLoadPath;   // .viz file being loaded
-static bool _vizLoading = false;   // currently loading a .viz from FluidNC
+static bool _vizLoading = false;
+static uint32_t _retraceStartMs = 0;  // when $Retrace/Start was sent (for timeout)
+static uint32_t _retraceWarnMs  = 0;  // when "plugin not found" warning was shown   // currently loading a .viz from FluidNC
 static int  _vizLoadTotal = 0;     // expected points (from VizReady header)
 static float _vizBounds[4] = {};   // xmin,xmax,ymin,ymax from VizReady
 static std::string _vizSidecarPath;         // real .nc path when trying sidecar first
@@ -867,6 +870,10 @@ private:
             int bw = VIZ_W/2 - 6, bh = 26, by = VIZ_Y + VIZ_H/2 - 13;
             int bx1 = VIZ_X + 3, bx2 = VIZ_X + VIZ_W/2 + 3;
             canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            // Show retrace warning if plugin not found
+            bool showWarn = (_retraceSupport == 2 &&
+                             _retraceWarnMs > 0 &&
+                             (millis() - _retraceWarnMs) < 4000);
             canvas.setTextColor(COL_DIM2);
             canvas.drawString("JOB PAUSED", VIZ_X+VIZ_W/2, VIZ_Y + VIZ_H/2 - 22);
             // Z Adjust
@@ -874,11 +881,25 @@ private:
             canvas.drawRoundRect(bx1, by, bw, bh, 4, COL_AX_Z);
             canvas.setTextColor(COL_AX_Z);
             canvas.drawString("Z Adjust", bx1+bw/2, by+bh/2);
-            // Path Rewind
+            // Path Rewind — greyed out if plugin unavailable
+            uint16_t rwBorderCol = (_retraceSupport == 2) ? COL_DIM2 : CYAN;
             canvas.fillRoundRect(bx2, by, bw, bh, 4, 0x0019);
-            canvas.drawRoundRect(bx2, by, bw, bh, 4, CYAN);
-            canvas.setTextColor(CYAN);
+            canvas.drawRoundRect(bx2, by, bw, bh, 4, rwBorderCol);
+            canvas.setTextColor(rwBorderCol);
             canvas.drawString("Rewind", bx2+bw/2, by+bh/2);
+            // Warning text below buttons
+            if (showWarn) {
+                canvas.setTextColor(ORANGE);
+                canvas.drawString("Plugin not installed", VIZ_X+VIZ_W/2, by+bh+8);
+                canvas.setTextColor(COL_DIM2);
+                canvas.drawString("See FluidNC-PathRetrace-plugin.zip", VIZ_X+VIZ_W/2, by+bh+20);
+            } else if (_retraceSupport == 2) {
+                canvas.setTextColor(COL_DIM2);
+                canvas.drawString("Rewind needs FluidNC plugin", VIZ_X+VIZ_W/2, by+bh+8);
+            } else if (_retraceSupport == 0) {
+                canvas.setTextColor(COL_DIM2);
+                canvas.drawString("Tap Rewind to check plugin", VIZ_X+VIZ_W/2, by+bh+8);
+            }
             _holdZBtn      = {bx1, by, bw, bh};
             _holdRewindBtn = {bx2, by, bw, bh};
         } else {
@@ -2330,7 +2351,12 @@ public:
         // Parse PathRetrace plugin status messages
         if (arguments && strncmp(arguments, "PathRetrace:", 12) == 0) {
             const char* p = arguments + 12;
-            if (strncmp(p, "Resumed", 7) == 0 || strncmp(p, "Cancelled", 9) == 0) {
+            if (strncmp(p, "Active", 6) == 0) {
+                // Plugin confirmed present and active
+                _retraceSupport = 1;
+                _retraceStartMs = 0;
+                fnc_term_inject("> Path retrace: FluidNC plugin active");
+            } else if (strncmp(p, "Resumed", 7) == 0 || strncmp(p, "Cancelled", 9) == 0) {
                 _pathJogMode = false;
                 markDirty();
             } else if (strncmp(p, "AtStart", 7) == 0 || strncmp(p, "AtCurrent", 9) == 0) {
@@ -2494,11 +2520,17 @@ public:
             if (delta > 0) {
                 // Enter retrace mode — FluidNC plugin handles everything
                 if (!_pathJogMode) {
+                    if (_retraceSupport == 2) {
+                        fnc_term_inject("> Rewind: PathRetrace plugin not installed in FluidNC");
+                        _retraceWarnMs = millis();
+                        reDisplay(); return;
+                    }
                     _pathJogMode = true;
                     _pathJogIdx  = 0;
-                    _pathJogAborted = true;  // no abort needed — plugin uses Hold
+                    _pathJogAborted = true;
+                    _retraceStartMs = millis();
                     send_line("$Retrace/Start");
-                    fnc_term_inject("> Path retrace: entering rewind mode...");
+                    fnc_term_inject("> Path retrace: checking FluidNC plugin...");
                 }
             } else if (delta < 0) {
                 _zNudgeOpen = true;
@@ -2861,9 +2893,17 @@ public:
                         reDisplay(); return;
                     }
                     if (hit(_holdRewindBtn, x, y)) {
+                        if (_retraceSupport == 2) {
+                            // Already know plugin not available — show message
+                            fnc_term_inject("> Rewind: PathRetrace plugin not installed in FluidNC");
+                            // Flash a brief warning on the viz area
+                            _retraceWarnMs = millis();
+                            reDisplay(); return;
+                        }
                         _pathJogMode = true; _pathJogIdx = 0; _pathJogAborted = true;
+                        _retraceStartMs = millis();  // start timeout timer
                         send_line("$Retrace/Start");
-                        fnc_term_inject("> Path retrace: entering rewind mode...");
+                        fnc_term_inject("> Path retrace: checking FluidNC plugin...");
                         reDisplay(); return;
                     }
                     markDirty(); return;
@@ -3303,6 +3343,19 @@ void tabui_checkPressExpiry() {
         markDirty();
     }
 
+    // ── PathRetrace plugin availability check ────────────────────────────────
+    // If $Retrace/Start was sent but no [MSG:PathRetrace:Active] arrived within
+    // 2 seconds, assume the plugin is not installed in FluidNC.
+    if (_retraceStartMs > 0 && (now - _retraceStartMs) > 2000) {
+        _retraceStartMs = 0;
+        _retraceSupport = 2;  // mark as unavailable
+        _pathJogMode    = false;
+        _retraceWarnMs  = millis();
+        fnc_term_inject("> Rewind: PathRetrace plugin not found in FluidNC");
+        fnc_term_inject(">   Install FluidNC-PathRetrace-plugin.zip to enable");
+        markDirty();
+    }
+
     // ── Heap monitor — warn if heap critically low ───────────────────────────
     {
         static uint32_t _lastHeapCheck = 0;
@@ -3422,6 +3475,21 @@ void tabui_setVolume(int v) {
     _volumeLevel = (v < 0) ? 0 : (v > 9) ? 9 : v;
 }
 void tabui_setMachineType(int t) { _machineType = t; }
+
+// Called from FluidNCModel::show_error when FluidNC responds with an error.
+// Detects error response to $Retrace/Start — means plugin is not installed.
+void tabui_onFluidNCError(int err) {
+    if (_retraceStartMs > 0) {
+        // Any error while waiting for retrace confirmation = plugin absent
+        _retraceStartMs = 0;
+        _retraceSupport = 2;
+        _pathJogMode    = false;
+        _retraceWarnMs  = millis();
+        fnc_term_inject("> Rewind: plugin not installed (FluidNC error response)");
+        fnc_term_inject(">   Install FluidNC-PathRetrace-plugin.zip to enable");
+        markDirty();
+    }
+}
 
 // Hour meter — load/save from NVS
 void tabui_loadHourMeter() {

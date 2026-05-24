@@ -63,9 +63,12 @@ void uart_reader_task(void*) {
         if (n > 0) {
             for (int i = 0; i < n; i++) uart_ring_push(buf[i]);
             fnc_rx_count += n;
+            // Connection is proven alive the moment bytes arrive in the hardware buffer.
+            // Call update_rx_time() HERE — not in fnc_getchar() when bytes are consumed.
+            // This is critical: if loop() is slow (LCD redraw), bytes sit in the ring
+            // buffer unread, but the connection IS alive. update_rx_time() must fire now.
+            update_rx_time();
         }
-        // Yield — 1ms delay. At 1Mbaud, 1ms = 100 bytes max.
-        // Ring buffer holds 4096 bytes = 40ms of max-rate data — plenty of margin.
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
@@ -130,7 +133,7 @@ extern "C" int fnc_getchar() {
         } else if (_termBufLen < TERM_LINE_BUF-1 && c >= 32) {
             _termBuf[_termBufLen++] = c;
         }
-        update_rx_time();
+        // update_rx_time() called in uart_reader_task when bytes arrive — not here
 #ifdef ECHO_FNC_TO_DEBUG
         dbg_write(c);
 #endif
