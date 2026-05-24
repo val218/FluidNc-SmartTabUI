@@ -546,6 +546,8 @@ private:
     Rect _zResumeBtn={0,0,0,0};
     Rect _pathJogExitBtn={0,0,0,0};
     Rect _pathJogResumeBtn={0,0,0,0};
+    Rect _holdZBtn={0,0,0,0};
+    Rect _holdRewindBtn={0,0,0,0};
     int _rewindFileLine=0;  // allFileLines index written to /rewind.nc
     Rect _probeClose;
     Rect _probeRows[N_PROBE_OPTS];
@@ -859,6 +861,29 @@ private:
 
         // ── Visualizer: shows path (auto-scaled) OR work area map ────────────
         canvas.fillRect(VIZ_X, VIZ_Y, VIZ_W, VIZ_H, COL_PANEL2);
+
+        // ── Hold-mode overlay hint: tappable Z Adjust + Path Rewind buttons ──
+        if (state == Hold && !_pathJogMode && !_zNudgeOpen && _tab == 0) {
+            int bw = VIZ_W/2 - 6, bh = 26, by = VIZ_Y + VIZ_H/2 - 13;
+            int bx1 = VIZ_X + 3, bx2 = VIZ_X + VIZ_W/2 + 3;
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(COL_DIM2);
+            canvas.drawString("JOB PAUSED", VIZ_X+VIZ_W/2, VIZ_Y + VIZ_H/2 - 22);
+            // Z Adjust
+            canvas.fillRoundRect(bx1, by, bw, bh, 4, 0x0019);
+            canvas.drawRoundRect(bx1, by, bw, bh, 4, COL_AX_Z);
+            canvas.setTextColor(COL_AX_Z);
+            canvas.drawString("Z Adjust", bx1+bw/2, by+bh/2);
+            // Path Rewind
+            canvas.fillRoundRect(bx2, by, bw, bh, 4, 0x0019);
+            canvas.drawRoundRect(bx2, by, bw, bh, 4, CYAN);
+            canvas.setTextColor(CYAN);
+            canvas.drawString("Rewind", bx2+bw/2, by+bh/2);
+            _holdZBtn      = {bx1, by, bw, bh};
+            _holdRewindBtn = {bx2, by, bw, bh};
+        } else {
+            _holdZBtn = {0,0,0,0}; _holdRewindBtn = {0,0,0,0};
+        }
 
         if (_vizFullscreen && !vizPath.empty()) {
             // ── WORK AREA MODE (double-tap): path placed in machine work area grid ──
@@ -2830,7 +2855,17 @@ public:
                 // Entry: while in Hold, turn MPG CW to open path-jog (if path loaded)
                 //        or MPG CCW to open Z nudge.
                 if (state == Hold && !_pathJogMode && !_zNudgeOpen) {
-                    // Touch in viz area while hold = ignored (MPG opens these modes)
+                    if (hit(_holdZBtn, x, y)) {
+                        _zNudgeOpen = true; _zNudgeOffset = 0.0f;
+                        _zNudgeBaseZ = myAxes[2] / 10000.0f;
+                        reDisplay(); return;
+                    }
+                    if (hit(_holdRewindBtn, x, y)) {
+                        _pathJogMode = true; _pathJogIdx = 0; _pathJogAborted = true;
+                        send_line("$Retrace/Start");
+                        fnc_term_inject("> Path retrace: entering rewind mode...");
+                        reDisplay(); return;
+                    }
                     markDirty(); return;
                 }
                 // Normal viz tap — clear or double-tap fullscreen
