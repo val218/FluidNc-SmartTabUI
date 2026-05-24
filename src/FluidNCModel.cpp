@@ -302,12 +302,17 @@ void mark_connected() {
     _wasConnected = true;
 }
 
+// Expose for diagnostics
+uint32_t dbg_last_status_ms()  { return _lastStatusMs; }
+int      dbg_missed_pings()    { return _missedPings; }
+
 void request_status_report() {
     fnc_realtime(StatusReport);
     _nextPingMs = (uint32_t)millis() + PING_INTERVAL_MS;
 }
 
 bool fnc_is_connected() {
+    extern volatile uint32_t fnc_rx_count;
     uint32_t now = (uint32_t)millis();
 
     // Send ping if due
@@ -322,8 +327,19 @@ bool fnc_is_connected() {
     }
 
     // Declare disconnect if too many missed pings or too long since last status
-    if (_missedPings >= DISCONNECT_PINGS ||
-        (now - _lastStatusMs) > DISCONNECT_TIMEOUT) {
+    uint32_t silenceMs = now - _lastStatusMs;
+    if (_missedPings >= DISCONNECT_PINGS || silenceMs > DISCONNECT_TIMEOUT) {
+        // Log reason to terminal so we know exactly what triggered it
+        static uint32_t _lastDisconnLog = 0;
+        if (now - _lastDisconnLog > 2000) {
+            _lastDisconnLog = now;
+            char msg[80];
+            snprintf(msg, sizeof(msg),
+                "[DISC] missed=%d silence=%lums rxCount=%lu",
+                _missedPings, (unsigned long)silenceMs,
+                (unsigned long)fnc_rx_count);
+            fnc_term_inject(msg);
+        }
         return false;
     }
 

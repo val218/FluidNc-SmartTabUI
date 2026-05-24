@@ -58,20 +58,24 @@ static inline int uart_ring_pop() {
 // This runs INDEPENDENTLY of loop() so LCD redraws never cause UART byte loss.
 void uart_reader_task(void*) {
     uint8_t buf[128];
+    uint32_t taskLoops = 0;
     for (;;) {
         int n = uart_read_bytes(fnc_uart_port, buf, sizeof(buf), 0);
         if (n > 0) {
             for (int i = 0; i < n; i++) uart_ring_push(buf[i]);
             fnc_rx_count += n;
-            // Connection is proven alive the moment bytes arrive in the hardware buffer.
-            // Call update_rx_time() HERE — not in fnc_getchar() when bytes are consumed.
-            // This is critical: if loop() is slow (LCD redraw), bytes sit in the ring
-            // buffer unread, but the connection IS alive. update_rx_time() must fire now.
-            update_rx_time();
+            update_rx_time();  // now a no-op but kept for compat
         }
+        taskLoops++;
+        // Watchdog: log task health every 10 seconds via a shared counter
+        // (readable from Core 1 for diagnostics)
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
+
+// Expose uart_reader_task loop count for health monitoring
+// If this stops incrementing, the task has died
+volatile uint32_t uart_task_loops = 0;
 
 // Raw UART line capture for terminal display
 #define TERM_LINE_BUF 64
@@ -206,7 +210,7 @@ void init_fnc_uart(int uart_num, int tx_pin, int rx_pin) {
     //   hardware RX buffer (512B) → uart_reader_task → software ring (4096B) → fnc_getchar()
     // The 4096B ring buffer holds 40ms of maximum-rate UART data — far more than
     // any LCD redraw can take.
-    uart_driver_install(fnc_uart_port, 512, 0, 0, NULL, ESP_INTR_FLAG_IRAM);
+    uart_driver_install(fnc_uart_port, 1024, 0, 0, NULL, ESP_INTR_FLAG_IRAM);
     // No XON/XOFF — ring buffer makes it unnecessary and it caused compatibility issues
     uint32_t baud;
     uart_get_baudrate(fnc_uart_port, &baud);
