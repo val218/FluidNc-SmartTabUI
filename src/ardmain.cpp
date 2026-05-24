@@ -71,11 +71,32 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     }
     _sBuf->fillSprite(S_BG);
 
+    // RGB565 helpers for gradient settings buttons
+    auto sLerp = [](uint16_t c1, uint16_t c2, int t, int s) -> uint16_t {
+        uint8_t r1=(c1>>8)&0xF8, g1=(c1>>3)&0xFC, b1=(c1<<3)&0xF8;
+        uint8_t r2=(c2>>8)&0xF8, g2=(c2>>3)&0xFC, b2=(c2<<3)&0xF8;
+        return ((uint16_t)((r1+(r2-r1)*t/s)&0xF8)<<8)|((uint16_t)((g1+(g2-g1)*t/s)&0xFC)<<3)|((b1+(b2-b1)*t/s)>>3);
+    };
+    auto sDim = [](uint16_t c, int p) -> uint16_t {
+        return ((uint16_t)(((c>>8)&0xF8)*p/100)&0xF8)<<8|((uint16_t)(((c>>3)&0xFC)*p/100)&0xFC)<<3|(((c<<3)&0xF8)*p/100)>>3;
+    };
+    auto sBright = [](uint16_t c, int a) -> uint16_t {
+        int r=std::min(255,((c>>8)&0xF8)+a), g=std::min(255,((c>>3)&0xFC)+a), b=std::min(255,((c<<3)&0xF8)+a);
+        return ((r&0xF8)<<8)|((g&0xFC)<<3)|(b>>3);
+    };
     auto sB = [&](int x, int y2, int w, int h2, uint16_t bg, uint16_t bc,
                   const char* lb, uint16_t tc) {
         if (y2+h2 < 0 || y2 > H) return;
-        _sBuf->fillRoundRect(x, y2, w, h2, 3, bg);
+        // Gradient fill: lighter top, darker bottom
+        uint16_t top = sBright(bg, 15), bot = sDim(bg, 80);
+        for (int i = 0; i < h2; i++) {
+            uint16_t c = sLerp(top, bot, i, h2);
+            _sBuf->drawFastHLine(x+(i<3||i>=h2-3?3:0), y2+i,
+                                 w-(i<3||i>=h2-3?6:0), c);
+        }
         _sBuf->drawRoundRect(x, y2, w, h2, 3, bc);
+        // Top highlight
+        _sBuf->drawFastHLine(x+3, y2+1, w-6, sBright(bg, 25));
         _sBuf->setFont(&fonts::Font0);
         _sBuf->setTextDatum(middle_center);
         _sBuf->setTextColor(tc);

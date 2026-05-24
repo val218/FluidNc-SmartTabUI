@@ -515,6 +515,84 @@ static void f2s(const std::string& s, int x, int y, int col, int datum = middle_
 uint32_t g_pressExpiryMs = 0;
 static int      _alarmBeepCount = 0;
 static uint32_t _alarmBeepNext  = 0;
+// ── Gradient & Shadow drawing helpers ────────────────────────────────────────
+// RGB565 colour manipulation
+static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
+static inline void rgb565_unpack(uint16_t c, uint8_t& r, uint8_t& g, uint8_t& b) {
+    r = (c >> 8) & 0xF8; g = (c >> 3) & 0xFC; b = (c << 3) & 0xF8;
+}
+static inline uint16_t rgb565_lerp(uint16_t c1, uint16_t c2, int t, int steps) {
+    uint8_t r1,g1,b1,r2,g2,b2;
+    rgb565_unpack(c1,r1,g1,b1); rgb565_unpack(c2,r2,g2,b2);
+    return rgb565(r1+(r2-r1)*t/steps, g1+(g2-g1)*t/steps, b1+(b2-b1)*t/steps);
+}
+static inline uint16_t rgb565_dim(uint16_t c, int pct) {
+    uint8_t r,g,b; rgb565_unpack(c,r,g,b);
+    return rgb565(r*pct/100, g*pct/100, b*pct/100);
+}
+static inline uint16_t rgb565_brighten(uint16_t c, int add) {
+    uint8_t r,g,b; rgb565_unpack(c,r,g,b);
+    r=std::min(255,(int)r+add); g=std::min(255,(int)g+add); b=std::min(255,(int)b+add);
+    return rgb565(r,g,b);
+}
+
+// Vertical gradient fill — draws horizontal lines from top colour to bottom colour
+static void gradientRect(lgfx::LGFX_Sprite& spr, int x, int y, int w, int h,
+                         uint16_t topCol, uint16_t botCol) {
+    for (int i = 0; i < h; i++) {
+        spr.drawFastHLine(x, y + i, w, rgb565_lerp(topCol, botCol, i, h));
+    }
+}
+
+// Gradient rounded rect — gradient fill with rounded corner mask
+static void gradientRoundRect(lgfx::LGFX_Sprite& spr, int x, int y, int w, int h,
+                              int r, uint16_t topCol, uint16_t botCol) {
+    // Fill gradient into a rectangular area, then draw rounded border on top
+    // Uses clipping trick: fill rect, then erase corners with background
+    for (int i = 0; i < h; i++) {
+        uint16_t c = rgb565_lerp(topCol, botCol, i, h);
+        spr.drawFastHLine(x + (i < r || i >= h-r ? r : 0), y + i,
+                          w - (i < r || i >= h-r ? r*2 : 0), c);
+    }
+    // Clean up corners with proper rounded rect border
+    spr.drawRoundRect(x, y, w, h, r, rgb565_lerp(topCol, botCol, 0, 2));
+}
+
+// Drop shadow — draws a darker offset rectangle behind the main shape
+static void dropShadow(lgfx::LGFX_Sprite& spr, int x, int y, int w, int h,
+                       int r, int ox=2, int oy=2) {
+    spr.fillRoundRect(x+ox, y+oy, w, h, r, 0x0000);  // pure black shadow
+}
+
+// Gradient button with shadow — the main reusable button component
+// topCol/botCol = gradient top/bottom; borderCol = border; textCol = label colour
+static void gradBtn(lgfx::LGFX_Sprite& spr, int x, int y, int w, int h,
+                    uint16_t topCol, uint16_t botCol, uint16_t borderCol,
+                    const char* label, uint16_t textCol, bool shadow=true) {
+    if (shadow) dropShadow(spr, x, y, w, h, 4, 2, 2);
+    gradientRoundRect(spr, x, y, w, h, 4, topCol, botCol);
+    spr.drawRoundRect(x, y, w, h, 4, borderCol);
+    // Highlight line at top (emboss effect)
+    spr.drawFastHLine(x+4, y+1, w-8, rgb565_brighten(topCol, 30));
+    spr.setFont(&fonts::Font0); spr.setTextDatum(middle_center);
+    spr.setTextColor(textCol);
+    spr.drawString(label, x+w/2, y+h/2);
+}
+
+// Panel with shadow and subtle gradient
+static void gradPanel(lgfx::LGFX_Sprite& spr, int x, int y, int w, int h,
+                      int r, uint16_t baseCol, uint16_t borderCol, bool shadow=true) {
+    if (shadow) dropShadow(spr, x, y, w, h, r, 3, 3);
+    uint16_t top = rgb565_brighten(baseCol, 12);
+    uint16_t bot = rgb565_dim(baseCol, 80);
+    gradientRoundRect(spr, x, y, w, h, r, top, bot);
+    spr.drawRoundRect(x, y, w, h, r, borderCol);
+    // Top highlight
+    spr.drawFastHLine(x+r, y+1, w-r*2, rgb565_brighten(baseCol, 25));
+}
+
 class TabScene : public Scene {
 private:
     int  _tab      = 0;
@@ -587,7 +665,10 @@ private:
     }
 
     void drawHeader() {
-        canvas.fillRect(0, 0, W, TOP, COL_PANEL);
+        // Header gradient: slightly lighter at top, darker at bottom
+        for (int i = 0; i < TOP; i++)
+            canvas.drawFastHLine(0, i, W, rgb565_lerp(
+                rgb565_brighten(COL_PANEL, 15), rgb565_dim(COL_PANEL, 85), i, TOP));
         hline(0, TOP - 1, W, COL_BORDER);
 
         int sc = stateCol();
@@ -714,7 +795,11 @@ private:
     }
 
     void drawNav() {
-        canvas.fillRect(0, NAV_Y, W, BOT, COL_PANEL);
+        // Nav bar gradient: darker at top (shadow under content), lighter at bottom
+        for (int i = 0; i < BOT; i++)
+            canvas.drawFastHLine(0, NAV_Y+i, W, rgb565_lerp(
+                rgb565_dim(COL_PANEL, 70), rgb565_brighten(COL_PANEL, 10), i, BOT));
+        canvas.drawFastHLine(0, NAV_Y, W, rgb565_dim(COL_PANEL, 50));  // top shadow line
         hline(0, NAV_Y, W, COL_BORDER);
 
         // When job running on DRO tab: show Hold and Abort instead of tab bar
@@ -727,12 +812,20 @@ private:
             // Hold / Resume button (left half)
             _holdBtn = { 0, NAV_Y, half, BOT };
             int hCol = inHold ? GREEN : YELLOW;
-            canvas.fillRoundRect(2, NAV_Y+3, half-4, BOT-6, 4, hCol);
+            // Gradient Hold/Resume button
+            gradientRoundRect(canvas, 2, NAV_Y+3, half-4, BOT-6, 4,
+                              rgb565_brighten(hCol, 25), rgb565_dim(hCol, 70));
+            canvas.drawRoundRect(2, NAV_Y+3, half-4, BOT-6, 4, hCol);
+            canvas.drawFastHLine(6, NAV_Y+4, half-12, rgb565_brighten(hCol, 40));
             navTxt(inHold ? "Resume (~)" : "Hold (!)", half/2, NAV_Y+BOT/2, COL_BG);
 
             // Abort button (right half)
             _abortBtn = { half, NAV_Y, half, BOT };
-            canvas.fillRoundRect(half+2, NAV_Y+3, half-4, BOT-6, 4, RED);
+            // Gradient Abort button
+            gradientRoundRect(canvas, half+2, NAV_Y+3, half-4, BOT-6, 4,
+                              rgb565_brighten(RED, 25), rgb565_dim(RED, 60));
+            canvas.drawRoundRect(half+2, NAV_Y+3, half-4, BOT-6, 4, RED);
+            canvas.drawFastHLine(half+6, NAV_Y+4, half-12, rgb565_brighten(RED, 40));
             navTxt("Abort (x)", half + half/2, NAV_Y+BOT/2, 0xFFFF);
 
             // Invalidate nav tabs so normal tab touch doesn't fire
@@ -748,8 +841,13 @@ private:
             int w = (i == N_TABS-1) ? W - x : tw;  // last tab fills to edge
             _navTabs[i] = { x, NAV_Y, w, BOT };
             if (i == _tab) {
-                canvas.fillRect(x, NAV_Y, w, BOT, 0x0019);   // dark blue active tab
-                canvas.fillRect(x, NAV_Y, w, 3, COL_AX_X);   // accent bar from theme
+                // Active tab gradient: dark blue fading down
+                for (int ti = 0; ti < BOT; ti++)
+                    canvas.drawFastHLine(x, NAV_Y+ti, w,
+                        rgb565_lerp((uint16_t)0x0032, (uint16_t)0x0010, ti, BOT));
+                // Accent bar at top with brightness gradient
+                canvas.fillRect(x, NAV_Y, w, 2, COL_AX_X);
+                canvas.drawFastHLine(x, NAV_Y+2, w, rgb565_dim(COL_AX_X, 50));
             }
             if (i > 0 && i < N_TABS) vline(x, NAV_Y + 5, BOT - 10, COL_BORDER);
             int col;
@@ -851,7 +949,12 @@ private:
 
 
         // ── Visualizer: shows path (auto-scaled) OR work area map ────────────
-        canvas.fillRect(VIZ_X, VIZ_Y, VIZ_W, VIZ_H, COL_PANEL2);
+        // VIZ area gradient: slightly darker edges for depth
+        for (int vi = 0; vi < VIZ_H; vi++) {
+            int edgeDim = (vi < 4 || vi >= VIZ_H-4) ? 85 : 100;
+            canvas.drawFastHLine(VIZ_X, VIZ_Y+vi, VIZ_W,
+                rgb565_dim(COL_PANEL2, edgeDim));
+        }
 
 
         if (_vizFullscreen && !vizPath.empty()) {
@@ -1087,12 +1190,14 @@ private:
             canvas.fillRect(VIZ_X, stripY, VIZ_W, stripH, COL_PANEL);
             canvas.drawFastHLine(VIZ_X, stripY, VIZ_W, COL_BORDER2);
             canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
-            canvas.fillRoundRect(bx1, by, bw, bh, 3, 0x0019);
+            dropShadow(canvas, bx1, by, bw, bh, 3, 1, 1);
+            gradientRoundRect(canvas, bx1, by, bw, bh, 3, 0x0022, 0x0008);
             canvas.drawRoundRect(bx1, by, bw, bh, 3, COL_AX_Z);
             canvas.setTextColor(COL_AX_Z);
             canvas.drawString("Z Adjust", bx1+bw/2, by+bh/2);
             uint16_t rwCol = (_retraceSupport == 2) ? COL_DIM2 : CYAN;
-            canvas.fillRoundRect(bx2, by, bw, bh, 3, 0x0019);
+            dropShadow(canvas, bx2, by, bw, bh, 3, 1, 1);
+            gradientRoundRect(canvas, bx2, by, bw, bh, 3, 0x0022, 0x0008);
             canvas.drawRoundRect(bx2, by, bw, bh, 3, rwCol);
             canvas.setTextColor(rwCol);
             canvas.drawString((_retraceSupport == 2) ? "No plugin" : "Rewind",
@@ -1145,7 +1250,10 @@ private:
 
         // ── Feed / Speed / Spindle bar — tap to select, MPG adjusts ──────────
         int fy  = NAV_Y - FEED_H;
-        canvas.fillRect(0, fy, W, FEED_H, COL_PANEL2);
+        // Feed bar: subtle top-to-bottom gradient
+        for (int i = 0; i < FEED_H; i++)
+            canvas.drawFastHLine(0, fy+i, W, rgb565_lerp(
+                rgb565_brighten(COL_PANEL2, 8), rgb565_dim(COL_PANEL2, 90), i, FEED_H));
         hline(0, fy, W, COL_BORDER);
 
         auto barTxt = [&](const char* s, int x, int y2, int col, int datum = middle_center) {
@@ -1174,7 +1282,11 @@ private:
                 barTxt(label, px + pw/2, lbl_y, lt ? 0x0000 : COL_BG);
                 barTxt(val,   px + pw/2, val_y, lt ? 0x0000 : COL_BG);
             } else {
-                canvas.fillRoundRect(px, fy2, pw, fh, 4, COL_PANEL2);
+                // Pill background with subtle gradient (inset look)
+                for (int pi = 0; pi < fh; pi++)
+                    canvas.drawFastHLine(px+(pi<4||pi>=fh-4?4:0), fy2+pi,
+                        pw-(pi<4||pi>=fh-4?8:0),
+                        rgb565_lerp(rgb565_dim(COL_PANEL2,85), rgb565_brighten(COL_PANEL2,5), pi, fh));
                 // Light theme: thicker border
                 if (lt) {
                     canvas.drawRoundRect(px-1, fy2-1, pw+2, fh+2, 4, col);
@@ -1893,8 +2005,7 @@ private:
         // Central panel
         int pw=W-40, ph=116;
         int px=20, py=(NAV_Y+TOP)/2 - ph/2;
-        canvas.fillRoundRect(px, py, pw, ph, 8, 0x1082);
-        canvas.drawRoundRect(px, py, pw, ph, 8, 0xF800);
+        gradPanel(canvas, px, py, pw, ph, 8, 0x1082, 0xF800);
 
         // Warning triangle
         canvas.fillTriangle(W/2, py+10, W/2-13, py+34, W/2+13, py+34, 0xFD20);

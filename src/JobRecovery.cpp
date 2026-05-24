@@ -35,6 +35,58 @@ static int           _backupLines  = 5;    // configurable 1-20
 static bool          _dryRun       = false; // dry-run mode
 static bool          _g4142Warning = false; // G41/G42 detected near resume
 
+
+// ── RGB565 gradient helpers (shared with TabScene.cpp) ───────────────────────
+static inline uint16_t jr_rgb565(uint8_t r, uint8_t g, uint8_t b) {
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
+static inline void jr_unpack(uint16_t c, uint8_t& r, uint8_t& g, uint8_t& b) {
+    r = (c >> 8) & 0xF8; g = (c >> 3) & 0xFC; b = (c << 3) & 0xF8;
+}
+static inline uint16_t jr_lerp(uint16_t c1, uint16_t c2, int t, int s) {
+    uint8_t r1,g1,b1,r2,g2,b2;
+    jr_unpack(c1,r1,g1,b1); jr_unpack(c2,r2,g2,b2);
+    return jr_rgb565(r1+(r2-r1)*t/s, g1+(g2-g1)*t/s, b1+(b2-b1)*t/s);
+}
+static inline uint16_t jr_brighten(uint16_t c, int a) {
+    uint8_t r,g,b; jr_unpack(c,r,g,b);
+    return jr_rgb565(std::min(255,(int)r+a), std::min(255,(int)g+a), std::min(255,(int)b+a));
+}
+static inline uint16_t jr_dim(uint16_t c, int pct) {
+    uint8_t r,g,b; jr_unpack(c,r,g,b);
+    return jr_rgb565(r*pct/100, g*pct/100, b*pct/100);
+}
+static void jr_gradBtn(lgfx::LGFX_Sprite* spr, int x, int y, int w, int h,
+                       uint16_t topCol, uint16_t botCol, uint16_t border,
+                       const char* label, uint16_t tc) {
+    // Shadow
+    spr->fillRoundRect(x+2, y+2, w, h, 4, 0x0000);
+    // Gradient fill
+    for (int i = 0; i < h; i++) {
+        uint16_t c = jr_lerp(topCol, botCol, i, h);
+        spr->drawFastHLine(x + (i < 4 || i >= h-4 ? 4 : 0), y + i,
+                           w - (i < 4 || i >= h-4 ? 8 : 0), c);
+    }
+    spr->drawRoundRect(x, y, w, h, 4, border);
+    // Top highlight
+    spr->drawFastHLine(x+4, y+1, w-8, jr_brighten(topCol, 30));
+    spr->setFont(&fonts::Font0); spr->setTextDatum(middle_center);
+    spr->setTextColor(tc); spr->drawString(label, x+w/2, y+h/2);
+}
+static void jr_gradPanel(lgfx::LGFX_Sprite* spr, int x, int y, int w, int h,
+                         int r, uint16_t base, uint16_t border) {
+    spr->fillRoundRect(x+3, y+3, w, h, r, 0x0000);  // shadow
+    uint16_t top = jr_brighten(base, 12);
+    uint16_t bot = jr_dim(base, 80);
+    for (int i = 0; i < h; i++) {
+        uint16_t c = jr_lerp(top, bot, i, h);
+        spr->drawFastHLine(x + (i < r || i >= h-r ? r : 0), y + i,
+                           w - (i < r || i >= h-r ? r*2 : 0), c);
+    }
+    spr->drawRoundRect(x, y, w, h, r, border);
+    spr->drawFastHLine(x+r, y+1, w-r*2, jr_brighten(base, 25));
+}
+
 // Rect struct for touch zones — must be declared before use
 struct Rect { int x, y, w, h; };
 static bool inRect(const Rect& r, int x, int y) {
@@ -313,15 +365,15 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
 
     // Colours
     const uint16_t C_BG    = 0x0862;
-    const uint16_t C_PANEL = 0x18C3;  // slightly lighter panel
+    const uint16_t C_PANEL = 0x18C3;
     const uint16_t C_WHITE = 0xFFFF;
-    const uint16_t C_DIM   = 0x8410;  // brighter dim — more readable
+    const uint16_t C_DIM   = 0xAD75;  // brighter dim for readable body text
     const uint16_t GREEN   = 0x07E0;
     const uint16_t RED     = 0xF800;
     const uint16_t YELLOW  = 0xFFE0;
     const uint16_t ORANGE  = 0xFD20;
     const uint16_t CYAN    = 0x07FF;
-    const uint16_t C_LABEL = 0xC618;  // light grey for body text
+    const uint16_t C_LABEL = 0xDEFB;  // near-white for body text on dark panels
 
     // Full-screen dim
     canvas->fillRect(0, TOP, W, NAV_Y - TOP, 0x8000);
@@ -362,11 +414,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     };
     auto btn = [&](Rect& r, int x, int y, int w, int h, uint16_t fill, uint16_t border, const char* label, uint16_t tc){
         r = {x,y,w,h};
-        fillR(x,y,w,h,4,fill);
-        strokeR(x,y,w,h,4,border);
-        // Use Font0 so label always fits within button width
-        canvas->setFont(&fonts::Font0); canvas->setTextDatum(middle_center);
-        canvas->setTextColor(tc); canvas->drawString(label, x+w/2, y+h/2);
+        jr_gradBtn(canvas, x, y, w, h, jr_brighten(fill, 20), jr_dim(fill, 70), border, label, tc);
     };
 
     int bh = 30, gap = 6;
@@ -374,61 +422,86 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     switch (_phase) {
 
     case RecoveryPhase::Prompt: {
-        fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,YELLOW);
-        // Title bar
-        canvas->fillRoundRect(px,py,pw,20,6,0x8400);
+        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,YELLOW);
+        // Title bar with warning icon
+        canvas->fillRoundRect(px,py,pw,22,6,0x8400);
+        // Warning triangle
+        canvas->fillTriangle(px+14, py+4, px+6, py+18, px+22, py+18, YELLOW);
+        canvas->fillRect(px+13, py+8, 3, 6, 0x8400);
+        canvas->fillRect(px+13, py+16, 3, 2, 0x8400);
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(YELLOW);
-        canvas->drawString("INTERRUPTED JOB FOUND", cx, py+10);
+        canvas->drawString("JOB INTERRUPTED", cx, py+11);
         // File path
         std::string jp=_cp.jobPath; if(jp.size()>34) jp=jp.substr(jp.size()-34);
-        canvas->setFont(&fonts::Font0); canvas->setTextColor(0xAD75);
-        canvas->drawString(jp.c_str(), cx, py+28);
-        // Connection dot
-        bool conn=(state!=Disconnected);
-        canvas->fillCircle(px+12, py+42, 4, conn?GREEN:RED);
-        canvas->setTextDatum(middle_left); canvas->setTextColor(conn?GREEN:RED);
-        canvas->drawString(conn?"Connected":"NOT Connected", px+22, py+42);
-        // Progress
+        canvas->setFont(&fonts::Font0); canvas->setTextColor(C_LABEL);
+        canvas->drawString(jp.c_str(), cx, py+30);
+        // Progress + position in a single info block
         char prog[32];
         if(_cp.lastLine>100000) snprintf(prog,32,"Progress: ~%u%%",_cp.lastLine/1000);
-        else if(_cp.lastLine>0) snprintf(prog,32,"At line: %u",_cp.lastLine);
+        else if(_cp.lastLine>0) snprintf(prog,32,"Line: %u",_cp.lastLine);
         else snprintf(prog,32,"Progress: unknown");
-        canvas->setTextDatum(middle_center); canvas->setTextColor(C_WHITE);
-        canvas->drawString(prog, cx, py+56);
-        // Position
         float x2=_cp.axisX/10000.0f,y2=_cp.axisY/10000.0f,z2=_cp.axisZ/10000.0f;
-        char pos[40]; snprintf(pos,40,"X%.2f Y%.2f Z%.2f",x2,y2,z2);
-        canvas->setTextColor(0xAD75); canvas->drawString(pos, cx, py+70);
-        // Question
-        canvas->setTextColor(CYAN); canvas->drawString("Resume this job?", cx, py+88);
+        char pos[40]; snprintf(pos,40,"X%.1f  Y%.1f  Z%.2f",x2,y2,z2);
+        // Info box
+        canvas->fillRoundRect(px+4,py+40,pw-8,34,3,0x1082);
+        canvas->setTextDatum(middle_center);
+        canvas->setTextColor(C_WHITE);
+        canvas->drawString(prog, cx, py+50);
+        canvas->setTextColor(CYAN);
+        canvas->drawString(pos, cx, py+64);
+        // Connection indicator
+        bool conn=(state!=Disconnected);
+        canvas->fillCircle(px+12, py+84, 3, conn?GREEN:RED);
+        canvas->setFont(&fonts::Font0);
+        canvas->setTextDatum(middle_left); canvas->setTextColor(conn?GREEN:C_DIM);
+        canvas->drawString(conn?"Connected":"Waiting...", px+20, py+84);
         // Buttons - full width, stacked
-        int bby=py+avH-bh*2-10;
-        btn(_btnA, px+6, bby,      pw-12, bh, 0x0340, GREEN,  "YES — Resume job",  GREEN);
-        btn(_btnB, px+6, bby+bh+4, pw-12, bh, 0x4000, RED,    "NO — Discard",      RED);
+        int bby=py+avH-bh*2-8;
+        btn(_btnA, px+4, bby,      pw-8, bh, 0x0340, GREEN, "Resume job",  GREEN);
+        btn(_btnB, px+4, bby+bh+4, pw-8, bh, 0x4000, RED,   "Discard",     RED);
         break;
     }
 
     case RecoveryPhase::AskToolBreak: {
-        fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,ORANGE);
+        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,ORANGE);
+        // Title
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(ORANGE);
-        canvas->drawString("TOOL BREAK / E-STOP?", cx, py+12);
-        canvas->setFont(&fonts::Font0); canvas->setTextColor(C_WHITE);
-        canvas->drawString("Was this job stopped by:", cx, py+28);
-        canvas->drawString("tool break, E-stop, power loss, crash?", cx, py+42);
-        canvas->setTextColor(YELLOW);
-        canvas->drawString("YES: manual jog + tool change required", cx, py+58);
+        canvas->drawString("HOW DID IT STOP?", cx, py+12);
+        // Two option boxes side by side
+        int hw=(pw-16)/2, by0=py+28;
+        // Left: unsafe stop (red)
+        canvas->fillRoundRect(px+4,by0,hw,70,4,0x2000);
+        canvas->drawRoundRect(px+4,by0,hw,70,4,RED);
+        // Broken tool icon
+        canvas->drawLine(px+hw/2-2,by0+10,px+hw/2-2,by0+28,0xFEE8);
+        canvas->drawLine(px+hw/2+2,by0+22,px+hw/2+6,by0+32,0xFEE8);
+        canvas->setFont(&fonts::Font0); canvas->setTextColor(RED);
+        canvas->drawString("E-stop",   px+4+hw/2, by0+40);
+        canvas->drawString("Tool break",px+4+hw/2, by0+52);
         canvas->setTextColor(C_DIM);
-        canvas->drawString("NO:  safe auto-resume", cx, py+72);
-        int bw2=(pw-18)/2, by2=py+avH-bh-6;
-        btn(_btnA, px+6,      by2, bw2, bh, 0xC000, RED,   "YES — Unsafe stop", C_WHITE);
-        btn(_btnB, px+12+bw2, by2, bw2, bh, GREEN,  GREEN, "NO — Clean stop",   0x0000);
+        canvas->drawString("Power loss",px+4+hw/2, by0+62);
+        // Right: clean stop (green)
+        canvas->fillRoundRect(px+12+hw,by0,hw,70,4,0x0220);
+        canvas->drawRoundRect(px+12+hw,by0,hw,70,4,GREEN);
+        // Checkmark icon
+        canvas->drawLine(px+12+hw+hw/2-6,by0+18,px+12+hw+hw/2-2,by0+24,GREEN);
+        canvas->drawLine(px+12+hw+hw/2-2,by0+24,px+12+hw+hw/2+8,by0+10,GREEN);
+        canvas->setFont(&fonts::Font0); canvas->setTextColor(GREEN);
+        canvas->drawString("Clean pause",px+12+hw+hw/2, by0+40);
+        canvas->drawString("Feed hold",  px+12+hw+hw/2, by0+52);
+        canvas->setTextColor(C_DIM);
+        canvas->drawString("Auto-resume", px+12+hw+hw/2, by0+62);
+        // Buttons
+        int bw2=(pw-18)/2, by2=py+avH-bh-4;
+        btn(_btnA, px+4,      by2, bw2, bh, 0x6000, RED,   "Unsafe stop", C_WHITE);
+        btn(_btnB, px+10+bw2, by2, bw2, bh, 0x0340, GREEN, "Clean stop",  GREEN);
         break;
     }
 
     case RecoveryPhase::ShowLines: {
-        fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,CYAN);
+        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,CYAN);
         // Title
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(CYAN);
@@ -472,7 +545,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         break;
     }
     case RecoveryPhase::ManualJog: {
-        fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,RED);
+        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,RED);
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(RED);
         canvas->drawString("MANUAL JOG REQUIRED", cx, py+12);
@@ -501,7 +574,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     }
 
     case RecoveryPhase::ToolChange: {
-        fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,ORANGE);
+        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,ORANGE);
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(ORANGE);
         canvas->drawString("TOOL CHANGE", cx, py+12);
@@ -533,10 +606,10 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     }
 
     case RecoveryPhase::Confirm: {
-        fillR(px,py,pw,avH,6,C_PANEL); strokeR(px,py,pw,avH,6,GREEN);
+        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,GREEN);
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(GREEN);
-        canvas->drawString("READY TO RESUME", cx, py+12);
+        canvas->drawString("READY TO RESUME", cx, py+11);
         // 4 sequence boxes
         int sbw=(pw-20)/4, sby=py+26, sbh=38;
         const uint16_t sbg[4]={0x0440,0x001A,0x4220,0x0440};
@@ -557,8 +630,9 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         char p1[40]; snprintf(p1,40,"X%.1f Y%.1f Z%.2f",rx2,ry2,rz);
         char p2[40]; snprintf(p2,40,"F%u  line ~%u",_cp.feedRate,_resumeLine);
         canvas->setFont(&fonts::Font0); canvas->setTextDatum(middle_center);
-        canvas->setTextColor(C_DIM);
+        canvas->setTextColor(C_LABEL);
         canvas->drawString(p1,cx,sby+sbh+12);
+        canvas->setTextColor(C_DIM);
         canvas->drawString(p2,cx,sby+sbh+24);
         int notesY = sby+sbh+36;  // below position text (p1 at +12, p2 at +24)
         if(_toolBreak){
@@ -576,8 +650,8 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         // Dry-run toggle
         canvas->fillRoundRect(px+4,notesY,pw-8,14,2,_dryRun?0x001A:0x18C3);
         canvas->drawRoundRect(px+4,notesY,pw-8,14,2,_dryRun?CYAN:0x4208);
-        canvas->setTextColor(_dryRun?CYAN:0x8410);
-        canvas->drawString(_dryRun?"DRY RUN ON — no cut, verify position":"DRY RUN: tap to enable",cx,notesY+7);
+        canvas->setTextColor(_dryRun?CYAN:C_DIM);
+        canvas->drawString(_dryRun?"DRY RUN: ON (no cut)":"DRY RUN: tap to enable",cx,notesY+7);
         _lineRects[0]={px+4,notesY,pw-8,14};  // dry-run toggle rect
         int bw2=(pw-18)/2, by2=py+avH-bh-4;
         btn(_btnA, px+4,      by2, bw2, bh, GREEN,  GREEN, "CONFIRM", 0x0000);
