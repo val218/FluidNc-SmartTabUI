@@ -927,7 +927,6 @@ void setup() {
     // Continuously drains hardware UART into a 4KB ring buffer.
     // This decouples UART reliability from LCD redraw timing on Core 1.
     // Stack 2048 bytes: only does uart_read_bytes + ring buffer writes.
-    extern void uart_reader_task(void*);
     xTaskCreatePinnedToCore(uart_reader_task, "uart_rx", 2048, nullptr, 2, nullptr, 0);
 }
 

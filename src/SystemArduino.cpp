@@ -56,7 +56,7 @@ static inline int uart_ring_pop() {
 // ── UART reader task (Core 0, high priority) ──────────────────────────────────
 // Runs every 1ms, reads ALL available bytes from hardware UART into ring buffer.
 // This runs INDEPENDENTLY of loop() so LCD redraws never cause UART byte loss.
-static void uart_reader_task(void*) {
+void uart_reader_task(void*) {
     uint8_t buf[128];
     for (;;) {
         int n = uart_read_bytes(fnc_uart_port, buf, sizeof(buf), 0);
