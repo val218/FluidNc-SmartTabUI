@@ -74,6 +74,15 @@ bool decode_state_string(const char* state_string, state_t& state) {
     return false;
 }
 
+// ── Connection management — parser-driven, all on Core 1 ────────────────────
+static uint32_t _lastStatusMs   = 0;
+static uint32_t _nextPingMs     = 0;
+static int      _missedPings    = 0;
+static bool     _wasConnected   = false;
+static const uint32_t PING_INTERVAL_MS   = 500;
+static const uint32_t DISCONNECT_TIMEOUT = 5000;
+static const int      DISCONNECT_PINGS   = 8;
+
 void set_disconnected_state() {
     _wasConnected   = false;
     _missedPings    = 0;
@@ -284,19 +293,7 @@ extern "C" void show_gcode_modes(struct gcode_modes* modes) {
     markDirty();
 }
 
-// ── Connection management — parser-driven, all on Core 1 ────────────────────
-// Connection state is determined by whether FluidNC responds to status pings.
-// No cross-core shared timers. No volatile complexity.
-// All reads/writes of these variables happen only in loop() (Core 1).
-
-static uint32_t _lastStatusMs   = 0;   // millis() when last valid status received
-static uint32_t _nextPingMs     = 0;   // when to send next ping
-static int      _missedPings    = 0;   // consecutive pings with no response
-static bool     _wasConnected   = false;
-
-static const uint32_t PING_INTERVAL_MS   = 500;   // ping every 500ms
-static const uint32_t DISCONNECT_TIMEOUT = 5000;  // declare disconnect after 5s no status
-static const int      DISCONNECT_PINGS   = 8;     // require 8 missed pings (~4s) to disconnect
+// (connection variables moved to top of file)
 
 // Called by show_state() when any valid <State|...> is parsed — connection proven
 void mark_connected() {
