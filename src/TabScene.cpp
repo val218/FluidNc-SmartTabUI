@@ -385,6 +385,8 @@ static bool _loadingDone  = false;          // all batches received
 static bool _vizCacheReady = false;
 static bool _vizFullscreen = false;  // DRO viz double-tap fullscreen
 static bool _confirmRun = false;
+static bool _jobComplete = false;
+static uint32_t _jobCompleteMs = 0;
 static int  _runStep = 0;         // 0=idle 1=lifting Z 2=going XY 3=starting
 static uint32_t _runStartMs = 0;   // when run sequence started
 static bool _zNudgeOpen = false;
