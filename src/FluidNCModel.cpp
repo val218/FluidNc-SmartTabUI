@@ -75,19 +75,9 @@ bool decode_state_string(const char* state_string, state_t& state) {
 }
 
 void set_disconnected_state() {
-    // Guard: don't override a valid state if bytes are still flowing.
-    // If the ring buffer has unread bytes, fnc_poll() will restore state shortly.
-    // Check: if disconnect_ms is still in the future, a byte recently arrived
-    // via uart_reader_task — we're not truly disconnected.
-    extern uint32_t fnc_rx_count;
-    static uint32_t _lastRxCount = 0;
-    uint32_t currentRx = fnc_rx_count;
-    if (currentRx != _lastRxCount) {
-        // Bytes arrived since last check — connection is alive, don't disconnect
-        _lastRxCount = currentRx;
-        return;
-    }
-    _lastRxCount = currentRx;
+    _wasConnected   = false;
+    _missedPings    = 0;
+    _lastStatusMs   = 0;
     state           = Disconnected;
     my_state_string = "N/C";
 }
@@ -220,6 +210,7 @@ bool    awaiting_alarm = false;
 extern "C" void show_state(const char* state_string) {
     previous_state = state;
     state_t new_state;
+    mark_connected();  // any valid status report = connected
     if (decode_state_string(state_string, new_state) && state != new_state) {
         if (state == Disconnected) {
             fnc_realtime((realtime_cmd_t)0x0c);  // Ctrl-L - echo off
@@ -293,72 +284,54 @@ extern "C" void show_gcode_modes(struct gcode_modes* modes) {
     markDirty();
 }
 
-// These are written by uart_reader_task (Core 0) and read by loop() (Core 1).
-// volatile ensures Core 1 always reads the value Core 0 wrote, not a cached copy.
-volatile uint32_t disconnect_ms = 0;
-volatile uint32_t next_ping_ms  = 0;
+// ── Connection management — parser-driven, all on Core 1 ────────────────────
+// Connection state is determined by whether FluidNC responds to status pings.
+// No cross-core shared timers. No volatile complexity.
+// All reads/writes of these variables happen only in loop() (Core 1).
 
-// If we haven't heard from FluidNC in 4 seconds for some other reason,
-// send a status report request.
-// Ping every 500ms — more frequent pings mean faster detection of silence
-// and more keepalive packets to maintain connection during busy periods
-const int ping_interval_ms = 500;
+static uint32_t _lastStatusMs   = 0;   // millis() when last valid status received
+static uint32_t _nextPingMs     = 0;   // when to send next ping
+static int      _missedPings    = 0;   // consecutive pings with no response
+static bool     _wasConnected   = false;
 
-// Disconnect only after 8 seconds of silence.
-// FluidNC can legitimately be silent for 2-4s during heavy SD/planning work.
-// 3s was too tight — caused false disconnects during normal operation.
-const int disconnect_interval_ms = 8000;
+static const uint32_t PING_INTERVAL_MS   = 500;   // ping every 500ms
+static const uint32_t DISCONNECT_TIMEOUT = 5000;  // declare disconnect after 5s no status
+static const int      DISCONNECT_PINGS   = 8;     // require 8 missed pings (~4s) to disconnect
 
-// Debounce counter: require N consecutive timeouts before declaring disconnected
-// This prevents single missed status reports from triggering the overlay
-static int _disconnect_count = 0;
-static const int DISCONNECT_DEBOUNCE = 2;  // 2 consecutive timeouts = ~16s total
-
-bool starting = true;
+// Called by show_state() when any valid <State|...> is parsed — connection proven
+void mark_connected() {
+    _lastStatusMs = (uint32_t)millis();
+    _missedPings  = 0;
+    _wasConnected = true;
+}
 
 void request_status_report() {
     fnc_realtime(StatusReport);
-    next_ping_ms = (uint32_t)millis() + (uint32_t)ping_interval_ms;
+    _nextPingMs = (uint32_t)millis() + PING_INTERVAL_MS;
 }
 
 bool fnc_is_connected() {
-    uint32_t now = (uint32_t)millis();  // use millis() directly — always uint32_t, no cast issues
-    if (starting) {
-        starting      = false;
-        disconnect_ms = now + (uint32_t)disconnect_interval_ms;
+    uint32_t now = (uint32_t)millis();
+
+    // Send ping if due
+    if ((now - _nextPingMs) < 0x80000000UL) {
         request_status_report();
+        _missedPings++;
+    }
+
+    // Not yet connected (startup)
+    if (!_wasConnected) {
         return false;
     }
-    // Read volatile disconnect_ms once into a local to prevent double-read inconsistency
-    uint32_t dms = disconnect_ms;
-    uint32_t npm = next_ping_ms;
 
-    // Timeout check: if now has passed disconnect_ms
-    // Safe unsigned wraparound: (now - dms) is small if now just passed dms,
-    // huge (near 0xFFFFFFFF) if dms is still in the future
-    if ((now - dms) < 0x80000000UL) {
-        // Timed out — reset the timer and count
-        next_ping_ms  = now + (uint32_t)ping_interval_ms;
-        disconnect_ms = now + (uint32_t)disconnect_interval_ms;
-        _disconnect_count++;
-        if (_disconnect_count < DISCONNECT_DEBOUNCE) {
-            request_status_report();
-            return true;
-        }
-        _disconnect_count = 0;
+    // Declare disconnect if too many missed pings or too long since last status
+    if (_missedPings >= DISCONNECT_PINGS ||
+        (now - _lastStatusMs) > DISCONNECT_TIMEOUT) {
         return false;
     }
-    _disconnect_count = 0;
 
-    if ((now - npm) < 0x80000000UL) {
-        request_status_report();
-    }
     return true;
 }
 
-void update_rx_time() {
-    uint32_t now  = (uint32_t)millis();  // millis() is uint32_t — no cast issues
-    next_ping_ms  = now + (uint32_t)ping_interval_ms;
-    disconnect_ms = now + (uint32_t)disconnect_interval_ms;
-    _disconnect_count = 0;
-}
+// Legacy — called by uart_reader_task, kept for compatibility but not used for timing
+void update_rx_time() {}

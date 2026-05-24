@@ -63,6 +63,7 @@ void request_status_report();
 void set_disconnected_state();
 
 void update_rx_time();
+void mark_connected();  // call when valid status received from FluidNC
 
 extern pos_t toMm(pos_t position);
 extern pos_t fromMm(pos_t position);
