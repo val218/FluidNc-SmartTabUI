@@ -519,9 +519,9 @@ static void runSettingsMenu(AppSettings& s) {
     drawSettings();
 
     int cx = display.width() / 2;
+    int16_t _encLast = get_encoder();   // baseline for delta tracking
     for (;;) {
-        touch.update(millis());
-        // E-stop + enable → reboot (check every loop iteration)
+        // ── E-stop + enable hold → reboot ────────────────────────────────────
         {
             bool en2   = readEnableNow();
             bool est2  = (gpio_get_level(GPIO_NUM_17) == 0);
@@ -529,27 +529,37 @@ static void runSettingsMenu(AppSettings& s) {
             if (en2 && est2) {
                 if (!rbHeld) rbHeld = millis();
                 if (millis() - rbHeld >= 3000) esp_restart();
-                // Show countdown bar at bottom of screen
                 uint32_t h = millis() - rbHeld;
                 display.fillRect(0, display.height()-4, display.width()*h/3000, 4, 0xF800);
             } else {
                 rbHeld = 0;
             }
         }
-        auto t = touch.getDetail();
 
+        // ── MPG encoder: compute delta from last read, 1 detent = 1 row step ─
         int rowH2 = 48, bx0_2 = 68, bW2 = W - bx0_2 - 4;
-        // MPG encoder scroll
-        { int16_t enc = get_encoder();
-          if (enc != 0) {
-              { int maxS=std::max(0,36+11*rowH2+40-240);  // 11 rows + 8px pad
-              _settingsScroll = std::max(0, std::min(maxS, _settingsScroll + enc * 4)); }
-              drawSettings(); delay(8); continue;
-          }
+        int maxScroll = std::max(0, 36 + 11*rowH2 + 40 - 240);
+        {
+            int16_t encNow = get_encoder();
+            int16_t encDelta = encNow - _encLast;
+            if (encDelta != 0) {
+                _encLast = encNow;
+                // 1 detent = 1 raw count on this encoder (X4 PCNT mode counts all edges)
+                // Divide by 4 to get detents, then scroll rowH/4 per detent = 12px
+                // Net: encDelta * 3 gives ~12px per detent — smooth scroll
+                _settingsScroll = std::max(0, std::min(maxScroll,
+                                  _settingsScroll + (int)(encDelta * 3)));
+                drawSettings();
+                delay(8);
+                // Read touch AFTER encoder so we don't consume pending touch events
+                // by falling through — just loop again
+                continue;
+            }
         }
-        // Touch handling — track drag and tap separately
-        bx0_2 = 68; bW2 = W - bx0_2 - 4;
-        int maxScroll = std::max(0, 36 + 11*rowH2 + 40 - 240);  // 11 rows + 8px pad
+
+        // ── Touch: update and read in the same iteration ──────────────────────
+        touch.update(millis());
+        auto t = touch.getDetail();
 
         if (t.wasPressed()) {
             _lastTouchY = t.y;
