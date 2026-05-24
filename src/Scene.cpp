@@ -185,25 +185,11 @@ void dispatch_events() {
     // MPG switch changed (set by Core 0) — redraw safely on Core 1
     if (mpgConsumeChanged() && current_scene) current_scene->reDisplay();
 
-    // UART poll + connection check — all on Core 1, no cross-core complexity.
-    // fnc_poll() parses incoming bytes; fnc_is_connected() tracks whether
-    // FluidNC has responded to recent pings. mark_connected() is called inside
-    // show_state() whenever a valid <State|...> report is parsed.
-    if (!simMode_active()) {
-        fnc_poll();
-        if (!fnc_is_connected()) {
-            if (state != Disconnected) {
-                set_disconnected_state();
-                activate_at_top_level(getTabScene());
-            }
-            // While disconnected: keep pinging so we catch FluidNC coming back online.
-            // request_status_report() is already called inside fnc_is_connected()
-            // but call it explicitly here too to be sure.
-        } else if (state == Disconnected) {
-            // fnc_is_connected() returned true (mark_connected was called)
-            // but state is still Disconnected — force a status request so
-            // show_state() fires and transitions state away from Disconnected
-            request_status_report();
+    // On disconnect, stay on TabScene — skip in simulation
+    if (!simMode_active() && !fnc_is_connected()) {
+        if (state != Disconnected) {
+            set_disconnected_state();
+            activate_at_top_level(getTabScene());
         }
     }
 

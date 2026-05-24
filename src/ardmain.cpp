@@ -941,7 +941,7 @@ void loop() {
             simMode_injectState();
         }
     }
-    // fnc_poll() is now called from dispatch_events() before the connection check,
-    // ensuring UART is always drained before state is evaluated.
-    // No second fnc_poll() needed here.
+    } else {
+        fnc_poll();
+    }
 }

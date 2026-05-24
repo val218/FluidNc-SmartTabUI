@@ -75,19 +75,18 @@ bool decode_state_string(const char* state_string, state_t& state) {
     return false;
 }
 
-// ── Connection management — parser-driven, all on Core 1 ────────────────────
-static uint32_t _lastStatusMs   = 0;
-static uint32_t _nextPingMs     = 0;
-static int      _missedPings    = 0;
-static bool     _wasConnected   = false;
-static const uint32_t PING_INTERVAL_MS   = 500;
-static const uint32_t DISCONNECT_TIMEOUT = 5000;
-static const int      DISCONNECT_PINGS   = 8;
+// ── Connection management — original working implementation ─────────────────
+int disconnect_ms = 0;
+int next_ping_ms  = 0;
+
+const int ping_interval_ms       = 500;
+const int disconnect_interval_ms = 8000;
+static int  _disconnect_count    = 0;
+static const int DISCONNECT_DEBOUNCE = 2;
+
+bool starting = true;
 
 void set_disconnected_state() {
-    _wasConnected   = false;
-    _missedPings    = 0;
-    _lastStatusMs   = 0;
     state           = Disconnected;
     my_state_string = "N/C";
 }
@@ -300,58 +299,45 @@ extern "C" void show_gcode_modes(struct gcode_modes* modes) {
     markDirty();
 }
 
-// (connection variables moved to top of file)
-
-// Called by show_state() when any valid <State|...> is parsed — connection proven
-void mark_connected() {
-    _lastStatusMs = (uint32_t)millis();
-    _missedPings  = 0;
-    _wasConnected = true;
-}
-
-// Expose for diagnostics
-uint32_t dbg_last_status_ms()  { return _lastStatusMs; }
-int      dbg_missed_pings()    { return _missedPings; }
-
 void request_status_report() {
+    fnc_putchar(0x11);
     fnc_realtime(StatusReport);
-    _nextPingMs = (uint32_t)millis() + PING_INTERVAL_MS;
+    next_ping_ms = milliseconds() + ping_interval_ms;
 }
 
 bool fnc_is_connected() {
-    extern volatile uint32_t fnc_rx_count;
-    uint32_t now = (uint32_t)millis();
-
-    // Send ping if due
-    if ((now - _nextPingMs) < 0x80000000UL) {
+    int now = milliseconds();
+    if (starting) {
+        starting      = false;
+        disconnect_ms = now + (disconnect_interval_ms - ping_interval_ms);
         request_status_report();
-        _missedPings++;
-    }
-
-    // Not yet connected (startup)
-    if (!_wasConnected) {
         return false;
     }
-
-    // Declare disconnect if too many missed pings or too long since last status
-    uint32_t silenceMs = now - _lastStatusMs;
-    if (_missedPings >= DISCONNECT_PINGS || silenceMs > DISCONNECT_TIMEOUT) {
-        // Log to terminal tab so user can see exactly what triggered disconnect
-        static uint32_t _lastDisconnLog = 0;
-        if (now - _lastDisconnLog > 2000) {
-            _lastDisconnLog = now;
-            char msg[80];
-            snprintf(msg, sizeof(msg),
-                "[DISC] missed=%d silence=%lums rx=%lu",
-                _missedPings, (unsigned long)silenceMs,
-                (unsigned long)fnc_rx_count);
-            fnc_term_inject(msg);
+    if ((now - disconnect_ms) >= 0) {
+        next_ping_ms  = now + ping_interval_ms;
+        disconnect_ms = now + disconnect_interval_ms;
+        _disconnect_count++;
+        if (_disconnect_count < DISCONNECT_DEBOUNCE) {
+            request_status_report();
+            return true;
         }
+        _disconnect_count = 0;
         return false;
     }
-
+    _disconnect_count = 0;
+    if ((now - next_ping_ms) >= 0) {
+        request_status_report();
+    }
     return true;
 }
 
-// Legacy — called by uart_reader_task, kept for compatibility but not used for timing
-void update_rx_time() {}
+void update_rx_time() {
+    int now       = milliseconds();
+    next_ping_ms  = now + ping_interval_ms;
+    disconnect_ms = now + disconnect_interval_ms;
+    _disconnect_count = 0;
+}
+
+void mark_connected() {
+    update_rx_time();
+}

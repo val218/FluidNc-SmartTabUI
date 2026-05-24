@@ -179,6 +179,16 @@ void drawPngFile(LGFX_Sprite* sprite, const char* filename, int x, int y) {
 
 extern void init_hardware();
 
+// UART recovery — called when rx has been frozen too long
+extern "C" void fnc_uart_reinit() {
+    uart_driver_delete(fnc_uart_port);
+    uart_driver_install(fnc_uart_port, 1024, 0, 0, NULL, ESP_INTR_FLAG_IRAM);
+    // Reset ring buffer
+    _uartRingHead = 0;
+    _uartRingTail = 0;
+    dbg_println("UART reinit");
+}
+
 void init_fnc_uart(int uart_num, int tx_pin, int rx_pin) {
     fnc_uart_port = (uart_port_t)uart_num;
     int baudrate  = FNC_BAUD;
