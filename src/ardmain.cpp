@@ -228,9 +228,9 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
       _sBuf->drawFastHLine(0, btnY, W, S_BORDER);
       btnY += 4;  // 4px padding below separator
       // Three buttons, centred and evenly spaced
-      sB(cx-156,btnY,96,28,S_PANEL,S_CYAN,  "Inputs",    S_CYAN);
-      sB(cx-54, btnY,96,28,0x0010, S_GREEN, "Done",       S_GREEN);
-      sB(cx+50, btnY,96,28,0x0C00, S_ORANGE,"Save & Boot",S_ORANGE);
+      sB(cx-156,btnY,96,28,S_PANEL,S_CYAN,  "Inputs",      S_CYAN);
+      sB(cx-54, btnY,96,28,S_PANEL,S_ORANGE,"UART",        S_ORANGE);
+      sB(cx+50, btnY,96,28,0x0C00, S_GREEN, "Save & Boot", S_GREEN);
     }
 
     // Scroll indicator
@@ -693,16 +693,10 @@ static void runSettingsMenu(AppSettings& s) {
               runInputMonitor(); drawSettings(); continue;
           }
           if (touchIn(t.x, t.y, cx-54,  btnY, 96, 28)) {
-              // Done: save all settings and return to DRO (no restart)
-              settings_save(s);
-              tabui_setMachineType((int)s.machineType);
-              settings_applyTheme(s.theme);
-              tabui_setVolume(s.volume);
-              display.setBrightness(s.brightness);
-              return;  // exit runSettingsMenu — back to normal UI loop
+              runUartMonitor(); drawSettings(); continue;
           }
           if (touchIn(t.x, t.y, cx+50,  btnY, 96, 28)) {
-              settings_save(s); esp_restart();  // full restart for P6/axes/etc changes
+              settings_save(s); esp_restart();
           }
         }
 
