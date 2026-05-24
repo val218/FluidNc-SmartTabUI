@@ -254,8 +254,7 @@ extern "C" void handle_other(char* line) {
 extern "C" void show_error(int error) {
     errorExpire = milliseconds() + 1000;
     lastError   = error;
-    extern void tabui_onFluidNCError(int);
-    tabui_onFluidNCError(error);
+    tabui_onFluidNCError(error);  // declared in System.h
     current_scene->reDisplay();
 }
 

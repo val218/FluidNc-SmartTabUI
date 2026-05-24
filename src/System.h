@@ -13,6 +13,7 @@ constexpr static const int UPDATE_RATE_MS = 30;  // minimum refresh rate in mill
 extern Stream&             debugPort;
 void                       init_fnc_uart(int uart_num, int tx_pin, int rx_pin);
 void                       uart_reader_task(void* arg);  // UART ring buffer reader task
+void                       tabui_onFluidNCError(int err); // called from show_error()
 #endif  // ARDUINO
 
 #ifdef USE_LOVYANGFX
