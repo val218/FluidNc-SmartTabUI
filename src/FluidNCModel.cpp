@@ -293,8 +293,10 @@ extern "C" void show_gcode_modes(struct gcode_modes* modes) {
     markDirty();
 }
 
-uint32_t disconnect_ms = 0;
-uint32_t next_ping_ms  = 0;
+// These are written by uart_reader_task (Core 0) and read by loop() (Core 1).
+// volatile ensures Core 1 always reads the value Core 0 wrote, not a cached copy.
+volatile uint32_t disconnect_ms = 0;
+volatile uint32_t next_ping_ms  = 0;
 
 // If we haven't heard from FluidNC in 4 seconds for some other reason,
 // send a status report request.
@@ -316,21 +318,26 @@ bool starting = true;
 
 void request_status_report() {
     fnc_realtime(StatusReport);
-    next_ping_ms = (uint32_t)milliseconds() + (uint32_t)ping_interval_ms;
+    next_ping_ms = (uint32_t)millis() + (uint32_t)ping_interval_ms;
 }
 
 bool fnc_is_connected() {
-    uint32_t now = (uint32_t)milliseconds();
+    uint32_t now = (uint32_t)millis();  // use millis() directly — always uint32_t, no cast issues
     if (starting) {
         starting      = false;
         disconnect_ms = now + (uint32_t)disconnect_interval_ms;
         request_status_report();
         return false;
     }
-    // Use subtraction comparison — safe against uint32_t wraparound
-    // (now - disconnect_ms) > 0 overflows correctly with unsigned arithmetic
-    if ((now - disconnect_ms) < 0x80000000UL) {
-        // Timed out
+    // Read volatile disconnect_ms once into a local to prevent double-read inconsistency
+    uint32_t dms = disconnect_ms;
+    uint32_t npm = next_ping_ms;
+
+    // Timeout check: if now has passed disconnect_ms
+    // Safe unsigned wraparound: (now - dms) is small if now just passed dms,
+    // huge (near 0xFFFFFFFF) if dms is still in the future
+    if ((now - dms) < 0x80000000UL) {
+        // Timed out — reset the timer and count
         next_ping_ms  = now + (uint32_t)ping_interval_ms;
         disconnect_ms = now + (uint32_t)disconnect_interval_ms;
         _disconnect_count++;
@@ -343,14 +350,14 @@ bool fnc_is_connected() {
     }
     _disconnect_count = 0;
 
-    if ((now - next_ping_ms) < 0x80000000UL) {
+    if ((now - npm) < 0x80000000UL) {
         request_status_report();
     }
     return true;
 }
 
 void update_rx_time() {
-    uint32_t now  = (uint32_t)milliseconds();
+    uint32_t now  = (uint32_t)millis();  // millis() is uint32_t — no cast issues
     next_ping_ms  = now + (uint32_t)ping_interval_ms;
     disconnect_ms = now + (uint32_t)disconnect_interval_ms;
     _disconnect_count = 0;

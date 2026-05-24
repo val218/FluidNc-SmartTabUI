@@ -865,46 +865,6 @@ private:
         // ── Visualizer: shows path (auto-scaled) OR work area map ────────────
         canvas.fillRect(VIZ_X, VIZ_Y, VIZ_W, VIZ_H, COL_PANEL2);
 
-        // ── Hold-mode overlay hint: tappable Z Adjust + Path Rewind buttons ──
-        if (state == Hold && !_pathJogMode && !_zNudgeOpen && _tab == 0) {
-            int bw = VIZ_W/2 - 6, bh = 26, by = VIZ_Y + VIZ_H/2 - 13;
-            int bx1 = VIZ_X + 3, bx2 = VIZ_X + VIZ_W/2 + 3;
-            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
-            // Show retrace warning if plugin not found
-            bool showWarn = (_retraceSupport == 2 &&
-                             _retraceWarnMs > 0 &&
-                             (millis() - _retraceWarnMs) < 4000);
-            canvas.setTextColor(COL_DIM2);
-            canvas.drawString("JOB PAUSED", VIZ_X+VIZ_W/2, VIZ_Y + VIZ_H/2 - 22);
-            // Z Adjust
-            canvas.fillRoundRect(bx1, by, bw, bh, 4, 0x0019);
-            canvas.drawRoundRect(bx1, by, bw, bh, 4, COL_AX_Z);
-            canvas.setTextColor(COL_AX_Z);
-            canvas.drawString("Z Adjust", bx1+bw/2, by+bh/2);
-            // Path Rewind — greyed out if plugin unavailable
-            uint16_t rwBorderCol = (_retraceSupport == 2) ? COL_DIM2 : CYAN;
-            canvas.fillRoundRect(bx2, by, bw, bh, 4, 0x0019);
-            canvas.drawRoundRect(bx2, by, bw, bh, 4, rwBorderCol);
-            canvas.setTextColor(rwBorderCol);
-            canvas.drawString("Rewind", bx2+bw/2, by+bh/2);
-            // Warning text below buttons
-            if (showWarn) {
-                canvas.setTextColor(ORANGE);
-                canvas.drawString("Plugin not installed", VIZ_X+VIZ_W/2, by+bh+8);
-                canvas.setTextColor(COL_DIM2);
-                canvas.drawString("See FluidNC-PathRetrace-plugin.zip", VIZ_X+VIZ_W/2, by+bh+20);
-            } else if (_retraceSupport == 2) {
-                canvas.setTextColor(COL_DIM2);
-                canvas.drawString("Rewind needs FluidNC plugin", VIZ_X+VIZ_W/2, by+bh+8);
-            } else if (_retraceSupport == 0) {
-                canvas.setTextColor(COL_DIM2);
-                canvas.drawString("Tap Rewind to check plugin", VIZ_X+VIZ_W/2, by+bh+8);
-            }
-            _holdZBtn      = {bx1, by, bw, bh};
-            _holdRewindBtn = {bx2, by, bw, bh};
-        } else {
-            _holdZBtn = {0,0,0,0}; _holdRewindBtn = {0,0,0,0};
-        }
 
         if (_vizFullscreen && !vizPath.empty()) {
             // ── WORK AREA MODE (double-tap): path placed in machine work area grid ──
@@ -1129,6 +1089,30 @@ private:
             canvas.setTextDatum(bottom_right);
             char wdim[24]; snprintf(wdim,sizeof(wdim),"%dx%dmm",_workY,_workX);
             canvas.drawString(wdim,offX+drawnW-1,offY+drawnH-1);
+        }
+
+        // Hold action strip — docked to bottom of VIZ, drawn after viz path
+        if (state == Hold && !_pathJogMode && !_zNudgeOpen && _tab == 0) {
+            int stripH = 32, stripY = VIZ_Y + VIZ_H - stripH;
+            int bw = VIZ_W/2 - 4, bh = 22, by = stripY + 5;
+            int bx1 = VIZ_X + 2, bx2 = VIZ_X + VIZ_W/2 + 2;
+            canvas.fillRect(VIZ_X, stripY, VIZ_W, stripH, COL_PANEL);
+            canvas.drawFastHLine(VIZ_X, stripY, VIZ_W, COL_BORDER2);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            canvas.fillRoundRect(bx1, by, bw, bh, 3, 0x0019);
+            canvas.drawRoundRect(bx1, by, bw, bh, 3, COL_AX_Z);
+            canvas.setTextColor(COL_AX_Z);
+            canvas.drawString("Z Adjust", bx1+bw/2, by+bh/2);
+            uint16_t rwCol = (_retraceSupport == 2) ? COL_DIM2 : CYAN;
+            canvas.fillRoundRect(bx2, by, bw, bh, 3, 0x0019);
+            canvas.drawRoundRect(bx2, by, bw, bh, 3, rwCol);
+            canvas.setTextColor(rwCol);
+            canvas.drawString((_retraceSupport == 2) ? "No plugin" : "Rewind",
+                              bx2+bw/2, by+bh/2);
+            _holdZBtn      = {bx1, by, bw, bh};
+            _holdRewindBtn = {bx2, by, bw, bh};
+        } else {
+            _holdZBtn = {0,0,0,0}; _holdRewindBtn = {0,0,0,0};
         }
 
         // ── G-code info strip: filename above, progress bar below ─────────────
@@ -2095,10 +2079,11 @@ private:
         // Hints
         canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
         canvas.setTextColor(COL_DIM);
-        canvas.drawString("CCW = deeper   CW = shallower", vx+vw/2, vy+102);
-        canvas.drawString("Step switch = increment", vx+vw/2, vy+114);
-        canvas.setTextColor(GREEN);
-        canvas.drawString("Spindle stays ON during adjust", vx+vw/2, vy+126);
+        // Hints — compact to fit 126px VIZ height
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_DIM);
+        canvas.drawString("CCW=deeper  CW=shallower", vx+vw/2, vy+100);
+        canvas.drawString("Step=increment  Spindle ON", vx+vw/2, vy+111);
         // Buttons
         int bw3=(vw-10)/2, bh3=22, bby=vy+vh-bh3-3;
         canvas.fillRoundRect(vx+3,    bby,bw3,bh3,3,COL_PANEL2);
