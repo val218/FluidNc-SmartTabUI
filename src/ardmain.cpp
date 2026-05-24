@@ -720,17 +720,31 @@ static void mpgTask(void*) {
         vTaskDelay(pdMS_TO_TICKS(30));
         readMpgSwitches();
         uint32_t now = millis();
-        bool estopHigh = (gpio_get_level(GPIO_NUM_17) != 0);
+        bool estopRaw = (gpio_get_level(GPIO_NUM_17) == 0);  // active LOW
+        // Debounce: require 100ms continuous LOW before triggering e-stop.
+        // Prevents EMI noise spikes from spindle/steppers causing false resets.
+        static uint32_t estopDebounceStart = 0;
+        static bool     estopDebounced     = false;
+        if (estopRaw) {
+            if (estopDebounceStart == 0) estopDebounceStart = now;
+            if (!estopDebounced && (now - estopDebounceStart) >= 100) {
+                estopDebounced = true;  // confirmed press
+            }
+        } else {
+            estopDebounceStart = 0;
+            estopDebounced = false;
+        }
+        bool estopHigh = !estopDebounced;  // HIGH = not pressed (matches original logic)
         simMode_setEstop(!estopHigh);
         mpgSetEstop(!estopHigh);
         if (estopHigh != lastEstop) { mpgSignalChanged(); }
 
         if (!estopHigh && lastEstop) {
-            // E-stop PRESSED: Soft Reset → FluidNC immediately enters Alarm state
+            // E-stop PRESSED (debounced): Soft Reset → FluidNC enters Alarm
             extern volatile bool _forceAlarm;
             _forceAlarm = true;
-            fnc_realtime((realtime_cmd_t)0x18);  // Ctrl-X Soft Reset → Alarm
-            fnc_term_inject("> E-STOP: Reset → Alarm");
+            fnc_realtime((realtime_cmd_t)0x18);
+            fnc_term_inject("> E-STOP: Reset (debounced)");
             resumeTime = 0;
             // Alarm siren: 3 fast two-tone beeps
             for (int bi = 0; bi < 3; bi++) {
@@ -798,8 +812,21 @@ void setup() {
         display.setFont(&fonts::Font0);
         display.setTextDatum(middle_center);
         display.setTextColor(0x07FF);  // cyan
-        // __DATE__ = "May 17 2026", __TIME__ = "18:53:01" — set at compile time
-        display.drawString("Build: " __DATE__ " " __TIME__, display.width()/2, 16);
+        // Build version serial: "v2.YMMDD.HHmm" — compact, unique per build
+        // __DATE__ = "May 24 2026", __TIME__ = "18:53:01"
+        // Decode: v2 = TabUI v2, YMMDD = year(1digit)+month+day, HHmm = hour+minute
+        {
+            const char* bd = __DATE__;  // "Mon DD YYYY"
+            const char* bt = __TIME__;  // "HH:MM:SS"
+            char mon[4]={bd[0],bd[1],bd[2],0};
+            int day = (bd[4]==' ') ? (bd[5]-'0') : (bd[4]-'0')*10+(bd[5]-'0');
+            int year = (bd[9]-'0')*10 + (bd[10]-'0');  // last 2 digits
+            const char* mn[]={"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+            int mo=1; for(int i=0;i<12;i++) if(strncmp(mon,mn[i],3)==0){mo=i+1;break;}
+            char ver[24];
+            snprintf(ver,sizeof(ver),"v2.%d%02d%02d.%.2s%.2s",year%10,mo,day,bt,bt+3);
+            display.drawString(ver, display.width()/2, 16);
+        }
     }
 
     // ── Boot progress bar on logo screen ────────────────────────────────────

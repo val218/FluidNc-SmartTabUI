@@ -687,22 +687,8 @@ private:
             strokeR(W/2-44, 2, 88, 16, 3, ac);
             hdrTxt(jl, W/2, 10, ac);
         } else {
-            // Show tab name + compact build date so you can confirm firmware version
-            // Format: "DRO  05-17" — date changes every build
-            static char tabLabel[24];
-            // __DATE__ example: "May 17 2026" → extract month/day
-            const char* bd = __DATE__;  // "Mon DD YYYY"
-            // Extract month abbreviation and day
-            char mon[4] = {bd[0],bd[1],bd[2],0};
-            int day = 0;
-            if (bd[4] != ' ') day = (bd[4]-'0')*10 + (bd[5]-'0');
-            else day = bd[5]-'0';
-            const char* monNums[] = {"","01","02","03","04","05","06","07","08","09","10","11","12"};
-            const char* monNames[] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
-            const char* monNum = "??";
-            for (int mi=1;mi<=12;mi++) if (strncmp(mon,monNames[mi-1],3)==0){monNum=monNums[mi];break;}
-            snprintf(tabLabel, sizeof(tabLabel), "%s %s-%02d", TAB_LABELS[_tab], monNum, day);
-            hdrTxt(tabLabel, W/2, 10, COL_DIM);
+            // Tab name only — no date in header
+            hdrTxt(TAB_LABELS[_tab], W/2, 10, COL_DIM);
             // Machine type badge — small pill left of centre text
             if (_machineType > 0) {
                 const char* mLabel = (_machineType == 1) ? "KNF" : "LSR";  // KNF=Knife/Plotter, LSR=Laser
@@ -1851,6 +1837,35 @@ private:
         canvas.clearClipRect();
     }
 
+    // ── Job Complete overlay ─────────────────────────────────────────────────
+    void drawJobCompleteOverlay() {
+        int pw = W - 30, ph = 90;
+        int px = 15, py = (NAV_Y + TOP) / 2 - ph / 2;
+        int cx2 = px + pw / 2;
+        canvas.fillRoundRect(px, py, pw, ph, 8, 0x0320);
+        canvas.drawRoundRect(px, py, pw, ph, 8, GREEN);
+        canvas.drawLine(cx2-10, py+18, cx2-3, py+26, GREEN);
+        canvas.drawLine(cx2-3,  py+26, cx2+10, py+12, GREEN);
+        canvas.drawLine(cx2-10, py+19, cx2-3, py+27, GREEN);
+        canvas.drawLine(cx2-3,  py+27, cx2+10, py+13, GREEN);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextDatum(middle_center);
+        canvas.setTextColor(GREEN);
+        canvas.drawString("JOB COMPLETE", cx2, py + 38);
+        uint32_t el = _jobElapsed;
+        int s2 = (el / 1000) % 60, m2 = (el / 60000) % 60, h2 = el / 3600000;
+        char ts[24];
+        if (h2 > 0) snprintf(ts, sizeof(ts), "%dh %02dm %02ds", h2, m2, s2);
+        else        snprintf(ts, sizeof(ts), "%dm %02ds", m2, s2);
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextColor(COL_DIM);
+        char jl[48];
+        snprintf(jl, sizeof(jl), "%s  %s", simJobName.c_str(), ts);
+        canvas.drawString(jl, cx2, py + 56);
+        canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Tap to dismiss", cx2, py + 74);
+    }
+
     // ── Disconnected overlay ─────────────────────────────────────────────────
     void drawDisconnectedOverlay() {
         if (_tab == 3) {
@@ -2269,6 +2284,8 @@ public:
             // Job finished (or aborted)
             if (_jobSentToFluidNC && state == Idle) {
                 jobrecov_jobComplete();  // clean finish — clear checkpoint
+                _jobComplete = true;
+                _jobCompleteMs = millis();
             }
             // Paused or ended — accumulate elapsed
             _jobElapsed += millis() - _jobStartTime;
@@ -2768,6 +2785,14 @@ public:
         int x = touchX, y = touchY;
         beep_ui(600, 8);   // subtle click
 
+        // Dismiss job complete overlay on any tap
+        if (_jobComplete) {
+            _jobComplete = false;
+            _jobSentToFluidNC = false;
+            markDirty();
+            return;
+        }
+
         // Job recovery wizard intercepts touches — but not when probe overlay is open
         if (jobrecov_getPhase() != RecoveryPhase::None && !_probeOpen) {
             jobrecov_onTouch(x, y);
@@ -3251,6 +3276,11 @@ public:
         if (_pathJogMode)            drawPathJogOverlay();
         if (_zNudgeOpen && !_pathJogMode) drawZNudgeOverlay();
         if (_alarmOpen || _forceAlarm) drawAlarmOverlay(_forceAlarm && simMode_active());
+        // Job complete overlay — DRO tab, after Cycle→Idle
+        if (_jobComplete && _tab == 0 && state == Idle) {
+            drawJobCompleteOverlay();
+        }
+
         // Don't show disconnected overlay while recovery prompt is shown
         // Only show disconnected overlay after 2 seconds continuous disconnection
         // Prevents brief UART glitches flashing the overlay

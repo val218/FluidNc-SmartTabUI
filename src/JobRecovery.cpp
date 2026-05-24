@@ -560,7 +560,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         canvas->setTextColor(C_DIM);
         canvas->drawString(p1,cx,sby+sbh+12);
         canvas->drawString(p2,cx,sby+sbh+24);
-        int notesY = sby+sbh+10;
+        int notesY = sby+sbh+36;  // below position text (p1 at +12, p2 at +24)
         if(_toolBreak){
             canvas->fillRoundRect(px+4,notesY,pw-8,14,2,0x4220);
             canvas->setTextColor(YELLOW);
