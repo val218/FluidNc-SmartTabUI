@@ -698,6 +698,17 @@ private:
             for (int mi=1;mi<=12;mi++) if (strncmp(mon,monNames[mi-1],3)==0){monNum=monNums[mi];break;}
             snprintf(tabLabel, sizeof(tabLabel), "%s %s-%02d", TAB_LABELS[_tab], monNum, day);
             hdrTxt(tabLabel, W/2, 10, COL_DIM);
+            // Machine type badge — small pill left of centre text
+            if (_machineType > 0) {
+                const char* mLabel = (_machineType == 1) ? "KNF" : "LSR";  // KNF=Knife/Plotter, LSR=Laser
+                int mcol = (_machineType == 1) ? 0x07E0 : 0xFD20;  // green / amber
+                int bw = 26, bh = 12, bx = W/2 - 58, by = 4;
+                canvas.fillRoundRect(bx, by, bw, bh, 2, mcol);
+                canvas.setFont(&fonts::Font0);
+                canvas.setTextDatum(middle_center);
+                canvas.setTextColor(COL_BG);
+                canvas.drawString(mLabel, bx + bw/2, by + bh/2);
+            }
         }
     }
 
@@ -1158,7 +1169,12 @@ private:
             }
         };
 
-        // FEED
+        // ── Feed bar pills — layout changes by machine type ─────────────────
+        // CNC (0):     FEED | RAPID | SPND
+        // Plotter (1): FEED | RAPID | PEN (up/down status)
+        // Laser (2):   FEED | RAPID | LASER (power %)
+
+        // FEED — same for all machine types
         { int col=(myFro<80)?RED:(myFro>120)?ORANGE:CYAN;
           char v[10]; snprintf(v,sizeof(v),"%d%%",(int)myFro);
           _feedMinus={px0,fy,pillW3,FEED_H};
@@ -1166,7 +1182,7 @@ private:
 
         vline(px1-1, fy+4, fh, COL_BORDER2);
 
-        // RAPID
+        // RAPID — same for all machine types
         { int col=(myRro<80)?RED:(myRro>120)?ORANGE:YELLOW;
           char v[10]; snprintf(v,sizeof(v),"%d%%",(int)myRro);
           _spdPill={px1,fy,pillW3,FEED_H};
@@ -1174,19 +1190,31 @@ private:
 
         vline(px2-1, fy+4, fh, COL_BORDER2);
 
-        // SPND or LASER (depending on machine type)
+        // Third pill — machine-type specific
+        _spndPill={px2,fy,pillW3,FEED_H};
         if (_machineType == 2) {
-            // Laser mode: show laser power (S value as % of max 1000)
+            // LASER: show laser power as % of S1000 (standard laser max)
             int laserPct = (int)((mySpeed * 100UL) / 1000UL);
             if (laserPct > 100) laserPct = 100;
-            int lcol = laserPct > 80 ? RED : laserPct > 40 ? ORANGE : COL_DIM2;
+            int lcol = laserPct > 80 ? RED : laserPct > 40 ? ORANGE : 0xFD20; // amber
             char v[10]; snprintf(v,sizeof(v),"%d%%",laserPct);
-            _spndPill={px2,fy,pillW3,FEED_H};
             drawPill3(px2,pillW3,"LASER",v,lcol,_barSel==3);
+        } else if (_machineType == 1) {
+            // DRAG KNIFE / PLOTTER: show Z depth (knife pressure/contact depth)
+            // Z axis is knife depth — show actual value prominently
+            float zPos = myAxes[2] / 10000.0f;  // WCS Z in mm
+            // Colour: Z near 0 = up/clear (dim), Z negative = cutting (cyan→red by depth)
+            int zcol;
+            if (zPos > -0.1f)       zcol = COL_DIM2;   // up/clear
+            else if (zPos > -1.0f)  zcol = CYAN;        // light contact
+            else if (zPos > -3.0f)  zcol = YELLOW;      // normal cut depth
+            else                    zcol = ORANGE;       // deep
+            char v[12]; snprintf(v, sizeof(v), "%.2f", zPos);
+            drawPill3(px2, pillW3, "Z", v, zcol, _barSel==3);
         } else {
+            // CNC: standard spindle override %
             int col=(mySro<80)?RED:(mySro>120)?ORANGE:0xF81F;
             char v[10]; snprintf(v,sizeof(v),"%d%%",(int)mySro);
-            _spndPill={px2,fy,pillW3,FEED_H};
             drawPill3(px2,pillW3,"SPND",v,col,_barSel==3);
         }
     }  // end drawDROScreen

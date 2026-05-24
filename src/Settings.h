@@ -5,9 +5,9 @@ enum class Theme   { Dark = 0, Neutral = 1, Light = 2 };
 enum class DROAxes { XYZ = 0, XYZA = 1, XY = 2, XYYZ = 3 };
 
 enum class MachineType {
-    CNC    = 0,  // standard CNC mill/router
-    Plotter= 1,  // pen plotter (no Z feed needed)
-    Laser  = 2,  // laser cutter/engraver (laser power instead of spindle)
+    CNC    = 0,  // standard CNC mill/router (spindle RPM + all axes)
+    Plotter= 1,  // drag knife / pen plotter / vinyl cutter (Z = knife depth/pressure)
+    Laser  = 2,  // laser cutter/engraver (laser power S-value instead of spindle)
 };
 
 enum class EnableMode {

@@ -140,7 +140,7 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     lbTxt(y, "MACHINE");
     if (y+rowH > 0 && y < H) {
         int mw=(bW-8)/3;
-        const char* ml[]={"CNC","Plotter","Laser"};
+        const char* ml[]={"CNC","Knife/Plt","Laser"};
         uint16_t mc[]={0x06BF, 0x07E0, ORANGE};
         for(int i=0;i<3;i++){
             bool sel=((int)s.machineType==i);
