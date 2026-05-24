@@ -221,8 +221,13 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
         _sBuf->setTextColor(S_WHITE); _sBuf->drawString(vb,barX+barW/2,y+rowH/2);
     } y += rowH;
 
-    // Bottom buttons — drawn at FIXED screen position (always visible)
-    { int btnY = H - 34;
+    // Bottom buttons — solid background panel so content doesn't show through
+    { int btnY = H - 36;
+      // Fill the full bottom bar with background colour + top separator line
+      _sBuf->fillRect(0, btnY, W, H - btnY, S_BG);
+      _sBuf->drawFastHLine(0, btnY, W, S_BORDER);
+      btnY += 4;  // 4px padding below separator
+      // Three buttons, centred and evenly spaced
       sB(cx-156,btnY,96,28,S_PANEL,S_CYAN,  "Inputs",      S_CYAN);
       sB(cx-54, btnY,96,28,S_PANEL,S_ORANGE,"UART",        S_ORANGE);
       sB(cx+50, btnY,96,28,0x0C00, S_GREEN, "Save & Boot", S_GREEN);
@@ -660,8 +665,8 @@ static void runSettingsMenu(AppSettings& s) {
 
         // Bottom buttons at FIXED screen position (not scrollable)
         // Use t.x, t.y directly (not scrolled ty)
-        // Bottom buttons — use same position as draw (btnY = H-34)
-        { int btnY = display.height() - 34;
+        // Bottom buttons — match draw position exactly (H-36+4 = H-32)
+        { int btnY = display.height() - 32;
           if (touchIn(t.x, t.y, cx-156, btnY, 96, 28)) {
               runInputMonitor(); drawSettings(); continue;
           }
