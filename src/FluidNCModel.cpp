@@ -329,15 +329,16 @@ bool fnc_is_connected() {
     // Declare disconnect if too many missed pings or too long since last status
     uint32_t silenceMs = now - _lastStatusMs;
     if (_missedPings >= DISCONNECT_PINGS || silenceMs > DISCONNECT_TIMEOUT) {
-        // Log reason to terminal so we know exactly what triggered it
+        // Log to terminal tab so user can see exactly what triggered disconnect
         static uint32_t _lastDisconnLog = 0;
         if (now - _lastDisconnLog > 2000) {
             _lastDisconnLog = now;
             char msg[80];
             snprintf(msg, sizeof(msg),
-                "[DISC] missed=%d silence=%lums rxCount=%lu",
+                "[DISC] missed=%d silence=%lums rx=%lu",
                 _missedPings, (unsigned long)silenceMs,
                 (unsigned long)fnc_rx_count);
+            extern "C" void fnc_term_inject(const char*);
             fnc_term_inject(msg);
         }
         return false;

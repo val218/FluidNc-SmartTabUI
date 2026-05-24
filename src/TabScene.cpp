@@ -1853,17 +1853,33 @@ private:
 
     // ── Disconnected overlay ─────────────────────────────────────────────────
     void drawDisconnectedOverlay() {
+        if (_tab == 3) {
+            // Terminal tab: show a small non-blocking banner at the top only
+            // so the user can still read the [DISC] diagnostic log below it
+            canvas.fillRect(0, TOP, W, 22, 0x4000);  // dark red strip
+            canvas.drawFastHLine(0, TOP+22, W, 0xF800);
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_left);
+            canvas.setTextColor(0xFD20);
+            canvas.drawString(" â² DISCONNECTED — see log below", 2, TOP+11);
+            canvas.setTextDatum(middle_right);
+            canvas.setTextColor(0x9D17);
+            canvas.drawString("Reconnecting...", W-2, TOP+11);
+            return;
+        }
+
+        // All other tabs: full overlay
         // Semi-transparent dark overlay
         for (int y2 = TOP; y2 < NAV_Y; y2 += 2)
             canvas.drawFastHLine(0, y2, W, 0x0000);
 
-        // Central panel — tall enough for all content with padding
+        // Central panel
         int pw=W-40, ph=116;
-        int px=20, py=(NAV_Y+TOP)/2 - ph/2;  // vertically centred
+        int px=20, py=(NAV_Y+TOP)/2 - ph/2;
         canvas.fillRoundRect(px, py, pw, ph, 8, 0x1082);
         canvas.drawRoundRect(px, py, pw, ph, 8, 0xF800);
 
-        // Warning triangle (top section)
+        // Warning triangle
         canvas.fillTriangle(W/2, py+10, W/2-13, py+34, W/2+13, py+34, 0xFD20);
         canvas.fillRect(W/2-2, py+15, 4, 10, 0x1082);
         canvas.fillRect(W/2-2, py+28, 4, 4,  0x1082);
@@ -1880,9 +1896,13 @@ private:
         canvas.drawString("FluidNC not responding", W/2, py+66);
         canvas.drawString("Check UART connection", W/2, py+78);
 
+        // Hint: switch to terminal to see diagnostics
+        canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Tap Term tab for details", W/2, py+90);
+
         // Reconnecting indicator
         canvas.setTextColor(0xFD20);
-        canvas.drawString("Reconnecting...", W/2, py+96);
+        canvas.drawString("Reconnecting...", W/2, py+104);
     }
 
     // ── Probe overlay ─────────────────────────────────────────────────────────
@@ -2229,6 +2249,8 @@ public:
         }
         if (state == Disconnected) {
             _runStep = 0;  // close pre-run overlay on disconnect
+            // Switch to terminal tab so user can see the [DISC] diagnostic log
+            if (_tab != 3) _tab = 3;
         }
 
         // Pending actions now handled in tabui_checkPressExpiry (polled each dispatch cycle)
