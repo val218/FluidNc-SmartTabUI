@@ -940,7 +940,6 @@ void loop() {
             simMode_tick();
             simMode_injectState();
         }
-    }
     } else {
         fnc_poll();
     }
