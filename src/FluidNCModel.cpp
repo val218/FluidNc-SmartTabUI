@@ -8,6 +8,7 @@ extern void markDirty();
 #include "System.h"
 #include "Scene.h"
 #include "e4math.h"
+extern "C" void fnc_term_inject(const char* line);  // defined in TabScene.cpp
 
 extern Scene statusScene;
 
@@ -338,7 +339,6 @@ bool fnc_is_connected() {
                 "[DISC] missed=%d silence=%lums rx=%lu",
                 _missedPings, (unsigned long)silenceMs,
                 (unsigned long)fnc_rx_count);
-            extern "C" void fnc_term_inject(const char*);
             fnc_term_inject(msg);
         }
         return false;
