@@ -228,9 +228,9 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
       _sBuf->drawFastHLine(0, btnY, W, S_BORDER);
       btnY += 4;  // 4px padding below separator
       // Three buttons, centred and evenly spaced
-      sB(cx-156,btnY,96,28,S_PANEL,S_CYAN,  "Inputs",      S_CYAN);
-      sB(cx-54, btnY,96,28,S_PANEL,S_ORANGE,"UART",        S_ORANGE);
-      sB(cx+50, btnY,96,28,0x0C00, S_GREEN, "Save & Boot", S_GREEN);
+      sB(cx-156,btnY,96,28,S_PANEL,S_CYAN,  "Inputs",    S_CYAN);
+      sB(cx-54, btnY,96,28,0x0010, S_GREEN, "Done",       S_GREEN);
+      sB(cx+50, btnY,96,28,0x0C00, S_ORANGE,"Save & Boot",S_ORANGE);
     }
 
     // Scroll indicator
@@ -629,24 +629,36 @@ static void runSettingsMenu(AppSettings& s) {
         }
         y += rowH;
 
-        // Machine type row
+        // Machine type row — auto-save immediately, applies live to DRO
         { int mw=(bW-8)/3;
-          for(int i=0;i<3;i++)
-            if(touchIn(tx,ty,bx0+i*(mw+4),y+4,mw,optH)){ s.machineType=(MachineType)i; tabui_setMachineType(i); }
+          for(int i=0;i<3;i++) {
+            if(touchIn(tx,ty,bx0+i*(mw+4),y+4,mw,optH)) {
+                s.machineType=(MachineType)i;
+                tabui_setMachineType(i);
+                settings_save(s);  // persist immediately, no restart needed
+            }
+          }
         }
         y += rowH;
 
-        // Sim mode row
+        // Sim mode row — auto-save (applies on next reboot anyway)
         { int bw2=(bW-4)/2;
-          if (touchIn(tx,ty, bx0,       y+4, bw2, optH)) s.simMode = false;
-          if (touchIn(tx,ty, bx0+bw2+4, y+4, bw2, optH)) s.simMode = true;
+          bool simChanged = false;
+          if (touchIn(tx,ty, bx0,       y+4, bw2, optH)) { s.simMode = false; simChanged = true; }
+          if (touchIn(tx,ty, bx0+bw2+4, y+4, bw2, optH)) { s.simMode = true;  simChanged = true; }
+          if (simChanged) settings_save(s);
         }
         y += rowH;
 
-        // Theme row
+        // Theme row — auto-save + apply live
         { int tw=(bW-8)/3;
-          for(int i=0;i<3;i++)
-            if (touchIn(tx,ty,bx0+i*(tw+4),y+4,tw,optH)) s.theme=(Theme)i;
+          for(int i=0;i<3;i++) {
+            if (touchIn(tx,ty,bx0+i*(tw+4),y+4,tw,optH)) {
+                s.theme=(Theme)i;
+                settings_applyTheme(s.theme);  // apply immediately
+                settings_save(s);
+            }
+          }
         }
         y += rowH;
 
@@ -681,10 +693,16 @@ static void runSettingsMenu(AppSettings& s) {
               runInputMonitor(); drawSettings(); continue;
           }
           if (touchIn(t.x, t.y, cx-54,  btnY, 96, 28)) {
-              runUartMonitor(); drawSettings(); continue;
+              // Done: save all settings and return to DRO (no restart)
+              settings_save(s);
+              tabui_setMachineType((int)s.machineType);
+              settings_applyTheme(s.theme);
+              tabui_setVolume(s.volume);
+              display.setBrightness(s.brightness);
+              return;  // exit runSettingsMenu — back to normal UI loop
           }
           if (touchIn(t.x, t.y, cx+50,  btnY, 96, 28)) {
-              settings_save(s); esp_restart();
+              settings_save(s); esp_restart();  // full restart for P6/axes/etc changes
           }
         }
 

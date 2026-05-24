@@ -31,9 +31,11 @@ void settings_save(const AppSettings& s) {
     nvs_set_i32(_nvs, "enableMacro", s.enableMacro);
     nvs_set_i32(_nvs, "workX",       s.workX);
     nvs_set_i32(_nvs, "workY",       s.workY);
-    nvs_set_i32(_nvs, "homeCorner",  (int)s.homeCorner);
-    nvs_set_i32(_nvs, "brightness",  s.brightness);
-    nvs_set_i32(_nvs, "volume",      s.volume);
+    nvs_set_i32(_nvs, "homeCorner",   (int)s.homeCorner);
+    nvs_set_i32(_nvs, "machineType",  (int)s.machineType);
+    nvs_set_i32(_nvs, "maintInterval",s.maintInterval);
+    nvs_set_i32(_nvs, "brightness",   s.brightness);
+    nvs_set_i32(_nvs, "volume",       s.volume);
     nvs_commit(_nvs);  // flush to flash — required or values are lost on power cycle
 }
 
