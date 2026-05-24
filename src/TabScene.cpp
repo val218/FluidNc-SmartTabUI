@@ -354,10 +354,11 @@ static std::vector<std::string> previewLines; // loaded gcode lines
 static std::vector<std::pair<float,float>> vizPath;   // path for DRO viz overlay
 static std::string vizJobName;              // filename shown on DRO viz
 static int  vizPathExecuted  = 0;           // segments drawn as "executed" (green)
-static bool _pathJogMode    = false;  // jog-along-toolpath mode active
-static int  _pathJogIdx     = 0;     // current position index in vizPath
-static float _pathJogAccum  = 0.0f;  // sub-segment accumulator (encoder remainder)
-static bool _pathJogAborted = false; // true once Ctrl-X+$X done, machine is Idle for jogging
+static bool _pathJogMode    = false;  // retrace mode active
+static int  _pathJogIdx     = 0;     // retrace step counter (from FluidNC MSG reports)
+static int  _pathJogTotal   = 0;     // total steps buffered (from FluidNC MSG reports)
+static float _pathJogAccum  = 0.0f;  // unused (kept for compat)
+static bool _pathJogAborted = true;  // always true for plugin-based retrace
 static int  previewScroll   = 0;           // first visible preview line
 static int  previewFirstLine = 0;           // line offset in file
 static std::vector<std::string> allFileLines;  // accumulated lines across batches
