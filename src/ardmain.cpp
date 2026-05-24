@@ -557,21 +557,21 @@ static void runSettingsMenu(AppSettings& s) {
             delay(5); continue;
         }
         if (t.isPressed() && _lastTouchY >= 0) {
-            int delta = _lastTouchY - t.y;
             int ty2 = t.y + _settingsScroll;
-            // Brightness slider drag (row 11 = index from top: 0=JOB,1=MAINT,2=MACH,3=SIM,4=THEME,5=P6,6=Xmm,7=Ymm,8=HOME,9=BRIGHT,10=VOL)
+            int delta = _lastTouchY - t.y;
+            // Brightness slider — drag while pressed
             { int yBr = 36+9*rowH2+8;
               if (ty2>=yBr && ty2<yBr+38 && t.x>=bx0_2 && t.x<bx0_2+bW2) {
-                  _didDrag = true;  // prevent click firing after slider
+                  _didDrag = true;
                   s.brightness = std::max(10,std::min(255,(t.x-bx0_2)*255/bW2));
                   display.setBrightness(s.brightness);
                   drawSettings(); delay(5); continue;
               }
             }
-            // Volume slider drag (row 10 = after BRIGHT)
+            // Volume slider — drag while pressed
             { int yVol = 36+10*rowH2+8;
               if (ty2>=yVol && ty2<yVol+38 && t.x>=bx0_2 && t.x<bx0_2+bW2) {
-                  _didDrag = true;  // prevent click firing after slider
+                  _didDrag = true;
                   s.volume = std::max(0,std::min(9,(t.x-bx0_2)*9/bW2));
                   tabui_setVolume(s.volume);
                   drawSettings(); delay(5); continue;
@@ -586,10 +586,17 @@ static void runSettingsMenu(AppSettings& s) {
             }
             delay(5); continue;
         }
-        if (t.isReleased()) { _lastTouchY = -1; }
-        // Skip click if this was a drag
+
+        // Process tap on release — handles both wasClicked() and wasHold()
+        // CST816S on this hardware often fires wasHold() instead of wasClicked()
+        // so we act on finger-up (isReleased) to catch all tap types
+        bool tapped = t.wasClicked() || t.wasHold() ||
+                      (t.isReleased() && _lastTouchY >= 0 && !_didDrag);
+        if (t.isReleased() || t.wasClicked() || t.wasHold()) {
+            _lastTouchY = -1;
+        }
         if (_didDrag) { _didDrag = false; delay(5); continue; }
-        if (!t.wasClicked()) { delay(10); continue; }
+        if (!tapped)  { delay(10); continue; }
         int tx = t.x, ty = t.y + _settingsScroll;
 
         int y = 36, rowH = 48, optH = 36;
@@ -640,14 +647,7 @@ static void runSettingsMenu(AppSettings& s) {
         }
         y += rowH;
 
-        // Macro index row (only shown in Macro mode)
-        if (s.enableMode == EnableMode::MacroBtn) {
-            int enx0b=76;
-            if (touchIn(tx,ty, enx0b+124, y+5, 30, optH) && s.enableMacro > 0)  s.enableMacro--;
-            if (touchIn(tx,ty, enx0b+158, y+5, 30, optH) && s.enableMacro < 15) s.enableMacro++;
-            y += rowH;
-        }
-        // WORK X row
+        // WORK X row  (macro sub-row removed — not in scroll area)
         if (touchIn(tx,ty, bx0,       y+8, 44, optH-8) && s.workX > 50)   s.workX -= 50;
         if (touchIn(tx,ty, bx0+bW-44, y+8, 44, optH-8) && s.workX < 9999) s.workX += 50;
         y += rowH;
