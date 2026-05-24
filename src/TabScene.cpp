@@ -362,8 +362,15 @@ static int  previewScroll   = 0;           // first visible preview line
 static int  previewFirstLine = 0;           // line offset in file
 static std::vector<std::string> allFileLines;  // accumulated lines across batches
 static bool _allFileLinesComplete = false;   // true = full file loaded; false = truncated/large
-static constexpr int MAX_REWIND_LINES = 4000; // heap safety cap — ~120KB at 30B/line
+static constexpr int MAX_REWIND_LINES = 4000; // heap safety cap
+static constexpr int VIZ_MAX_POINTS    = 8000; // vizPath capacity cap — ~120KB at 30B/line
 static std::string _loadingPath;            // path being batch-loaded
+
+// ── Viz file loading (from FluidNC VizGenerator plugin) ──────────────────────
+static std::string _vizLoadPath;   // .viz file being loaded
+static bool _vizLoading = false;   // currently loading a .viz from FluidNC
+static int  _vizLoadTotal = 0;     // expected points (from VizReady header)
+static float _vizBounds[4] = {};   // xmin,xmax,ymin,ymax from VizReady
 static std::string _vizSidecarPath;         // real .nc path when trying sidecar first
 static int  _loadingBatch = 0;              // next batch start line
 static bool _loadingDone  = false;          // all batches received
@@ -2037,11 +2044,10 @@ private:
         canvas.drawRect(vx, vy, vw, vh, CYAN);
 
         // Title bar
-        int titleCol = _pathJogAborted ? CYAN : YELLOW;
-        canvas.fillRect(vx, vy, vw, 16, titleCol);
+        canvas.fillRect(vx, vy, vw, 16, CYAN);
         canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
         canvas.setTextColor(COL_BG);
-        canvas.drawString(_pathJogAborted ? "LIVE REWIND" : "LIVE REWIND (aborting...)", vx+vw/2, vy+8);
+        canvas.drawString("PATH RETRACE", vx+vw/2, vy+8);
 
         // Step switch controls jog feed speed (not jump size — always 1 pt per detent)
         float stepVal = mpgSteps[(int)mpgStepIdx];
@@ -2079,26 +2085,18 @@ private:
         int fill = total > 1 ? (idx * pbw / (total-1)) : pbw;
         if (fill > 0) canvas.fillRect(vx+6, vy+82, fill, 8, CYAN);
 
-        // Status + hints
+        // Hints
         canvas.setTextColor(COL_DIM);
-        if (!_pathJogAborted) {
-            canvas.setTextColor(YELLOW);
-            canvas.drawString("Stopping job — please wait", vx+vw/2, vy+100);
-            canvas.setTextColor(COL_DIM);
-            canvas.drawString("MPG active once ready", vx+vw/2, vy+112);
-        } else {
-            canvas.drawString("CCW=rewind  CW=forward", vx+vw/2, vy+100);
-            canvas.drawString("Step=speed  1pt/detent", vx+vw/2, vy+112);
-        }
+        canvas.drawString("CCW=rewind  CW=forward", vx+vw/2, vy+100);
+        canvas.drawString("FluidNC retraces path live", vx+vw/2, vy+112);
 
         // Buttons: Cancel | Resume here (dimmed until abort complete)
         int bw3=(vw-10)/2, bh3=22, bby=vy+vh-bh3-3;
         canvas.fillRoundRect(vx+3,     bby, bw3, bh3, 3, COL_PANEL2);
         canvas.drawRoundRect(vx+3,     bby, bw3, bh3, 3, COL_BORDER2);
         canvas.setTextColor(COL_WHITE); canvas.drawString("Cancel", vx+3+bw3/2, bby+bh3/2);
-        int resumeBtnCol = _pathJogAborted ? (int)GREEN : (int)COL_DIM;
-        canvas.fillRoundRect(vx+7+bw3, bby, bw3, bh3, 3, resumeBtnCol);
-        canvas.setTextColor(_pathJogAborted ? (int)COL_BG : (int)COL_PANEL2);
+        canvas.fillRoundRect(vx+7+bw3, bby, bw3, bh3, 3, GREEN);
+        canvas.setTextColor(COL_BG);
         canvas.drawString("Resume here", vx+7+bw3+bw3/2, bby+bh3/2);
 
         _pathJogExitBtn   = {vx+3,     bby, bw3, bh3};
@@ -2230,15 +2228,106 @@ public:
                 }
             }
         }
+        // Parse VizGenerator plugin messages
+        // VizReady format: VizReady:/sd/f.nc.viz:N:xmin:xmax:ymin:ymax
+        if (arguments && strncmp(arguments, "VizReady:", 9) == 0) {
+            const char* p = arguments + 9;
+            // Parse path
+            const char* colon = strchr(p, ':');
+            if (colon) {
+                _vizLoadPath = std::string(p, colon - p);
+                float n=0, x0=0, x1=0, y0=0, y1=0;
+                sscanf(colon+1, "%f:%f:%f:%f:%f", &n, &x0, &x1, &y0, &y1);
+                _vizLoadTotal = (int)n;
+                _vizBounds[0]=x0; _vizBounds[1]=x1;
+                _vizBounds[2]=y0; _vizBounds[3]=y1;
+                // Start loading the viz file using existing batch protocol
+                if (!_vizLoadPath.empty()) {
+                    _vizLoading = true;
+                    vizPath.clear();
+                    vizPathExecuted = 0;
+                    request_file_preview(_vizLoadPath.c_str(), 1, 500); // skip header line
+                    fnc_term_inject(("> Viz loading: " + _vizLoadPath).c_str());
+                    markDirty();
+                }
+            } else {
+                // Short form: VizReady:/path (file existed, no bounds)
+                _vizLoadPath = p;
+                _vizLoading = true;
+                vizPath.clear();
+                vizPathExecuted = 0;
+                request_file_preview(_vizLoadPath.c_str(), 1, 500);
+                fnc_term_inject(("> Viz loading: " + _vizLoadPath).c_str());
+                markDirty();
+            }
+            return;
+        }
+        if (arguments && strncmp(arguments, "VizBusy:", 8) == 0) {
+            // Show generation progress in terminal
+            fnc_term_inject((std::string("[Viz generating: ") + (arguments+8) + "]").c_str());
+            return;
+        }
+        if (arguments && strncmp(arguments, "VizErr:", 7) == 0) {
+            fnc_term_inject((std::string("[Viz error: ") + (arguments+7) + "]").c_str());
+            _vizLoading = false;
+            return;
+        }
+
+        // Parse PathRetrace plugin status messages
+        if (arguments && strncmp(arguments, "PathRetrace:", 12) == 0) {
+            const char* p = arguments + 12;
+            if (strncmp(p, "Resumed", 7) == 0 || strncmp(p, "Cancelled", 9) == 0) {
+                _pathJogMode = false;
+                markDirty();
+            } else if (strncmp(p, "AtStart", 7) == 0 || strncmp(p, "AtCurrent", 9) == 0) {
+                beep_ui(600, 30);  // end-of-buffer beep
+            } else {
+                // Parse "N/M" position report → update overlay display
+                int n = 0, m = 0;
+                if (sscanf(p, "%d/%d", &n, &m) == 2) {
+                    _pathJogIdx   = n;
+                    _pathJogTotal = m;
+                    markDirty();
+                }
+            }
+            return;  // don't add PathRetrace msgs to terminal
+        }
         std::string line = std::string("[MSG:") + arguments + "]";
         termLines.push_back({ line, GREEN });
         if (termLines.size() > 200) termLines.erase(termLines.begin());
-        if (termScroll == 0 && _tab == 2) reDisplay();  // live update when pinned to bottom
+        if (termScroll == 0 && _tab == 2) reDisplay();
         if (_tab == 2) reDisplay();
     }
 
     void onFileLines(int firstLine, const std::vector<std::string>& lines) override {
-        static const int BATCH = 500; // Try large batch; FluidNC may truncate to its limit
+        static const int BATCH = 500;
+
+        // ── Viz file loading: parse "x,y" lines into vizPath ─────────────────
+        if (_vizLoading && !_vizLoadPath.empty()) {
+            bool done = false;
+            for (auto& l : lines) {
+                if (l.empty() || l[0] == 'V') continue;  // skip header if repeated
+                float x = 0, y = 0;
+                if (sscanf(l.c_str(), "%f,%f", &x, &y) == 2) {
+                    if ((int)vizPath.size() < VIZ_MAX_POINTS)
+                        vizPath.push_back({x, y});
+                }
+            }
+            // Request next batch if more points expected
+            int loaded = (int)vizPath.size();
+            int nextLine = firstLine + (int)lines.size();
+            if ((int)lines.size() >= BATCH && loaded < _vizLoadTotal && loaded < VIZ_MAX_POINTS) {
+                request_file_preview(_vizLoadPath.c_str(), nextLine, BATCH);
+            } else {
+                // Done
+                _vizLoading = false;
+                char msg[64];
+                snprintf(msg, sizeof(msg), "> Viz loaded: %d points", loaded);
+                fnc_term_inject(msg);
+                markDirty();
+            }
+            return;
+        }
 
         // Guard: ignore batches from a previous file (stale response)
         if (_loadingDone && firstLine > 0) return;
@@ -2258,11 +2347,11 @@ public:
                     float x = std::stof(ln.substr(0, comma));
                     float y = std::stof(ln.substr(comma+1));
                     vizPath.push_back({x, y});
-                    if ((int)vizPath.size() >= 8000) break;
+                    if ((int)vizPath.size() >= VIZ_MAX_POINTS) break;
                 } catch(...) {}
             }
             // If more batches needed for sidecar, keep chaining
-            if ((int)lines.size() >= 60 && !_loadingPath.empty() && (int)vizPath.size() < 8000) {
+            if ((int)lines.size() >= 60 && !_loadingPath.empty() && (int)vizPath.size() < VIZ_MAX_POINTS) {
                 _loadingBatch = firstLine + (int)lines.size();
                 request_file_preview(_loadingPath.c_str(), _loadingBatch, 500);
             } else {
@@ -2346,15 +2435,17 @@ public:
         // Path jog: move machine along loaded toolpath while in Hold
         // While in Hold and no overlay open: first MPG turn opens the overlay
         // CW (delta>0) → path jog (if path loaded);  CCW (delta<0) → Z nudge
-        // Hold state — open path jog (CW) or Z nudge (CCW)
+        // Hold state: CW encoder = path retrace (FluidNC plugin), CCW = Z nudge
         if (_tab == 0 && state == Hold && !_pathJogMode && !_zNudgeOpen) {
-            if (delta > 0 && !vizPath.empty()) {
-                _pathJogMode = true;
-                _pathJogAborted = false;
-                _pathJogIdx = std::max(0, vizPathExecuted);
-                fnc_realtime((realtime_cmd_t)0x18);  // Ctrl-X → Alarm
-                _pendingAction = 8;  // on Alarm: $X → Idle → pathJogAborted=true
-                fnc_term_inject("> Live rewind: aborting hold to enable jogging...");
+            if (delta > 0) {
+                // Enter retrace mode — FluidNC plugin handles everything
+                if (!_pathJogMode) {
+                    _pathJogMode = true;
+                    _pathJogIdx  = 0;
+                    _pathJogAborted = true;  // no abort needed — plugin uses Hold
+                    send_line("$Retrace/Start");
+                    fnc_term_inject("> Path retrace: entering rewind mode...");
+                }
             } else if (delta < 0) {
                 _zNudgeOpen = true;
                 _zNudgeOffset = 0.0f;
@@ -2363,22 +2454,15 @@ public:
         }
 
         if (_pathJogMode && _tab == 0) {
-            int total = (int)vizPath.size();
-            // Always 1 path point per encoder detent for precise line selection
-            _pathJogIdx = std::max(0, std::min(_pathJogIdx + delta, total-1));
-            // Only send $J jog once machine is Idle (after abort+$X sequence).
-            // FluidNC rejects $J in Hold or Alarm states.
-            if (_pathJogAborted && total > 0) {
-                int idx = _pathJogIdx;
-                float tx = vizPath[idx].first;
-                float ty = vizPath[idx].second;
-                float stepVal = mpgSteps[(int)mpgStepIdx];
-                int feed = (stepVal <= 0.011f) ? 300 : (stepVal <= 0.11f) ? 1000 : 3000;
-                char cmd[64];
-                snprintf(cmd, sizeof(cmd), "$J=G90 G21 X%.3f Y%.3f F%d", tx, ty, feed);
-                send_line(cmd);
+            // Send $Retrace/Rev or /Fwd — one command per encoder detent
+            // FluidNC plugin moves the machine along its recorded path buffer
+            if (delta < 0) {
+                send_line("$Retrace/Rev");  // step backward along path
+                _pathJogIdx = std::max(0, _pathJogIdx - 1);
+            } else if (delta > 0) {
+                send_line("$Retrace/Fwd");  // step forward along path
+                _pathJogIdx = std::min(_pathJogIdx + 1, (int)vizPath.size() - 1);
             }
-            // If not yet aborted, encoder still updates the index/display — jog fires once ready
             markDirty();
             return;
         }
@@ -2514,7 +2598,7 @@ public:
                 q++;
             }
             if ((hasX||hasY) && (nx!=cx||ny!=cy)) {
-                if ((int)vizPath.size() < 8000)  // cap to prevent OOM and draw freeze
+                if ((int)vizPath.size() < VIZ_MAX_POINTS)  // cap to prevent OOM
                     vizPath.push_back({nx,ny});
                 cx=nx; cy=ny;
             }
@@ -2527,14 +2611,12 @@ public:
         if (_tab != 0) return false;
         if (_pathJogMode) {
             if (hit(_pathJogExitBtn, x, y)) {
-                // Cancel rewind: stop any in-progress jog, close overlay.
-                // Job was already aborted (Ctrl-X+$X) when rewind opened.
-                // Machine is Idle — user must re-run the job manually from Files tab.
-                fnc_realtime((realtime_cmd_t)0x85);  // Jog cancel (0x85)
+                // Cancel retrace — FluidNC plugin stays in Hold, job can be resumed normally
+                send_line("$Retrace/Cancel");
                 _pathJogMode = false;
                 _pathJogAborted = false;
-                _pendingAction = 0;  // cancel any pending abort sequence
-                fnc_term_inject("> Rewind cancelled. Re-run job from Files tab.");
+                _pendingAction = 0;
+                fnc_term_inject("> Retrace cancelled — machine in Hold. Use Hold btn to resume.");
                 markDirty();
                 return true;
             }
@@ -2549,67 +2631,10 @@ public:
                 // After Ctrl-X the spindle stops — so the resume file starts with M3 Sx to restart it.
                 _pathJogMode = false;
 
-                // Map vizPath index → allFileLines index proportionally
-                int nViz  = (int)vizPath.size();
-                int nFile = (int)allFileLines.size();
-                int rewindLine = 0;
-                if (nViz > 0 && nFile > 0)
-                    rewindLine = (int)((int64_t)_pathJogIdx * nFile / nViz);
-                rewindLine = std::max(0, std::min(rewindLine, nFile - 1));
-
-                bool useRewindNc = _allFileLinesComplete && nFile > 0;
-
-                if (useRewindNc) {
-                    // Check LittleFS free space before writing
-                    size_t lfsAvail = LittleFS.totalBytes() - LittleFS.usedBytes();
-                    size_t estBytes = 60 + (size_t)(nFile - rewindLine) * 32;
-                    if (lfsAvail < estBytes + 8192) {  // require 8KB headroom
-                        fnc_term_inject("> Rewind: LittleFS low — re-running from start");
-                        useRewindNc = false;
-                    } else {
-                        LittleFS.remove("/rewind.nc");  // free old before writing new
-                        File f = LittleFS.open("/rewind.nc", FILE_WRITE);
-                        if (f) {
-                            f.println("G90");
-                            if (mySpeed > 0) {
-                                char sline[32];
-                                snprintf(sline, sizeof(sline), "M3 S%u", (unsigned)mySpeed);
-                                f.println(sline);
-                                f.println("G4 P1");
-                            }
-                            bool writeOk = true;
-                            for (int li = rewindLine; li < nFile && writeOk; li++) {
-                                if (f.println(allFileLines[li].c_str()) == 0)
-                                    writeOk = false;
-                            }
-                            f.close();
-                            if (writeOk) {
-                                char msg[64];
-                                snprintf(msg, sizeof(msg),
-                                    "> Rewind: resume from line %d of %d", rewindLine, nFile);
-                                fnc_term_inject(msg);
-                                _pendingAction = _pathJogAborted ? 7 : 6;
-                                if (!_pathJogAborted) fnc_realtime((realtime_cmd_t)0x18);
-                                _pathJogAborted = false;
-                                markDirty(); return true;
-                            } else {
-                                LittleFS.remove("/rewind.nc");
-                                fnc_term_inject("> Rewind: write failed — re-running from start");
-                                useRewindNc = false;
-                            }
-                        } else {
-                            fnc_term_inject("> Rewind: LittleFS open failed — re-running");
-                            useRewindNc = false;
-                        }
-                    }
-                }
-
-                // Large file fallback — re-run original job from beginning.
-                // Machine is already at the chosen XY; job re-runs from line 0.
-                // Pre-run sequence: safe Z → XY zero → run original file.
-                fnc_term_inject("> File too large for rewind — re-running from start");
-                _pendingAction = _pathJogAborted ? 3 : 6;
-                if (!_pathJogAborted) fnc_realtime((realtime_cmd_t)0x18);
+                // $Retrace/Resume: FluidNC plugin restores spindle and resumes job
+                // Machine is already at the retrace position — no file handling needed
+                send_line("$Retrace/Resume");
+                fnc_term_inject("> Retrace: resuming job from current position");
                 _pathJogAborted = false;
                 markDirty();
                 return true;
@@ -2908,6 +2933,8 @@ public:
                     send_line("G53 G0 Z0");          // retract Z to machine home (endstop) — always safe
                     send_line("G0 X0 Y0");           // move XY to WCS zero
                     std::string rpath=filePath+"/"+simJobName;
+                    // Ensure viz is available (FluidNC VizGenerator plugin)
+                    send_linef("$Viz/Generate=%s", rpath.c_str());
                     send_linef("$Localfs/Run=%s",rpath.c_str());
                     termLines.push_back({"> Run: "+simJobName,COL_DIM2});
                     _jobSentToFluidNC=true;
@@ -2977,6 +3004,10 @@ public:
                         int fsize=fileList[fi].size;
                         if (vizCacheLoad(fileList[fi].name,fsize,vizPath)) {
                             _loadingPath=""; _loadingDone=true;
+                            // Request viz generation first (FluidNC plugin handles it)
+                            // VizReady message triggers viz loading automatically
+                            send_linef("$Viz/Generate=%s", path.c_str());
+                            // Also load G-code preview for text display
                             request_file_preview(path.c_str(),0,60);
                         } else {
                             _loadingPath=path; _loadingBatch=0;
@@ -3287,27 +3318,8 @@ void tabui_checkPressExpiry() {
             fnc_realtime((realtime_cmd_t)'~');
             fnc_term_inject("> ~ Resume");
         } else if (action == 7) {
-            // Path jog resume: run /rewind.nc from LittleFS
-            // Machine is already at the rewound XY position (jogged there by MPG).
-            if (LittleFS.exists("/rewind.nc")) {
-                send_line("G90");
-                send_line("$Localfs/Run=/rewind.nc");
-                fnc_term_inject("> Rewind resume: running /rewind.nc");
-                _jobSentToFluidNC = true;
-                _runStep = 1; _runStartMs = millis();
-            } else {
-                // /rewind.nc missing — fall back to re-running original job
-                fnc_term_inject("> Rewind file missing — re-running original job");
-                if (!simJobName.empty()) {
-                    std::string rpath = filePath+"/"+simJobName;
-                    send_linef("$Localfs/Run=%s", rpath.c_str());
-                    _jobSentToFluidNC = true;
-                    _runStep = 1; _runStartMs = millis();
-                } else {
-                    fnc_term_inject("> No job name — cannot restart. Re-run from Files tab.");
-                    _jobSentToFluidNC = false;
-                }
-            }
+            // Legacy fallback — no longer triggered (retrace now handled by FluidNC plugin)
+            fnc_term_inject("> Action 7: legacy path, not expected. Re-run from Files tab.");
         } else if (action == 9) {
             // Path jog abort complete — machine now Idle, ready for $J jogging
             _pathJogAborted = true;

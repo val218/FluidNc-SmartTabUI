@@ -157,12 +157,11 @@ void init_fnc_uart(int uart_num, int tx_pin, int rx_pin) {
         while (1) {}
         return;
     };
-    // 2048-byte RX buffer: at 1Mbaud = 20ms headroom vs 2.56ms for 256 bytes
-    // XON/XOFF: xoff_thresh = send XOFF when buf fills to this level (pause FluidNC)
-    //            xon_thresh  = send XON when buf drains to this level (resume FluidNC)
-    // xon_thresh MUST BE LOWER than xoff_thresh
-    uart_driver_install(fnc_uart_port, 2048, 0, 0, NULL, ESP_INTR_FLAG_IRAM);
-    uart_set_sw_flow_ctrl(fnc_uart_port, true, 1536, 256);
+    // RX buffer: 256 bytes — original working value.
+    // XON/XOFF thresholds: 64 (send XOFF) / 120 (send XON) — original working values.
+    // Do NOT change these; they interact with FluidNC's own flow control behaviour.
+    uart_driver_install(fnc_uart_port, 256, 0, 0, NULL, ESP_INTR_FLAG_IRAM);
+    uart_set_sw_flow_ctrl(fnc_uart_port, true, 64, 120);
     uint32_t baud;
     uart_get_baudrate(fnc_uart_port, &baud);
 }
