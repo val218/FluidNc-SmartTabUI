@@ -414,7 +414,13 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     };
     auto btn = [&](Rect& r, int x, int y, int w, int h, uint16_t fill, uint16_t border, const char* label, uint16_t tc){
         r = {x,y,w,h};
-        jr_gradBtn(canvas, x, y, w, h, jr_brighten(fill, 20), jr_dim(fill, 70), border, label, tc);
+        // Shadow + flat fill + subtle top highlight
+        canvas->fillRoundRect(x+2, y+2, w, h, 4, 0x0000);  // drop shadow
+        canvas->fillRoundRect(x, y, w, h, 4, fill);
+        canvas->drawRoundRect(x, y, w, h, 4, border);
+        canvas->drawFastHLine(x+4, y+1, w-8, jr_brighten(fill, 18));  // top highlight
+        canvas->setFont(&fonts::Font0); canvas->setTextDatum(middle_center);
+        canvas->setTextColor(tc); canvas->drawString(label, x+w/2, y+h/2);
     };
 
     int bh = 30, gap = 6;
@@ -422,7 +428,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     switch (_phase) {
 
     case RecoveryPhase::Prompt: {
-        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,YELLOW);
+        canvas->fillRoundRect(px+3,py+3,pw,avH,6,0x0000); canvas->fillRoundRect(px,py,pw,avH,6,C_PANEL); canvas->drawRoundRect(px,py,pw,avH,6,YELLOW); canvas->drawFastHLine(px+6,py+1,pw-12,jr_brighten(C_PANEL,15));
         // Title bar with warning icon
         canvas->fillRoundRect(px,py,pw,22,6,0x8400);
         // Warning triangle
@@ -464,7 +470,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     }
 
     case RecoveryPhase::AskToolBreak: {
-        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,ORANGE);
+        canvas->fillRoundRect(px+3,py+3,pw,avH,6,0x0000); canvas->fillRoundRect(px,py,pw,avH,6,C_PANEL); canvas->drawRoundRect(px,py,pw,avH,6,ORANGE); canvas->drawFastHLine(px+6,py+1,pw-12,jr_brighten(C_PANEL,15));
         // Title
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(ORANGE);
@@ -501,7 +507,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     }
 
     case RecoveryPhase::ShowLines: {
-        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,CYAN);
+        canvas->fillRoundRect(px+3,py+3,pw,avH,6,0x0000); canvas->fillRoundRect(px,py,pw,avH,6,C_PANEL); canvas->drawRoundRect(px,py,pw,avH,6,CYAN); canvas->drawFastHLine(px+6,py+1,pw-12,jr_brighten(C_PANEL,15));
         // Title
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(CYAN);
@@ -545,7 +551,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
         break;
     }
     case RecoveryPhase::ManualJog: {
-        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,RED);
+        canvas->fillRoundRect(px+3,py+3,pw,avH,6,0x0000); canvas->fillRoundRect(px,py,pw,avH,6,C_PANEL); canvas->drawRoundRect(px,py,pw,avH,6,RED); canvas->drawFastHLine(px+6,py+1,pw-12,jr_brighten(C_PANEL,15));
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(RED);
         canvas->drawString("MANUAL JOG REQUIRED", cx, py+12);
@@ -574,7 +580,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     }
 
     case RecoveryPhase::ToolChange: {
-        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,ORANGE);
+        canvas->fillRoundRect(px+3,py+3,pw,avH,6,0x0000); canvas->fillRoundRect(px,py,pw,avH,6,C_PANEL); canvas->drawRoundRect(px,py,pw,avH,6,ORANGE); canvas->drawFastHLine(px+6,py+1,pw-12,jr_brighten(C_PANEL,15));
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(ORANGE);
         canvas->drawString("TOOL CHANGE", cx, py+12);
@@ -606,7 +612,7 @@ void jobrecov_draw(void* canvasPtr, int W, int H, int TOP, int NAV_Y) {
     }
 
     case RecoveryPhase::Confirm: {
-        jr_gradPanel(canvas, px,py,pw,avH,6,C_PANEL,GREEN);
+        canvas->fillRoundRect(px+3,py+3,pw,avH,6,0x0000); canvas->fillRoundRect(px,py,pw,avH,6,C_PANEL); canvas->drawRoundRect(px,py,pw,avH,6,GREEN); canvas->drawFastHLine(px+6,py+1,pw-12,jr_brighten(C_PANEL,15));
         canvas->setFont(&fonts::Font2); canvas->setTextDatum(middle_center);
         canvas->setTextColor(GREEN);
         canvas->drawString("READY TO RESUME", cx, py+11);

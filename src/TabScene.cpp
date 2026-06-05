@@ -665,10 +665,7 @@ private:
     }
 
     void drawHeader() {
-        // Header gradient: slightly lighter at top, darker at bottom
-        for (int i = 0; i < TOP; i++)
-            canvas.drawFastHLine(0, i, W, rgb565_lerp(
-                rgb565_brighten(COL_PANEL, 15), rgb565_dim(COL_PANEL, 85), i, TOP));
+        canvas.fillRect(0, 0, W, TOP, COL_PANEL);
         hline(0, TOP - 1, W, COL_BORDER);
 
         int sc = stateCol();
@@ -795,11 +792,8 @@ private:
     }
 
     void drawNav() {
-        // Nav bar gradient: darker at top (shadow under content), lighter at bottom
-        for (int i = 0; i < BOT; i++)
-            canvas.drawFastHLine(0, NAV_Y+i, W, rgb565_lerp(
-                rgb565_dim(COL_PANEL, 70), rgb565_brighten(COL_PANEL, 10), i, BOT));
-        canvas.drawFastHLine(0, NAV_Y, W, rgb565_dim(COL_PANEL, 50));  // top shadow line
+        canvas.fillRect(0, NAV_Y, W, BOT, COL_PANEL);
+        canvas.drawFastHLine(0, NAV_Y, W, rgb565_dim(COL_PANEL, 60));  // subtle top edge
         hline(0, NAV_Y, W, COL_BORDER);
 
         // When job running on DRO tab: show Hold and Abort instead of tab bar
@@ -812,20 +806,15 @@ private:
             // Hold / Resume button (left half)
             _holdBtn = { 0, NAV_Y, half, BOT };
             int hCol = inHold ? GREEN : YELLOW;
-            // Gradient Hold/Resume button
-            gradientRoundRect(canvas, 2, NAV_Y+3, half-4, BOT-6, 4,
-                              rgb565_brighten(hCol, 25), rgb565_dim(hCol, 70));
-            canvas.drawRoundRect(2, NAV_Y+3, half-4, BOT-6, 4, hCol);
-            canvas.drawFastHLine(6, NAV_Y+4, half-12, rgb565_brighten(hCol, 40));
+            // Subtle gradient button
+            canvas.fillRoundRect(2, NAV_Y+3, half-4, BOT-6, 4, hCol);
+            canvas.drawFastHLine(6, NAV_Y+4, half-12, rgb565_brighten(hCol, 20));
             navTxt(inHold ? "Resume (~)" : "Hold (!)", half/2, NAV_Y+BOT/2, COL_BG);
 
             // Abort button (right half)
             _abortBtn = { half, NAV_Y, half, BOT };
-            // Gradient Abort button
-            gradientRoundRect(canvas, half+2, NAV_Y+3, half-4, BOT-6, 4,
-                              rgb565_brighten(RED, 25), rgb565_dim(RED, 60));
-            canvas.drawRoundRect(half+2, NAV_Y+3, half-4, BOT-6, 4, RED);
-            canvas.drawFastHLine(half+6, NAV_Y+4, half-12, rgb565_brighten(RED, 40));
+            canvas.fillRoundRect(half+2, NAV_Y+3, half-4, BOT-6, 4, RED);
+            canvas.drawFastHLine(half+6, NAV_Y+4, half-12, rgb565_brighten(RED, 20));
             navTxt("Abort (x)", half + half/2, NAV_Y+BOT/2, 0xFFFF);
 
             // Invalidate nav tabs so normal tab touch doesn't fire
@@ -841,13 +830,9 @@ private:
             int w = (i == N_TABS-1) ? W - x : tw;  // last tab fills to edge
             _navTabs[i] = { x, NAV_Y, w, BOT };
             if (i == _tab) {
-                // Active tab gradient: dark blue fading down
-                for (int ti = 0; ti < BOT; ti++)
-                    canvas.drawFastHLine(x, NAV_Y+ti, w,
-                        rgb565_lerp((uint16_t)0x0032, (uint16_t)0x0010, ti, BOT));
-                // Accent bar at top with brightness gradient
+                canvas.fillRect(x, NAV_Y, w, BOT, 0x0019);
                 canvas.fillRect(x, NAV_Y, w, 2, COL_AX_X);
-                canvas.drawFastHLine(x, NAV_Y+2, w, rgb565_dim(COL_AX_X, 50));
+                canvas.drawFastHLine(x, NAV_Y+2, w, rgb565_dim(COL_AX_X, 40));
             }
             if (i > 0 && i < N_TABS) vline(x, NAV_Y + 5, BOT - 10, COL_BORDER);
             int col;
@@ -949,12 +934,7 @@ private:
 
 
         // ── Visualizer: shows path (auto-scaled) OR work area map ────────────
-        // VIZ area gradient: slightly darker edges for depth
-        for (int vi = 0; vi < VIZ_H; vi++) {
-            int edgeDim = (vi < 4 || vi >= VIZ_H-4) ? 85 : 100;
-            canvas.drawFastHLine(VIZ_X, VIZ_Y+vi, VIZ_W,
-                rgb565_dim(COL_PANEL2, edgeDim));
-        }
+        canvas.fillRect(VIZ_X, VIZ_Y, VIZ_W, VIZ_H, COL_PANEL2);
 
 
         if (_vizFullscreen && !vizPath.empty()) {
@@ -1250,10 +1230,7 @@ private:
 
         // ── Feed / Speed / Spindle bar — tap to select, MPG adjusts ──────────
         int fy  = NAV_Y - FEED_H;
-        // Feed bar: subtle top-to-bottom gradient
-        for (int i = 0; i < FEED_H; i++)
-            canvas.drawFastHLine(0, fy+i, W, rgb565_lerp(
-                rgb565_brighten(COL_PANEL2, 8), rgb565_dim(COL_PANEL2, 90), i, FEED_H));
+        canvas.fillRect(0, fy, W, FEED_H, COL_PANEL2);
         hline(0, fy, W, COL_BORDER);
 
         auto barTxt = [&](const char* s, int x, int y2, int col, int datum = middle_center) {
@@ -1282,11 +1259,7 @@ private:
                 barTxt(label, px + pw/2, lbl_y, lt ? 0x0000 : COL_BG);
                 barTxt(val,   px + pw/2, val_y, lt ? 0x0000 : COL_BG);
             } else {
-                // Pill background with subtle gradient (inset look)
-                for (int pi = 0; pi < fh; pi++)
-                    canvas.drawFastHLine(px+(pi<4||pi>=fh-4?4:0), fy2+pi,
-                        pw-(pi<4||pi>=fh-4?8:0),
-                        rgb565_lerp(rgb565_dim(COL_PANEL2,85), rgb565_brighten(COL_PANEL2,5), pi, fh));
+                canvas.fillRoundRect(px, fy2, pw, fh, 4, COL_PANEL2);
                 // Light theme: thicker border
                 if (lt) {
                     canvas.drawRoundRect(px-1, fy2-1, pw+2, fh+2, 4, col);
@@ -2487,7 +2460,12 @@ public:
         // Parse PathRetrace plugin status messages
         if (arguments && strncmp(arguments, "PathRetrace:", 12) == 0) {
             const char* p = arguments + 12;
-            if (strncmp(p, "Active", 6) == 0) {
+            if (strncmp(p, "Empty", 5) == 0) {
+                // Plugin IS present — buffer empty (no job run yet)
+                _retraceSupport = 1;
+                _retraceStartMs = 0;
+                fnc_term_inject("> PathRetrace: plugin OK (run a job first)");
+            } else if (strncmp(p, "Active", 6) == 0) {
                 // Plugin confirmed present and active
                 _retraceSupport = 1;
                 _retraceStartMs = 0;

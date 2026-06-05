@@ -87,16 +87,10 @@ static void drawSettingsMenu(const AppSettings& s, bool mpgOk, int scrollY = 0) 
     auto sB = [&](int x, int y2, int w, int h2, uint16_t bg, uint16_t bc,
                   const char* lb, uint16_t tc) {
         if (y2+h2 < 0 || y2 > H) return;
-        // Gradient fill: lighter top, darker bottom
-        uint16_t top = sBright(bg, 15), bot = sDim(bg, 80);
-        for (int i = 0; i < h2; i++) {
-            uint16_t c = sLerp(top, bot, i, h2);
-            _sBuf->drawFastHLine(x+(i<3||i>=h2-3?3:0), y2+i,
-                                 w-(i<3||i>=h2-3?6:0), c);
-        }
+        _sBuf->fillRoundRect(x, y2, w, h2, 3, bg);
         _sBuf->drawRoundRect(x, y2, w, h2, 3, bc);
-        // Top highlight
-        _sBuf->drawFastHLine(x+3, y2+1, w-6, sBright(bg, 25));
+        // Subtle top highlight — just 1px
+        _sBuf->drawFastHLine(x+3, y2+1, w-6, sBright(bg, 18));
         _sBuf->setFont(&fonts::Font0);
         _sBuf->setTextDatum(middle_center);
         _sBuf->setTextColor(tc);
