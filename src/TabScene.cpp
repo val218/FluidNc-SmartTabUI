@@ -1,0 +1,4127 @@
+// TabScene.cpp  — 5-tab landscape UI for FluidDial JC2432W328C (320x240)
+// Copyright (c) 2024 FluidDial contributors. GPLv3 licence.
+
+#include "Scene.h"
+#include "SimMode.h"
+#include "driver/gpio.h"
+#include "driver/i2c.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/pcnt.h"
+#include "FileParser.h"
+#include "System.h"
+#include "Hardware2432.hpp"
+#include "JobRecovery.h"
+#include "NVS.h"
+#include <Esp.h>  // ESP.getFreeHeap, ESP.getMinFreeHeap
+extern volatile uint32_t fnc_tx_count;
+extern override_percent_t mySro;
+extern override_percent_t myRro;
+extern volatile uint32_t fnc_rx_count;
+extern "C" int fnc_term_count();
+extern "C" const char* fnc_term_line(int idx);
+extern "C" void fnc_term_inject(const char* line);
+extern volatile int fnc_term_gen;
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <cmath>
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Palette — RGB565 literals
+// ─────────────────────────────────────────────────────────────────────────────
+static int COL_BG      = 0x0862;
+static int COL_PANEL   = 0x0883;
+static int COL_PANEL2  = 0x10A3;
+static int COL_PANEL3  = 0x0863;
+static int COL_BORDER  = 0x1906;
+static int COL_BORDER2 = 0x2147;
+static int COL_DIM     = 0x31C9;
+static int COL_DIM2    = 0x52F0;
+static int COL_WHITE   = 0xDF1D;
+static int COL_WHITE2  = 0x9D17;
+static int COL_AX_X   = 0x06BF;
+static int COL_AX_Y   = 0x0771;
+static int COL_AX_Z   = 0xFEE8;
+static int COL_AX_A   = 0xDB3F;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layout
+// ─────────────────────────────────────────────────────────────────────────────
+static const int W       = 320;
+static const int H       = 240;
+static const int TOP     = 20;
+static const int BOT     = 34;
+static const int NAV_Y   = H - BOT;
+static const int DROW    = 110;
+static const int FEED_H  = 46;
+static const int TAB_W   = 22;
+static const int VIZ_X   = DROW;
+static const int VIZ_Y   = TOP;
+static const int VIZ_W   = W - DROW;        // full width to right edge
+static const int VIZ_H   = NAV_Y - FEED_H - VIZ_Y - 14; // 14px for filename+bar strip below
+static const int TAB_X   = W;               // tabs gone — pushed off screen
+static const int DRO_ROW = (NAV_Y - TOP - FEED_H) / 4;
+static const int N_TABS  = 5;
+static const int CMD_H   = 54;
+static const int OUT_LH  = 16;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Axis colour table
+// ─────────────────────────────────────────────────────────────────────────────
+struct AxisStyle { const char* letter; int col; };
+static const AxisStyle AX_STYLES[4] = {
+    { "X", COL_AX_X },
+    { "Y", COL_AX_Y },
+    { "Z", COL_AX_Z },
+    { "A", COL_AX_A },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tab names
+// ─────────────────────────────────────────────────────────────────────────────
+static const char* TAB_LABELS[N_TABS] = { "DRO", "Home", "Files", "Term", "Macros" };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Terminal
+// ─────────────────────────────────────────────────────────────────────────────
+struct TermLine { std::string txt; int col; };
+static std::vector<TermLine> termLines;
+static int termScroll   = 0;  // 0 = pinned to bottom, >0 = scrolled up by N lines
+static int macroScroll  = 0;  // first visible macro index
+static int _homeScroll  = 0;  // home screen scroll offset
+
+// ── MPG handwheel state ───────────────────────────────────────────────────────
+// Step size switch: gpio16=1mm, gpio4=10mm, neither=0.1mm
+// Axis switch:      gpio17=X, gpio35=Y, gpio21=Z, gpio22=A, neither=off
+// E-stop:           gpio8 active-low
+static volatile int   mpgAxis     = -1;   // -1=off, 0=X,1=Y,2=Z,3=A
+static volatile int   mpgStepIdx  = 0;    // 0=0.1, 1=1.0, 2=10.0
+static float mpgSteps[]  = { 0.01f, 0.10f, 1.00f };
+static const char* mpgStepLabels[] = { "x1", "x10", "x100" };
+static bool  mpgEstopLast = true;   // debounce
+static volatile int   mpgLastDir   = 0;      // last jog direction: +1 / -1 / 0
+static volatile uint32_t mpgDirTime = 0;     // millis() when last jog fired (for fade-out)
+static volatile bool  mpgEnable    = false;  // P6 enable button state
+static int  _enableMode  = 0;  // EnableMode: 0=EnableGate 1=TouchOnly 2=JogOnly 3=MacroBtn 4=Disabled
+static int  _enableMacro = 0;  // macro index for MacroBtn mode
+static bool _p6Prev      = false;  // previous P6 state for edge detection
+static volatile bool _p6MacroFire   = false;
+static volatile bool mpgJogAllowed  = false;  // jog permitted (enable gating)
+static int  _barSel      = 0;  // 0=none 1=feed selected 2=spindle selected
+static bool _showMPos    = false;  // false=WPos true=MPos
+static bool _inInchMode  = false;  // display inch instead of mm
+static uint32_t _jobStartTime = 0; // millis when job started
+static uint32_t _jobElapsed   = 0; // accumulated elapsed ms
+static int  _currentTab  = 0;
+static int  _workX       = 1250;  // machine work area short axis (mm)
+static int  _workY       = 2500;  // machine work area long axis (mm)
+static int  _homeCorner  = 0;     // 0=BL 1=BR 2=TL 3=TR
+static volatile bool mpgEstopActive = false;  // e-stop currently pressed
+volatile bool _forceAlarm = false;  // set by mpgTask when e-stop pressed
+static volatile bool _mpgChanged   = false; // set by Core0 readMpgSwitches, consumed on Core1
+
+static int  _droAxesMode = 0;  // 0=XYZ 1=XYZA 2=XY 3=XYYZ (dual Y)
+static char _axisLetters[6];   // axis letters from FluidNC: X,Y,Z,A,B,C
+static bool _axisAutoDetected; // true when letters received from FluidNC
+
+static int _currentTheme = 0;
+static int _machineType  = 0;  // 0=CNC 1=Plotter 2=Laser
+// ── Hour meter ────────────────────────────────────────────────────────────────
+static uint32_t _jobSeconds    = 0;   // total job runtime seconds (Cycle state)
+static uint32_t _maintDueSecs  = 0;   // seconds at which maintenance is due
+static int      _maintIntervalH= 50;  // maintenance interval in hours
+static bool     _maintNotified  = false; // suppresses repeat notification
+static uint32_t _cycleSecLast   = 0;  // millis() snapshot for second counting  // 0=dark 1=neutral 2=light
+
+// Called by Settings to apply theme colours
+void tabui_setTheme(int t) {
+    _currentTheme = t;
+    switch (t) {
+        case 1:  // Neutral — medium grey, light text
+            COL_BG=0x31C8; COL_PANEL=0x4229; COL_PANEL2=0x4A8B; COL_PANEL3=0x39E9;
+            COL_BORDER=0x5B2E; COL_BORDER2=0x73D1; COL_DIM=0x94D5; COL_DIM2=0xB5D9;
+            COL_WHITE=0xE75E; COL_WHITE2=0xC65A;
+            COL_AX_X=0x06BF; COL_AX_Y=0x0771; COL_AX_Z=0xFEE8; COL_AX_A=0xDB3F; break;
+        case 2:  // Light — white bg, pure black text, vivid dark accents
+            COL_BG     = 0xFFFF;  // pure white
+            COL_PANEL  = 0xA65E;  // darker blue (even rows, tint base — darker = stronger tints)
+            COL_PANEL2 = 0xAEBE;  // stronger blue (buttons)
+            COL_PANEL3 = 0xE75F;  // light blue (odd rows)
+            COL_BORDER = 0x4C59;  // strong dark blue border
+            COL_BORDER2= 0x2196;  // darker blue border
+            COL_WHITE  = 0x0000;  // pure black  (primary text)
+            COL_WHITE2 = 0x0D0D;  // very dark blue-grey (secondary text)
+            COL_DIM    = 0x2104;  // dark grey (dim labels)
+            COL_DIM2   = 0x31A6;  // medium dark (minor text)
+            COL_AX_X   = 0xC800;  // dark red    X
+            COL_AX_Y   = 0x0480;  // dark green  Y
+            COL_AX_Z   = 0xCA80;  // dark orange Z
+            COL_AX_A   = 0x780F;  // dark purple A
+            break;
+        default: // Dark — original deep blue-grey
+            COL_BG=0x0862; COL_PANEL=0x0883; COL_PANEL2=0x10A3; COL_PANEL3=0x0863;
+            COL_BORDER=0x1906; COL_BORDER2=0x2147; COL_DIM=0x31C9; COL_DIM2=0x52F0;
+            COL_WHITE=0xDF1D; COL_WHITE2=0x9D17;
+            COL_AX_X=0x06BF; COL_AX_Y=0x0771; COL_AX_Z=0xFEE8; COL_AX_A=0xDB3F; break;
+    }
+}
+void tabui_setAxes(int a)         { _droAxesMode  = a; }
+void tabui_setEnableMode(int m, int macro) { _enableMode = m; _enableMacro = macro; }
+void tabui_setWorkArea(int wx, int wy, int hc) { _workX=wx; _workY=wy; _homeCorner=hc; }
+int  tabui_getAxes()      { return _droAxesMode; }
+bool mpgEnableHeld()      { return (bool)mpgEnable; }
+void mpgSetEstop(bool v)  { mpgEstopActive = v; }
+extern volatile bool _forceAlarm;
+bool mpgConsumeChanged()  { if (!_mpgChanged) return false; _mpgChanged = false; return true; }
+void mpgSignalChanged()   { _mpgChanged = true; }
+// Touch gating: only applies to DRO tab in EnableGate/TouchOnly modes
+// All other tabs always accept touch regardless of enable button
+bool tabui_touchGated()   {
+    // EnableGate (mode 0): ALL touch blocked unless EN held
+    if (_enableMode == 0 && !mpgEnable) return true;
+    return false;
+}
+void setSimMode(bool sim) { (void)sim; }  // simulation removed
+bool getSimMode()         { return false; }  // simulation removed
+
+// Read PCF8574 I2C GPIO expander (address 0x20)
+// Returns 0xFF on error (all pins HIGH = nothing active = safe default)
+static bool    pcf8574Present = false;  // detected on first successful read
+static uint8_t readPCF8574() {
+    uint8_t val = 0xFF;
+    esp_err_t err = i2c_master_read_from_device(I2C_NUM_1, 0x20, &val, 1, pdMS_TO_TICKS(20));
+    if (err == ESP_OK) pcf8574Present = true;
+    return (err == ESP_OK) ? val : 0xFF;
+}
+
+static int _volumeLevel = 5;  // 0=mute, 1-9
+
+static void beep_ui(int freq_hz, int duration_ms) {
+    if (_volumeLevel == 0) return;
+    beep(freq_hz, duration_ms, _volumeLevel * 14);
+}
+
+void readMpgSwitches() {
+    static uint32_t lastRead = 0;
+    uint32_t now = millis();
+    if (now - lastRead < 100) return;
+    lastRead = now;
+
+    // If PCF8574 not connected, skip — all axes/steps remain at default (off/0.1mm)
+    // Retry detection every 100ms until found
+    if (!pcf8574Present) {
+        readPCF8574();  // attempt detection, updates pcf8574Present if found
+        return;
+    }
+
+    int prevAxis = (int)mpgAxis, prevStep = (int)mpgStepIdx;
+
+    // Read all 8 switch inputs in one I2C transaction
+    // PCF8574 pin map (active-LOW — switch closes pin to GND):
+    //   P0 = Axis X
+    //   P1 = Axis Y
+    //   P2 = Axis Z
+    //   P3 = Axis A
+    //   P4 = Step 1mm
+    //   P5 = Step 10mm
+    //   P6 = Enable button (active-LOW — must be held to allow jogging)
+    //   P7 = unused
+    uint8_t pins = readPCF8574();
+
+    bool axX    = !(pins & 0x01);  // P0
+    bool axY    = !(pins & 0x02);  // P1
+    bool axZ    = !(pins & 0x04);  // P2
+    bool axA    = !(pins & 0x08);  // P3
+    bool st1    = !(pins & 0x10);  // P4
+    bool st10   = !(pins & 0x20);  // P5
+    bool enable = !(pins & 0x40);  // P6 — enable button, must be held to jog
+    mpgEnable = enable;
+
+    // Step — always read regardless of enable/axis state
+    if      (st10) mpgStepIdx = 2;
+    else if (st1)  mpgStepIdx = 1;
+    else           mpgStepIdx = 0;
+
+    // Axis — always read for display; jogging gated separately in onEncoder
+    if      (axA) mpgAxis = 3;
+    else if (axZ) mpgAxis = 2;
+    else if (axY) mpgAxis = 1;
+    else if (axX) mpgAxis = 0;
+    else          mpgAxis = -1;
+
+    // Jog is allowed based on enableMode + enable button
+    bool jogAllowed = false;
+    switch (_enableMode) {
+        case 0: jogAllowed = enable; break;   // EnableGate: must hold enable
+        case 1: jogAllowed = true;   break;   // TouchOnly:  jog always free
+        case 2: jogAllowed = enable; break;   // JogOnly:    must hold enable
+        case 3: jogAllowed = true;   break;   // MacroBtn:   jog always free
+        case 4: jogAllowed = true;   break;   // Disabled:   jog always free
+    }
+    // Store jog permission so onEncoder can check it
+    mpgJogAllowed = jogAllowed;
+
+    // MacroBtn mode: P6 rising edge — set a flag, fired in reDisplay context
+    if (_enableMode == 3 && enable && !_p6Prev) {
+        _p6MacroFire = true;
+    }
+    _p6Prev = enable;
+
+    // Clear bar selection when enable released
+    if (!enable) _barSel = 0;
+
+    // Clear PCNT backlog when axis goes off → active
+    // Use markDirty for cross-core safety
+    if (prevAxis < 0 && mpgAxis >= 0) {
+        pcnt_counter_clear(PCNT_UNIT_0);
+    }
+
+    // EN button press/release beep
+    static bool _prevEnable = false;
+    if (enable != _prevEnable) {
+        _prevEnable = enable;
+        if (enable) beep_ui(1100, 20);   // EN pressed — mid tone
+        else        beep_ui(700,  15);   // EN released — lower tone
+    }
+
+    if (mpgAxis != prevAxis || mpgStepIdx != prevStep) {
+        _mpgChanged = true;
+        if (mpgAxis != prevAxis)
+            beep_ui(mpgAxis >= 0 ? 1200 : 800, 30);
+        else
+            beep_ui(1800, 20);
+    }
+}
+static const char* QUICK_CMDS[] = { "$H", "$?", "!", "~", "$X" };
+static const char* SPINDLE_CMDS[] = { "M3 S10000", "M4 S10000", "M5", "M8", "M9" };
+static const char* SPINDLE_LBLS[] = { "CW", "CCW", "Stop", "Flood", "M-off" };
+static const int   N_SPINDLE = 5;
+static const int   N_QUICK_CMDS = 5;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Probe options
+// ─────────────────────────────────────────────────────────────────────────────
+struct ProbeOpt { const char* label; const char* sub; const char* cmd; int col; };
+static const ProbeOpt PROBE_OPTS[] = {
+    { "Tool Length",  "Z-probe with current tool",          "G38.2 Z-50",          YELLOW     },
+    { "Z Surface",    "Probe top of workpiece",             "G38.2 Z-50",          CYAN       },
+    { "XY Center",    "Find center of hole / boss",         "G38.2 X-50",          GREEN      },
+    { "X Edge",       "Find left or right X edge",          "G38.2 X-50",          COL_AX_X   },
+    { "Y Edge",       "Find front or back Y edge",          "G38.2 Y-50",          COL_AX_Y   },
+    { "Corner",       "Find XY corner of workpiece",        "G38.2 X-25",          ORANGE     },
+};
+static const int N_PROBE_OPTS = 6;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Macros
+// ─────────────────────────────────────────────────────────────────────────────
+struct MacroBtn { std::string name; int col; std::string cmd; };
+// Macro list — add as many as needed, scrollable at runtime
+static std::vector<MacroBtn> MACROS = {
+    { "Tool Change", ORANGE,    "M6"                   },
+    { "Park",        CYAN,      "G53 G0 Z0"            },
+    { "Coolant On",  BLUE,      "M8"                   },
+    { "Coolant Off", BLUE,      "M9"                   },
+    { "Probe Z",     YELLOW,    "G38.2 Z-50"      },
+    { "Zero X",      COL_AX_X,  "G10 L20 P1 X0"        },
+    { "Zero Y",      COL_AX_Y,  "G10 L20 P1 Y0"        },
+    { "Zero Z",      COL_AX_Z,  "G10 L20 P1 Z0"        },
+    { "Zero All",    ORANGE,    "G10 L20 P1 X0 Y0 Z0"  },
+    { "Spindle CW",  GREEN,     "M3 S10000"            },
+    { "Spindle CCW", GREEN,     "M4 S10000"            },
+    { "Spindle Off", COL_DIM2,  "M5"                   },
+    { "Feed Hold",   RED,       "!"                    },
+    { "Cycle Start", GREEN,     "~"                    },
+    { "Unlock",      ORANGE,    "$X"                   },
+    { "Home All",    CYAN,      "$H"                   },
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// File list
+// ─────────────────────────────────────────────────────────────────────────────
+struct FileEntry { std::string name; bool isDir; int size; };
+static std::vector<FileEntry> fileList;
+static int  fileScroll   = 0;
+static int  fileSelected    = -1;
+static bool filePreviewMode  = false;      // showing gcode preview panel
+static bool simJobRunning    = false;      // sim: job is running (show in DRO viz)
+static bool _jobSentToFluidNC = false;  // real job was sent, expect Cycle state
+static std::string simJobName;             // name of file being sim-run
+struct VizPt { float x, y, z; uint8_t t; };  // t=0 rapid, t=1 feed/arc
+static std::vector<VizPt> simPath;  // XY path parsed from gcode for viz
+static int  simPathIdx       = 0;          // current position along path (animation)
+static std::vector<std::string> previewLines; // loaded gcode lines
+static std::vector<VizPt> vizPath;   // path for DRO viz overlay (XYZ)
+static std::string vizJobName;              // filename shown on DRO viz
+static int  vizPathExecuted  = 0;           // segments drawn as "executed" (green)
+static bool _pathJogMode    = false;  // retrace mode active
+static bool _freeJogMode    = false;  // free jog during Hold
+static float _freeJogSaveX  = 0, _freeJogSaveY = 0, _freeJogSaveZ = 0;  // saved hold pos
+static int  _pathJogIdx     = 0;     // retrace step counter (from FluidNC MSG reports)
+static int  _pathJogTotal   = 0;     // total steps buffered (from FluidNC MSG reports)
+static float _pathJogAccum  = 0.0f;  // unused (kept for compat)
+static bool _pathJogAborted = true;  // always true for plugin-based retrace
+static int  _retraceSupport = 0;     // 0=unknown 1=available 2=unavailable (error on $Retrace/Start)
+static int  previewScroll   = 0;           // first visible preview line
+static int  previewFirstLine = 0;           // line offset in file
+static std::vector<std::string> allFileLines;  // accumulated lines across batches
+static bool _allFileLinesComplete = false;   // true = full file loaded; false = truncated/large
+static constexpr int MAX_REWIND_LINES = 4000; // heap safety cap
+static constexpr int VIZ_MAX_POINTS    = 8000; // vizPath capacity cap — ~120KB at 30B/line
+static std::string _loadingPath;            // path being batch-loaded
+
+// ── Viz file loading (from FluidNC VizGenerator plugin) ──────────────────────
+static std::string _vizLoadPath;   // .viz file being loaded
+static bool _vizLoading = false;
+static uint32_t _retraceStartMs = 0;  // when $Retrace/Start was sent (for timeout)
+static uint32_t _retraceWarnMs  = 0;  // when "plugin not found" warning was shown   // currently loading a .viz from FluidNC
+static int  _vizLoadTotal = 0;     // expected points (from VizReady header)
+static float _vizBounds[6] = {};   // xmin,xmax,ymin,ymax,zmin,zmax
+static std::string _vizSidecarPath;         // real .nc path when trying sidecar first
+static int  _loadingBatch = 0;              // next batch start line
+static bool _loadingDone  = false;          // all batches received
+
+// ── LittleFS viz path cache ───────────────────────────────────────────────────
+// Key: /viz/XXXXXXXX.bin where X = CRC32 of (name + size)
+// Format: uint32 count, then count * (float x, float y)
+static bool _vizCacheReady = false;
+static bool _vizFullscreen = false;  // DRO viz double-tap fullscreen
+static int  _vizNRapid = 0, _vizNFeed = 0, _vizNM6 = 0;
+static bool     _vizGenBusy   = false;
+static bool _confirmRun = false;
+static bool _jobComplete = false;
+static uint32_t _jobCompleteMs = 0;
+static int  _runStep = 0;         // 0=idle 1=lifting Z 2=going XY 3=starting
+static uint32_t _runStartMs = 0;   // when run sequence started
+static bool _zNudgeOpen = false;
+static int  _estopRecovery = 0;
+static bool _showEstopRecovery = false;
+int _tabFromRecovery = -1;  // set by JobRecovery to request tab switch  // set by tabui_setEstopRecovery, read by class
+static int  _pendingAction = 0;  // 0=none 1=rehome 2=rehome+resume after $X clears alarm  // 0=none 1=alarmed 2=released    // Z nudge overlay during job
+static float _zNudgeOffset = 0.0f;  // accumulated Z nudge offset (mm)
+static float _zNudgeBaseZ = 0.0f;   // WCS Z captured when nudge opened
+static uint32_t _lastVizTap = 0;    // for double-tap detection
+
+static uint32_t vizCacheKey(const std::string& name, int size) {
+    uint32_t crc = 0xFFFFFFFF;
+    for (char c : name)  { crc ^= (uint8_t)c; for(int j=0;j<8;j++) crc=(crc>>1)^(0xEDB88320&-(crc&1)); }
+    crc ^= (uint32_t)size;            for(int j=0;j<8;j++) crc=(crc>>1)^(0xEDB88320&-(crc&1));
+    return crc ^ 0xFFFFFFFF;
+}
+
+static bool vizCacheLoad(const std::string& name, int fsize,
+                          std::vector<VizPt>& out) {
+    if (!_vizCacheReady) return false;
+    char path[32]; snprintf(path,sizeof(path),"/viz/%08X.bin",vizCacheKey(name,fsize));
+    File f = LittleFS.open(path,"r"); if(!f) return false;
+    uint32_t cnt=0; f.read((uint8_t*)&cnt,4);
+    if(cnt==0||cnt>20000){f.close();return false;}
+    out.clear(); out.reserve(cnt);
+    for(uint32_t i=0;i<cnt;i++){
+        float x=0,y=0,z=0; uint8_t t=1;
+        f.read((uint8_t*)&x,4); f.read((uint8_t*)&y,4);
+        f.read((uint8_t*)&z,4); f.read((uint8_t*)&t,1);
+        out.push_back({x, y, z, t});
+    }
+    f.close(); return true;
+}
+
+static void vizCacheSave(const std::string& name, int fsize,
+                          const std::vector<VizPt>& pts) {
+    if (!_vizCacheReady || pts.empty()) return;
+    LittleFS.mkdir("/viz");
+    char path[32]; snprintf(path,sizeof(path),"/viz/%08X.bin",vizCacheKey(name,fsize));
+    File f = LittleFS.open(path,"w"); if(!f) return;
+    uint32_t cnt=pts.size(); f.write((uint8_t*)&cnt,4);
+    for(auto& p:pts){ f.write((uint8_t*)&p.x,4); f.write((uint8_t*)&p.y,4);
+                        f.write((uint8_t*)&p.z,4); f.write((uint8_t*)&p.t,1); }
+    f.close();
+}
+
+static void vizCacheInit() {
+    _vizCacheReady = LittleFS.begin(false);
+    if(!_vizCacheReady) _vizCacheReady = LittleFS.begin(true); // format if needed
+}
+
+// Evict old cache entries if LittleFS >80% full
+static void vizCacheEvictOld() {
+    if(!_vizCacheReady) return;
+    size_t used=LittleFS.usedBytes(), total=LittleFS.totalBytes();
+    if(used < total*8/10) return; // <80% full, ok
+    // Delete oldest file in /viz
+    File dir=LittleFS.open("/viz"); if(!dir) return;
+    File oldest; uint32_t oldTime=UINT32_MAX;
+    File entry=dir.openNextFile();
+    while(entry){ if(!entry.isDirectory()&&entry.getLastWrite()<oldTime){oldTime=entry.getLastWrite();oldest=entry;} entry=dir.openNextFile(); }
+    if(oldest) LittleFS.remove(oldest.path());
+}
+static std::string filePath = "/sd";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Drawing helpers — thin wrappers so draw code stays clean
+// ─────────────────────────────────────────────────────────────────────────────
+static void fillR(int x, int y, int w, int h, int r, int col) {
+    canvas.fillRoundRect(x, y, w, h, r, col);
+}
+static void strokeR(int x, int y, int w, int h, int r, int col) {
+    canvas.drawRoundRect(x, y, w, h, r, col);
+}
+// Draw a tinted-fill + border rounded rect. alpha 0..255.
+static void tintStrokeR(int x, int y, int w, int h, int r, int fillCol, int strokeCol, int alpha = 30) {
+    int tint;
+    if (_currentTheme == 2) {
+        // Light theme: blend colour toward COL_PANEL (medium blue-grey) for visible tints
+        int br = (COL_PANEL >> 11) & 0x1F;
+        int bg = (COL_PANEL >> 5)  & 0x3F;
+        int bb2= (COL_PANEL >> 0)  & 0x1F;
+        int fr = (fillCol >> 11) & 0x1F;
+        int fg = (fillCol >> 5)  & 0x3F;
+        int fb = (fillCol >> 0)  & 0x1F;
+        int a = alpha * 5;
+        if (a > 255) a = 255;
+        int rr = br + (fr - br) * a / 255;
+        int gg = bg + (fg - bg) * a / 255;
+        int bb3= bb2 + (fb - bb2) * a / 255;
+        tint = (rr << 11) | (gg << 5) | bb3;
+    } else {
+        // Dark theme: original behaviour — scale toward black
+        int rr = ((fillCol >> 11) & 0x1F) * alpha / 255;
+        int gg = ((fillCol >> 5)  & 0x3F) * alpha / 255;
+        int bb = ((fillCol >> 0)  & 0x1F) * alpha / 255;
+        tint = (rr << 11) | (gg << 5) | bb;
+    }
+    fillR(x, y, w, h, r, tint);
+    strokeR(x, y, w, h, r, strokeCol);
+}
+static void hline(int x, int y, int w, int col) {
+    canvas.drawFastHLine(x, y, w, col);
+}
+static void vline(int x, int y, int h, int col) {
+    canvas.drawFastVLine(x, y, h, col);
+}
+static void txt(const char* s, int x, int y, int col, fontnum_t f = TINY, int datum = middle_center) {
+    text(s, x, y, col, f, datum);
+}
+static void txts(const std::string& s, int x, int y, int col, fontnum_t f = TINY, int datum = middle_center) {
+    text(s, x, y, col, f, datum);
+}
+// Font2 (10x12 bitmap, not bold) — used for all screen content text
+static void f2(const char* s, int x, int y, int col, int datum = middle_center) {
+    canvas.setFont(&fonts::Font2);
+    canvas.setTextDatum(datum);
+    canvas.setTextColor(col);
+    canvas.drawString(s, x, y);
+}
+static void f2s(const std::string& s, int x, int y, int col, int datum = middle_center) {
+    f2(s.c_str(), x, y, col, datum);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TabScene
+// ─────────────────────────────────────────────────────────────────────────────
+uint32_t g_pressExpiryMs = 0;
+static int      _alarmBeepCount = 0;
+static uint32_t _alarmBeepNext  = 0;
+// ── Gradient & Shadow drawing helpers ────────────────────────────────────────
+// RGB565 colour manipulation
+static inline uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
+static inline void rgb565_unpack(uint16_t c, uint8_t& r, uint8_t& g, uint8_t& b) {
+    r = (c >> 8) & 0xF8; g = (c >> 3) & 0xFC; b = (c << 3) & 0xF8;
+}
+static inline uint16_t rgb565_lerp(uint16_t c1, uint16_t c2, int t, int steps) {
+    uint8_t r1,g1,b1,r2,g2,b2;
+    rgb565_unpack(c1,r1,g1,b1); rgb565_unpack(c2,r2,g2,b2);
+    return rgb565(r1+(r2-r1)*t/steps, g1+(g2-g1)*t/steps, b1+(b2-b1)*t/steps);
+}
+static inline uint16_t rgb565_dim(uint16_t c, int pct) {
+    uint8_t r,g,b; rgb565_unpack(c,r,g,b);
+    return rgb565(r*pct/100, g*pct/100, b*pct/100);
+}
+static inline uint16_t rgb565_brighten(uint16_t c, int add) {
+    uint8_t r,g,b; rgb565_unpack(c,r,g,b);
+    r=std::min(255,(int)r+add); g=std::min(255,(int)g+add); b=std::min(255,(int)b+add);
+    return rgb565(r,g,b);
+}
+
+// Vertical gradient fill — draws horizontal lines from top colour to bottom colour
+static void gradientRect(lgfx::LGFX_Sprite& spr, int x, int y, int w, int h,
+                         uint16_t topCol, uint16_t botCol) {
+    for (int i = 0; i < h; i++) {
+        spr.drawFastHLine(x, y + i, w, rgb565_lerp(topCol, botCol, i, h));
+    }
+}
+
+// Gradient rounded rect — gradient fill with rounded corner mask
+static void gradientRoundRect(lgfx::LGFX_Sprite& spr, int x, int y, int w, int h,
+                              int r, uint16_t topCol, uint16_t botCol) {
+    // Fill gradient into a rectangular area, then draw rounded border on top
+    // Uses clipping trick: fill rect, then erase corners with background
+    for (int i = 0; i < h; i++) {
+        uint16_t c = rgb565_lerp(topCol, botCol, i, h);
+        spr.drawFastHLine(x + (i < r || i >= h-r ? r : 0), y + i,
+                          w - (i < r || i >= h-r ? r*2 : 0), c);
+    }
+    // Clean up corners with proper rounded rect border
+    spr.drawRoundRect(x, y, w, h, r, rgb565_lerp(topCol, botCol, 0, 2));
+}
+
+// Drop shadow — draws a darker offset rectangle behind the main shape
+static void dropShadow(lgfx::LGFX_Sprite& spr, int x, int y, int w, int h,
+                       int r, int ox=2, int oy=2) {
+    spr.fillRoundRect(x+ox, y+oy, w, h, r, 0x0000);  // pure black shadow
+}
+
+// Gradient button with shadow — the main reusable button component
+// topCol/botCol = gradient top/bottom; borderCol = border; textCol = label colour
+static void gradBtn(lgfx::LGFX_Sprite& spr, int x, int y, int w, int h,
+                    uint16_t topCol, uint16_t botCol, uint16_t borderCol,
+                    const char* label, uint16_t textCol, bool shadow=true) {
+    if (shadow) dropShadow(spr, x, y, w, h, 4, 2, 2);
+    gradientRoundRect(spr, x, y, w, h, 4, topCol, botCol);
+    spr.drawRoundRect(x, y, w, h, 4, borderCol);
+    // Highlight line at top (emboss effect)
+    spr.drawFastHLine(x+4, y+1, w-8, rgb565_brighten(topCol, 30));
+    spr.setFont(&fonts::Font0); spr.setTextDatum(middle_center);
+    spr.setTextColor(textCol);
+    spr.drawString(label, x+w/2, y+h/2);
+}
+
+// Panel with shadow and subtle gradient
+static void gradPanel(lgfx::LGFX_Sprite& spr, int x, int y, int w, int h,
+                      int r, uint16_t baseCol, uint16_t borderCol, bool shadow=true) {
+    if (shadow) dropShadow(spr, x, y, w, h, r, 3, 3);
+    uint16_t top = rgb565_brighten(baseCol, 12);
+    uint16_t bot = rgb565_dim(baseCol, 80);
+    gradientRoundRect(spr, x, y, w, h, r, top, bot);
+    spr.drawRoundRect(x, y, w, h, r, borderCol);
+    // Top highlight
+    spr.drawFastHLine(x+r, y+1, w-r*2, rgb565_brighten(baseCol, 25));
+}
+
+class TabScene : public Scene {
+private:
+    int  _tab      = 0;
+    int  _vizView  = 0;   // 0=XY top-down  1=3D isometric  2=XZ profile  3=YZ profile
+    bool _probeOpen = false;
+    bool _probeOpenForRecovery = false;  // probe opened from recovery wizard
+    bool _alarmOpen = false;
+
+    struct Rect { int x, y, w, h; };
+    static bool hit(const Rect& r, int px, int py) {
+        return px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h;
+    }
+
+    Rect _navTabs[N_TABS];
+    Rect _holdBtn, _abortBtn;
+    Rect _vizTabs[3];
+    Rect _feedMinus, _feedPlus;
+    Rect _spndMinus, _spndPlus, _spndPill, _spdPill;
+    Rect _homeAllBtn, _probeBtnR;
+    Rect _axisHomeBtns[3];
+    Rect _zeroWcsBtns[4];
+    Rect _gotoZeroBtns[4];
+    int  _homePressedId = -1;  // which home button was last pressed (-1=none)
+    uint32_t _homePressTime = 0;  // when it was pressed
+    int  _macroPressedId = -1;   // which macro was last pressed
+    uint32_t _macroPressTime = 0; // when macro was pressed
+    bool _previewShowPath = false;  // false=gcode text, true=path viz
+    bool _spindleMenuOpen = false;  // spindle sub-menu open in macros tab
+    Rect _unlockBtn={0,0,0,0};
+    Rect _rehomeBtn={0,0,0,0};
+    Rect _rehomeResBtn={0,0,0,0};
+    Rect _unlockBtnFull={0,0,0,0};
+    Rect _zCloseBtn={0,0,0,0};
+    Rect _zResumeBtn={0,0,0,0};
+    Rect _pathJogExitBtn={0,0,0,0};
+    Rect _pathJogResumeBtn={0,0,0,0};
+    Rect _holdZBtn={0,0,0,0};
+    Rect _holdRewindBtn={0,0,0,0};
+    Rect _holdJogBtn   ={0,0,0,0};
+    Rect _freeJogReturnBtn={0,0,0,0};
+    int _rewindFileLine=0;  // allFileLines index written to /rewind.nc
+    Rect _probeClose;
+    Rect _probeRows[N_PROBE_OPTS];
+    Rect _cmdBtns[N_QUICK_CMDS];
+    Rect _macroBtns[8];  // slots for visible macros (max visible at once)
+
+    // ── state colour ─────────────────────────────────────────────────────────
+    int stateCol() {
+        switch (state) {
+            case Cycle: return CYAN;
+            case Hold:  return YELLOW;
+            case Alarm: return RED;
+            case Jog:   return 0xF81F;
+            case Homing:return CYAN;
+            default:    return GREEN;
+        }
+    }
+
+    // ── header ───────────────────────────────────────────────────────────────
+    // Use the compact 6x8 bitmap font for the header - fits in 20px and not bold
+    void hdrTxt(const char* s, int x, int y, int col, int datum = middle_center) {
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextDatum(datum);
+        // Light theme: override most header text to black for readability
+        // Keep status-critical colours (RED for alarm/STP, GREEN/YELLOW for state)
+        int fc = col;
+        if (_currentTheme == 2 && col != RED && col != 0xF800 && col != GREEN && col != YELLOW) {
+            fc = 0x0000;
+        }
+        canvas.setTextColor(fc);
+        canvas.drawString(s, x, y);
+    }
+
+    void drawHeader() {
+        canvas.fillRect(0, 0, W, TOP, COL_PANEL);
+        hline(0, TOP - 1, W, COL_BORDER);
+
+        int sc = stateCol();
+        // ── LEFT: machine state badge ────────────────────────────────────────
+        int tint = (((sc>>11)&0x1F)*20/255)<<11|(((sc>>5)&0x3F)*20/255)<<5|(((sc>>0)&0x1F)*20/255);
+        fillR(2, 2, 42, 16, 3, tint);
+        strokeR(2, 2, 42, 16, 3, sc);
+        hdrTxt(my_state_string, 23, 10, sc);
+
+        // STP badge directly right of state badge (only when e-stop active)
+        if (mpgEstopActive) {
+            fillR(46, 2, 30, 16, 3, 0x4000);
+            strokeR(46, 2, 30, 16, 3, RED);
+            hdrTxt("STP", 61, 10, RED);
+        }
+
+        // ── RIGHT cluster (left→right): ◄►  EN  TX  RX ─────────────────────
+        // Slots from right edge:
+        //   RX : bg W-20..W-2,  centre W-11
+        //   TX : bg W-40..W-22, centre W-31
+        //   EN : centre W-52,   right-edge W-44
+        //   ◄► : W-78..W-64,   4px gap left of EN
+        {
+            static uint32_t lastTx=0,lastRx=0,txFlash=0,rxFlash=0;
+            // Ambient connection flicker — pseudo-random fast pulses when connected
+            static uint32_t txAmbNext=0, rxAmbNext=0;
+            static bool txAmb=false, rxAmb=false;
+            uint32_t now2 = millis();
+            bool connected = (state != Disconnected);
+
+            // Real data flash
+            bool txAct=(fnc_tx_count!=lastTx); if(txAct){lastTx=fnc_tx_count;txFlash=now2;}
+            bool rxAct=(fnc_rx_count!=lastRx); if(rxAct){lastRx=fnc_rx_count;rxFlash=now2;}
+            bool txData=((now2-txFlash)<120), rxData=((now2-rxFlash)<120);
+
+            // Ambient flicker when connected (random 40-180ms intervals)
+            if (connected) {
+                if (now2 >= txAmbNext) {
+                    txAmb = !txAmb;
+                    // LCG pseudo-random interval 40..180ms
+                    static uint32_t txRng = 0x1234;
+                    txRng = txRng * 1664525u + 1013904223u;
+                    txAmbNext = now2 + 40 + (txRng >> 26);  // 0..63ms + 40 = 40..103ms
+                }
+                if (now2 >= rxAmbNext) {
+                    rxAmb = !rxAmb;
+                    static uint32_t rxRng = 0x5678;
+                    rxRng = rxRng * 1664525u + 1013904223u;
+                    rxAmbNext = now2 + 40 + (rxRng >> 26);
+                }
+            } else {
+                txAmb = false; rxAmb = false;
+            }
+
+            bool txOn = txData || txAmb;
+            bool rxOn = rxData || rxAmb;
+
+            // RX — rightmost
+            if(rxOn) canvas.fillRoundRect(W-20,3,18,14,2,rxData?0x0640:0x0320);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(rxOn?(rxData?GREEN:0x03E0):COL_DIM);
+            canvas.drawString("RX", W-11, 10);
+
+            // TX
+            if(txOn) canvas.fillRoundRect(W-40,3,18,14,2,txData?0x6400:0x3200);
+            canvas.setTextColor(txOn?(txData?ORANGE:0xB400):COL_DIM);
+            canvas.drawString("TX", W-31, 10);
+
+            // EN — right-edge at W-44
+            hdrTxt("EN", W-44, 10, mpgEnable?GREEN:COL_DIM, middle_right);
+
+            // ◄► arrows — leftmost of cluster, 4px gap from EN
+            {
+                static const int axCols[] = { COL_AX_X, COL_AX_Y, COL_AX_Z, COL_AX_A };
+                int ac = (mpgAxis >= 0) ? axCols[mpgAxis] : COL_WHITE2;
+                bool active = (mpgLastDir != 0 && (now2 - mpgDirTime) < 300);
+                int my = 10, ah = 4;
+                canvas.fillRect(W-78, 2, 14, 16, COL_PANEL);
+                // ◄ tip left, base right
+                int colL = (active && mpgLastDir < 0) ? ac : COL_DIM;
+                canvas.fillTriangle(W-77, my, W-71, my-ah, W-71, my+ah, colL);
+                // ► tip right, base left
+                int colR = (active && mpgLastDir > 0) ? ac : COL_DIM;
+                canvas.fillTriangle(W-65, my, W-71, my-ah, W-71, my+ah, colR);
+            }
+        }
+
+        // ── CENTRE: tab name or JOG label ────────────────────────────────────
+        if (mpgEnable && mpgAxis >= 0) {
+            static const int axCols[] = { COL_AX_X, COL_AX_Y, COL_AX_Z, COL_AX_A };
+            static const char axNames[] = { 'X', 'Y', 'Z', 'A' };
+            int ac = axCols[mpgAxis];
+            // Y2 label for XYYZ mode
+            const char ax4 = (_droAxesMode==3 && mpgAxis==3) ? '2' : axNames[mpgAxis];
+            char axPfx[4] = {(_droAxesMode==3 && mpgAxis==3)?'Y':ax4, 0};
+            if(_droAxesMode==3 && mpgAxis==3) { axPfx[0]='Y'; axPfx[1]='2'; axPfx[2]=0; }
+            char jl[16]; snprintf(jl, sizeof(jl), "JOG %s %smm", axPfx, mpgStepLabels[(int)mpgStepIdx]);
+            canvas.fillRect(W/2-44, 2, 88, 16, COL_PANEL2);
+            strokeR(W/2-44, 2, 88, 16, 3, ac);
+            hdrTxt(jl, W/2, 10, ac);
+        } else {
+            // Tab name only — no date in header
+            hdrTxt(TAB_LABELS[_tab], W/2, 10, COL_DIM);
+            // Machine type badge — small pill left of centre text
+            if (_machineType > 0) {
+                const char* mLabel = (_machineType == 1) ? "KNF" : "LSR";  // KNF=Knife/Plotter, LSR=Laser
+                int mcol = (_machineType == 1) ? 0x07E0 : 0xFD20;  // green / amber
+                int bw = 26, bh = 12, bx = W/2 - 58, by = 4;
+                canvas.fillRoundRect(bx, by, bw, bh, 2, mcol);
+                canvas.setFont(&fonts::Font0);
+                canvas.setTextDatum(middle_center);
+                canvas.setTextColor(COL_BG);
+                canvas.drawString(mLabel, bx + bw/2, by + bh/2);
+            }
+        }
+    }
+
+    // ── nav bar ──────────────────────────────────────────────────────────────
+    void navTxt(const char* s, int x, int y, int col) {
+        canvas.setFont(&fonts::Font2);   // 10x12 bitmap — compact, not bold
+        canvas.setTextDatum(middle_center);
+        canvas.setTextColor(col);
+        canvas.drawString(s, x, y);
+    }
+
+    void drawNav() {
+        canvas.fillRect(0, NAV_Y, W, BOT, COL_PANEL);
+        canvas.drawFastHLine(0, NAV_Y, W, rgb565_dim(COL_PANEL, 60));  // subtle top edge
+        hline(0, NAV_Y, W, COL_BORDER);
+
+        // When job running on DRO tab: show Hold and Abort instead of tab bar
+        // Show Hold/Resume/Abort whenever machine is in Cycle or Hold on DRO tab
+        bool jobActive = (state == Cycle || state == Hold || simJobRunning);
+        if (jobActive && _tab == 0) {
+            int half = W / 2;
+            bool inHold = (state == Hold);
+
+            // Hold / Resume + Abort — dimmed when enable not held
+            _holdBtn  = { 0,    NAV_Y, half, BOT };
+            _abortBtn = { half, NAV_Y, half, BOT };
+            bool enOk = mpgJogAllowed;
+            int hCol = inHold ? GREEN : YELLOW;
+            // Hold/Resume
+            uint16_t hFill = enOk ? hCol : (uint16_t)rgb565_dim(hCol, 35);
+            canvas.fillRoundRect(2, NAV_Y+3, half-4, BOT-6, 4, hFill);
+            if (!enOk) canvas.drawRoundRect(2, NAV_Y+3, half-4, BOT-6, 4, hCol);
+            else canvas.drawFastHLine(6, NAV_Y+4, half-12, rgb565_brighten(hCol, 20));
+            navTxt(inHold ? "Resume (~)" : "Hold (!)", half/2, NAV_Y+BOT/2,
+                   enOk ? (uint16_t)COL_BG : hCol);
+            // Abort
+            uint16_t aFill = enOk ? (uint16_t)RED : (uint16_t)rgb565_dim(RED, 35);
+            canvas.fillRoundRect(half+2, NAV_Y+3, half-4, BOT-6, 4, aFill);
+            if (!enOk) canvas.drawRoundRect(half+2, NAV_Y+3, half-4, BOT-6, 4, RED);
+            else canvas.drawFastHLine(half+6, NAV_Y+4, half-12, rgb565_brighten(RED, 20));
+            navTxt("Abort (x)", half+half/2, NAV_Y+BOT/2, enOk ? (uint16_t)0xFFFF : (uint16_t)RED);
+            // Lock hint when enable not held
+            if (!enOk) {
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(bottom_center);
+                canvas.setTextColor(rgb565_dim(COL_WHITE, 50));
+                canvas.drawString("hold enable", W/2, NAV_Y+1);
+            }
+
+            // Invalidate nav tabs so normal tab touch doesn't fire
+            for (int i = 0; i < N_TABS; i++) _navTabs[i] = {0,0,0,0};
+            return;
+        }
+
+        // Normal tab bar
+        _holdBtn = {0,0,0,0}; _abortBtn = {0,0,0,0};
+        int tw = W / N_TABS;
+        for (int i = 0; i < N_TABS; i++) {
+            int x = i * tw;
+            int w = (i == N_TABS-1) ? W - x : tw;  // last tab fills to edge
+            _navTabs[i] = { x, NAV_Y, w, BOT };
+            if (i == _tab) {
+                canvas.fillRect(x, NAV_Y, w, BOT, 0x0019);
+                canvas.fillRect(x, NAV_Y, w, 2, COL_AX_X);
+                canvas.drawFastHLine(x, NAV_Y+2, w, rgb565_dim(COL_AX_X, 40));
+            }
+            if (i > 0 && i < N_TABS) vline(x, NAV_Y + 5, BOT - 10, COL_BORDER);
+            int col;
+            if (_currentTheme == 2) col = 0x0000;  // black text on light theme
+            else col = (i == _tab) ? COL_WHITE : COL_WHITE2;
+            navTxt(TAB_LABELS[i], x + w/2, NAV_Y + BOT/2, col);
+        }
+    }
+
+    // ── DRO screen ───────────────────────────────────────────────────────────
+    void drawDROScreen() {
+        // DRO rows
+        // DRO axis count from settings: 0=XYZ(3) 1=XYZA(4) 2=XY(2) 3=XYYZ(4)
+        static const int axisCount[] = { 3, 4, 2, 4 };
+        int nAxes = axisCount[_droAxesMode];
+        int droRow = (NAV_Y - TOP - FEED_H) / nAxes;  // dynamic row height
+        for (int i = 0; i < nAxes; i++) {
+            int ry    = TOP + i * droRow;
+            int axcol = AX_STYLES[i].col;
+            bool isMpg = (mpgAxis == i);
+
+            // Row background — bright when this axis is MPG active
+            int rowbg = isMpg ? COL_PANEL2 : ((i % 2 == 0) ? COL_PANEL : COL_PANEL3);
+            canvas.fillRect(0, ry, DROW, droRow, rowbg);
+            if (isMpg) canvas.fillRect(3, ry, DROW-3, droRow, rgb565_dim(axcol, 88));
+            canvas.fillRect(0, ry, isMpg ? 5 : 3, droRow, axcol);
+            hline(0, ry + droRow - 1, DROW, COL_BORDER);
+
+            // Axis letter centred in row
+            const char* axLetter = (_droAxesMode == 3 && i == 3) ? "Y2" : AX_STYLES[i].letter;
+            int midY = ry + droRow / 2;
+            if (_currentTheme == 2) {
+                // Light theme: plain black axis letters — bold and readable
+                txt(axLetter, 8, midY, 0x0000, TINY,  middle_left);
+            } else {
+                txt(axLetter, 5, midY, isMpg ? COL_WHITE : axcol, SMALL, middle_left);
+            }
+
+            // Position value right-aligned
+            int ndig = inInches ? 4 : 3;
+            const char* posStr = pos_to_cstr(myAxes[i], ndig);
+            txt(posStr, DROW - 5, midY,
+                isMpg ? COL_WHITE : COL_WHITE2,
+                TINY, middle_right);
+
+            // Step pill badge at bottom of active row
+            if (isMpg) {
+                const char* sl = mpgStepLabels[(int)mpgStepIdx];
+                canvas.setFont(&fonts::Font0);
+                int sw = canvas.textWidth(sl);
+                int bx = 6, by2 = ry + droRow - 11;
+                canvas.fillRoundRect(bx, by2, sw + 8, 9, 2, axcol);
+                if (_currentTheme == 2) canvas.drawRoundRect(bx, by2, sw+8, 9, 2, 0x0000);
+                canvas.setTextDatum(middle_center);
+                canvas.setTextColor(_currentTheme == 2 ? 0x0000 : COL_BG);
+                canvas.drawString(sl, bx + (sw + 8) / 2, by2 + 5);
+            }
+        }
+        vline(DROW - 1, TOP, NAV_Y - TOP - FEED_H, COL_BORDER);
+
+        // DRO mode pills: MPos/WPos and mm/in toggles
+        { int px=DROW+2, py=TOP+2, pw=36, ph=10, g=3;
+          // MPos/WPos toggle — solid fills, always readable
+          canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+          canvas.fillRoundRect(px,py,pw,ph,2,_showMPos?COL_PANEL3:COL_BORDER2);
+          canvas.drawRoundRect(px,py,pw,ph,2,COL_BORDER);
+          canvas.setTextColor(_showMPos?COL_DIM:COL_BG);
+          canvas.drawString("WPos", px+pw/2, py+ph/2);
+          px+=pw+g;
+          canvas.fillRoundRect(px,py,pw,ph,2,_showMPos?COL_BORDER2:COL_PANEL3);
+          canvas.drawRoundRect(px,py,pw,ph,2,COL_BORDER);
+          canvas.setTextColor(_showMPos?COL_BG:COL_DIM);
+          canvas.drawString("MPos", px+pw/2, py+ph/2);
+          px+=pw+g+4;
+          // mm/in toggle — solid fills
+          canvas.fillRoundRect(px,py,24,ph,2,inInches?COL_PANEL3:COL_BORDER2);
+          canvas.drawRoundRect(px,py,24,ph,2,COL_BORDER);
+          canvas.setTextColor(inInches?COL_DIM:COL_BG);
+          canvas.drawString("mm", px+12, py+ph/2);
+          px+=27;
+          canvas.fillRoundRect(px,py,24,ph,2,inInches?COL_BORDER2:COL_PANEL3);
+          canvas.drawRoundRect(px,py,24,ph,2,COL_BORDER);
+          canvas.setTextColor(inInches?COL_BG:COL_DIM);
+          canvas.drawString("in", px+12, py+ph/2);
+        }
+
+        // Job timer in viz area top-right
+        if (_jobStartTime > 0 || _jobElapsed > 0) {
+          uint32_t elapsed = _jobElapsed + (state==Cycle ? millis()-_jobStartTime : 0);
+          uint32_t s2=elapsed/1000, m=s2/60, h=m/60;
+          char tstr[12];
+          if(h>0) snprintf(tstr,sizeof(tstr),"%02lu:%02lu:%02lu",h,m%60,s2%60);
+          else    snprintf(tstr,sizeof(tstr),"%02lu:%02lu",m,s2%60);
+          canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_right);
+          canvas.setTextColor(state==Cycle?CYAN:COL_DIM2);
+          canvas.drawString(tstr, VIZ_X+VIZ_W-2, TOP+7);
+        }
+
+
+
+
+        // ── Visualizer: shows path (auto-scaled) OR work area map ────────────
+        canvas.fillRect(VIZ_X, VIZ_Y, VIZ_W, VIZ_H, COL_PANEL2);
+
+
+        if (_vizFullscreen && !vizPath.empty()) {
+            // ── WORK AREA MODE (double-tap): path placed in machine work area grid ──
+            // Same VIZ area, but scale = work area scale, path positioned at real coords
+            int pad3=2, mapW=VIZ_W-2*pad3, mapH=VIZ_H-2*pad3;
+            int mapX=VIZ_X+pad3, mapY=VIZ_Y+pad3;
+            // Scale work area to fit viz box (landscape: workY→screen X, workX→screen Y)
+            float scH=(float)mapW/_workY, scV=(float)mapH/_workX;
+            float sc=std::min(scH,scV);
+            int drawnW=(int)(_workY*sc), drawnH=(int)(_workX*sc);
+            int offX=mapX+(mapW-drawnW)/2, offY=mapY+(mapH-drawnH)/2;
+
+            // Work area background + grid
+            canvas.fillRect(offX,offY,drawnW,drawnH,COL_PANEL3);
+            canvas.drawRect(offX,offY,drawnW,drawnH,COL_BORDER2);
+            for(int gi=1;gi<4;gi++){
+                canvas.drawFastVLine(offX+drawnW*gi/4,offY,drawnH,COL_BORDER);
+                canvas.drawFastHLine(offX,offY+drawnH*gi/4,drawnW,COL_BORDER);
+            }
+
+            // Home corner marker
+            int hx=(_homeCorner==1||_homeCorner==3)?offX+drawnW:offX;
+            int hy=(_homeCorner==0||_homeCorner==1)?offY+drawnH:offY;
+            canvas.fillCircle(hx,hy,2,GREEN);
+
+            // Map machine coords → screen using WORK AREA scale
+            // Same orientation as MODE B (landscape: machY→screenX, machX→screenY)
+            auto waToScreen=[&](float mx,float my,int& sx,int& sy){
+                if(_homeCorner==0){sx=offX+(int)(my*sc);sy=offY+drawnH-(int)(mx*sc);}
+                else if(_homeCorner==1){sx=offX+drawnW-(int)(my*sc);sy=offY+drawnH-(int)(mx*sc);}
+                else if(_homeCorner==2){sx=offX+(int)(my*sc);sy=offY+(int)(mx*sc);}
+                else{sx=offX+drawnW-(int)(my*sc);sy=offY+(int)(mx*sc);}
+            };
+
+            // Draw tool path at work area scale (shows where path sits in work area)
+            if(myPercent>0) {
+                vizPathExecuted=(int)vizPath.size()*(int)myPercent/100;
+                // Update checkpoint line estimate from job progress (throttled)
+                if (_jobSentToFluidNC && !allFileLines.empty()) {
+                    static file_percent_t _lastSavedPct = 0;
+                    if (myPercent != _lastSavedPct) {
+                        _lastSavedPct = myPercent;
+                        uint32_t estLine = (uint32_t)(allFileLines.size() * myPercent / 100.0f);
+                        jobrecov_lineExecuted(estLine);
+                        // Scan ±10 lines around checkpoint for G41/G42
+                        bool g4142 = false;
+                        int nLines = (int)allFileLines.size();
+                        int lo = std::max(0, (int)estLine - 10);
+                        int hi = std::min(nLines-1, (int)estLine + 2);
+                        for (int li = lo; li <= hi && !g4142; li++) {
+                            const auto& ln = allFileLines[li];
+                            if (ln.find("G41") != std::string::npos ||
+                                ln.find("G42") != std::string::npos) g4142 = true;
+                        }
+                        jobrecov_setG4142Warning(g4142);
+                    }
+                }
+            }
+            int exec=std::min(vizPathExecuted,(int)vizPath.size()-1);
+            int step=std::max(1,(int)vizPath.size()/2000);
+            for(int pi=1;pi<(int)vizPath.size();pi+=step){
+                bool rapid=(vizPath[pi].t==0);
+                if(rapid&&(pi/step)%3==1) continue;  // dashed rapids
+                int x1,y1,x2,y2;
+                waToScreen(vizPath[pi-1].x,vizPath[pi-1].y,x1,y1);
+                waToScreen(vizPath[pi].x,vizPath[pi].y,x2,y2);
+                uint16_t col = pi<=exec ? CYAN : (rapid ? (uint16_t)0x4208 : (uint16_t)COL_BORDER2);
+                if(x1>=offX&&x1<offX+drawnW&&y1>=offY&&y1<offY+drawnH)
+                    canvas.drawLine(x1,y1,x2,y2,col);
+            }
+
+            // Work zero origin crosshair (WCS G54 datum — green crosshair)
+            {
+                int ox,oy; waToScreen(0.0f,0.0f,ox,oy);
+                if(ox>=offX&&ox<offX+drawnW&&oy>=offY&&oy<offY+drawnH){
+                    canvas.drawLine(ox-5,oy,ox+5,oy,0x0780);
+                    canvas.drawLine(ox,oy-5,ox,oy+5,0x0780);
+                    canvas.fillCircle(ox,oy,2,0x07E0);
+                }
+            }
+            // Part bounding box (dotted outline)
+            if(_vizBounds[1]>_vizBounds[0]){
+                int bbx1,bby1,bbx2,bby2;
+                waToScreen(_vizBounds[0],_vizBounds[2],bbx1,bby1);
+                waToScreen(_vizBounds[1],_vizBounds[3],bbx2,bby2);
+                for(int bx=bbx1;bx<=bbx2;bx+=4){
+                    canvas.drawPixel(bx,bby1,0x2104); canvas.drawPixel(bx,bby2,0x2104);}
+                for(int by=bby1;by<=bby2;by+=4){
+                    canvas.drawPixel(bbx1,by,0x2104); canvas.drawPixel(bbx2,by,0x2104);}
+            }
+            // Executed position dot
+            if(exec>0&&exec<(int)vizPath.size()){
+                int dx,dy;waToScreen(vizPath[exec].x,vizPath[exec].y,dx,dy);
+                canvas.fillCircle(dx,dy,2,GREEN);
+            }
+
+            // ── ISOMETRIC VIEW toggle button ──────────────────────────────────
+            // Small "3D" / "2D" toggle in top-right corner of viz area
+            {
+                const char* lbl = (_vizView==1) ? "2D" : "3D";
+                int bx = VIZ_X+VIZ_W-24, by = VIZ_Y+2, bw=22, bh=12;
+                canvas.fillRoundRect(bx,by,bw,bh,2,_vizView==1?0x0340:0x18C3);
+                canvas.drawRoundRect(bx,by,bw,bh,2,_vizView==1?GREEN:COL_BORDER);
+                canvas.setFont(&fonts::Font0);
+                canvas.setTextDatum(middle_center);
+                canvas.setTextColor(_vizView==1?GREEN:COL_DIM);
+                canvas.drawString(lbl,bx+bw/2,by+bh/2);
+            }
+
+            // ── ISOMETRIC OVERLAY (rendered on top of top-down path) ─────────
+            if (_vizView == 1 && !vizPath.empty()) {
+                // Isometric projection: classic 30° angles
+                // iso_x = (X - Y) * cos30  iso_y = -((X + Y) * sin30 - Z)
+                const float COS30 = 0.866f, SIN30 = 0.5f;
+                // Find Z range for scaling
+                float zMin = 0, zMax = 0;
+                for (auto& pt : vizPath) { zMin=std::min(zMin,pt.z); zMax=std::max(zMax,pt.z); }
+                float zRange = (zMax-zMin); if (zRange < 1.0f) zRange = 1.0f;
+
+                // Project a 3D machine coord to screen
+                auto isoToScreen = [&](float mx, float my, float mz, int& sx, int& sy) {
+                    // First apply same XY transform as waToScreen
+                    float ix = my, iy = mx;  // landscape swap
+                    if (_homeCorner==1||_homeCorner==3) ix = _workY - my;
+                    if (_homeCorner==2||_homeCorner==3) iy = _workX - mx;
+                    // Apply scale
+                    float px = (float)(offX) + ix * sc;
+                    float py = (float)(offY+drawnH) - iy * sc;
+                    // Z offset: push up by Z depth (Z is negative going down in CNC)
+                    float zOffset = (-mz / zRange) * (VIZ_H * 0.25f);  // max 25% of viz height
+                    // Isometric X shift (right = positive Z depth makes path pop out)
+                    sx = (int)(px + zOffset * 0.4f);
+                    sy = (int)(py - zOffset * 0.8f);
+                };
+
+                // Draw isometric path (Z-coloured: blue=deep, yellow=shallow)
+                int istep = std::max(1, (int)vizPath.size()/1500);
+                for (int pi = 1; pi < (int)vizPath.size(); pi += istep) {
+                    int x1,y1,x2,y2;
+                    isoToScreen(vizPath[pi-1].x,vizPath[pi-1].y,vizPath[pi-1].z,x1,y1);
+                    isoToScreen(vizPath[pi].x,vizPath[pi].y,vizPath[pi].z,x2,y2);
+                    // Colour by Z depth: 0xFFE0=top/yellow → 0x001F=deep/blue
+                    uint16_t col;
+                    bool rapid=(vizPath[pi].t==0);
+                    if(rapid&&(pi/istep)%3==1) continue;  // dashed rapids
+                    if (pi <= exec) {
+                        col = CYAN;
+                    } else if (rapid) {
+                        col = 0x4208;  // dark grey for air moves
+                    } else {
+                        float tz = (vizPath[pi].z - zMin) / (zMax - zMin + 0.001f);
+                        uint8_t r=(uint8_t)(tz*248),g=(uint8_t)(tz*252),b=(uint8_t)((1.0f-tz)*248);
+                        col = ((r&0xF8)<<8)|((g&0xFC)<<3)|(b>>3);
+                    }
+                    if (x1>=VIZ_X&&x1<VIZ_X+VIZ_W&&y1>=VIZ_Y+18&&y1<VIZ_Y+VIZ_H)
+                        canvas.drawLine(x1,y1,x2,y2,col);
+                }
+            }
+
+            // ── XZ profile view (view=2): X across, Z down ────────────────────────
+            if (_vizView == 2 && !vizPath.empty()) {
+                float xMin=_vizBounds[0],xMax=_vizBounds[1];
+                float zMin=_vizBounds[4],zMax=_vizBounds[5];
+                if (zMax <= zMin) { zMin = -1.0f; zMax = 0.0f; }
+                float xRange=xMax-xMin; if(xRange<0.001f) xRange=1.0f;
+                float zRange=zMax-zMin; if(zRange<0.001f) zRange=1.0f;
+                int TAB_H=18, vizY2=VIZ_Y+TAB_H, vizH2=VIZ_H-TAB_H;
+                float sc = std::min((float)VIZ_W/xRange, (float)vizH2/zRange) * 0.88f;
+                int ofsX = VIZ_X + (int)((VIZ_W - xRange*sc)/2);
+                int zeroY = vizY2 + (int)(vizH2 - (0-zMin)*sc);  // screen Y for Z=0
+                // Z=0 surface reference line
+                if(zeroY>=vizY2&&zeroY<vizY2+vizH2) {
+                    canvas.drawFastHLine(VIZ_X, zeroY, VIZ_W, 0x03A0);
+                    canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+                    canvas.setTextColor(0x03A0);
+                    canvas.drawString("Z0", VIZ_X+2, zeroY-4);
+                }
+                // Draw XZ path
+                int istep=std::max(1,(int)vizPath.size()/1500);
+                for(int pi=1;pi<(int)vizPath.size();pi+=istep){
+                    bool rapid=(vizPath[pi].t==0);
+                    if(rapid&&(pi/istep)%3==1) continue;
+                    int x1=(int)(ofsX+(vizPath[pi-1].x-xMin)*sc);
+                    int y1=(int)(vizY2+vizH2-(vizPath[pi-1].z-zMin)*sc);
+                    int x2=(int)(ofsX+(vizPath[pi].x-xMin)*sc);
+                    int y2=(int)(vizY2+vizH2-(vizPath[pi].z-zMin)*sc);
+                    float tz=(vizPath[pi].z-zMin)/(zRange+0.001f);
+                    uint16_t col=rapid?0x4208:(pi<=vizPathExecuted?CYAN:
+                        (uint16_t)(((uint8_t)(tz*248)&0xF8)<<8|
+                                   ((uint8_t)(tz*252)&0xFC)<<3|
+                                   ((uint8_t)((1.0f-tz)*248))>>3));
+                    if(x1>=VIZ_X&&x1<VIZ_X+VIZ_W)
+                        canvas.drawLine(x1,y1,x2,y2,col);
+                }
+                // Tool dot
+                if(vizPathExecuted>0&&vizPathExecuted<(int)vizPath.size()){
+                    auto& tp=vizPath[vizPathExecuted];
+                    int dx=(int)(ofsX+(tp.x-xMin)*sc);
+                    int dy=(int)(vizY2+vizH2-(tp.z-zMin)*sc);
+                    canvas.fillCircle(dx,dy,3,GREEN);
+                }
+            }
+
+            // ── YZ profile view (view=3): Y across, Z down ────────────────────────
+            if (_vizView == 3 && !vizPath.empty()) {
+                float yMin=_vizBounds[2],yMax=_vizBounds[3];
+                float zMin=_vizBounds[4],zMax=_vizBounds[5];
+                if (zMax <= zMin) { zMin = -1.0f; zMax = 0.0f; }
+                float yRange=yMax-yMin; if(yRange<0.001f) yRange=1.0f;
+                float zRange=zMax-zMin; if(zRange<0.001f) zRange=1.0f;
+                int TAB_H=18, vizY2=VIZ_Y+TAB_H, vizH2=VIZ_H-TAB_H;
+                float sc = std::min((float)VIZ_W/yRange, (float)vizH2/zRange) * 0.88f;
+                int ofsX = VIZ_X + (int)((VIZ_W - yRange*sc)/2);
+                int zeroY = vizY2 + (int)(vizH2 - (0-zMin)*sc);
+                if(zeroY>=vizY2&&zeroY<vizY2+vizH2) {
+                    canvas.drawFastHLine(VIZ_X, zeroY, VIZ_W, 0x03A0);
+                    canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+                    canvas.setTextColor(0x03A0);
+                    canvas.drawString("Z0", VIZ_X+2, zeroY-4);
+                }
+                int istep=std::max(1,(int)vizPath.size()/1500);
+                for(int pi=1;pi<(int)vizPath.size();pi+=istep){
+                    bool rapid=(vizPath[pi].t==0);
+                    if(rapid&&(pi/istep)%3==1) continue;
+                    int x1=(int)(ofsX+(vizPath[pi-1].y-yMin)*sc);
+                    int y1=(int)(vizY2+vizH2-(vizPath[pi-1].z-zMin)*sc);
+                    int x2=(int)(ofsX+(vizPath[pi].y-yMin)*sc);
+                    int y2=(int)(vizY2+vizH2-(vizPath[pi].z-zMin)*sc);
+                    float tz=(vizPath[pi].z-zMin)/(zRange+0.001f);
+                    uint16_t col=rapid?0x4208:(pi<=vizPathExecuted?CYAN:
+                        (uint16_t)(((uint8_t)(tz*248)&0xF8)<<8|
+                                   ((uint8_t)(tz*252)&0xFC)<<3|
+                                   ((uint8_t)((1.0f-tz)*248))>>3));
+                    if(x1>=VIZ_X&&x1<VIZ_X+VIZ_W)
+                        canvas.drawLine(x1,y1,x2,y2,col);
+                }
+                if(vizPathExecuted>0&&vizPathExecuted<(int)vizPath.size()){
+                    auto& tp=vizPath[vizPathExecuted];
+                    int dx=(int)(ofsX+(tp.y-yMin)*sc);
+                    int dy=(int)(vizY2+vizH2-(tp.z-zMin)*sc);
+                    canvas.fillCircle(dx,dy,3,GREEN);
+                }
+            }
+
+            // Real machine position
+            float machX=(float)myAxes[0]/10000.0f,machY=(float)myAxes[1]/10000.0f;
+            int dotX,dotY; waToScreen(machX,machY,dotX,dotY);
+            canvas.fillCircle(dotX,dotY,2,ORANGE);
+            canvas.drawCircle(dotX,dotY,2,COL_WHITE);
+
+            // Work area dimensions label
+            canvas.setFont(&fonts::Font0);canvas.setTextColor(COL_DIM);
+            canvas.setTextDatum(bottom_right);
+            char wdim[24];snprintf(wdim,sizeof(wdim),"%dx%dmm",_workY,_workX);
+            canvas.drawString(wdim,offX+drawnW-1,offY+drawnH-1);
+
+            // Mode indicator top-left
+            canvas.setTextDatum(top_left);canvas.setTextColor(CYAN);
+            canvas.drawString("WA",VIZ_X+2,VIZ_Y+2);
+
+            // VizGen busy spinner
+            if (_vizGenBusy) {
+                static uint8_t _sp=0; _sp=(_sp+1)%6;
+                const char* spf[]={"| ","/ ","- ","\\","| ","/ "};
+                int sx=VIZ_X+VIZ_W/2, sy=VIZ_Y+VIZ_H/2;
+                canvas.fillRect(sx-48,sy-10,96,22,COL_PANEL);
+                canvas.drawRoundRect(sx-48,sy-10,96,22,3,CYAN);
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+                canvas.setTextColor(CYAN);
+                canvas.drawString((std::string(spf[_sp])+"Scanning").c_str(),sx,sy+1);
+            }
+            // [X] clear moved to filename strip
+
+        } else if (!vizPath.empty()) {
+            // ── MODE A: Normal path in VIZ area (auto-scaled) ────────────────
+            int pad3v=6, mapWv=VIZ_W-2*pad3v, mapHv=VIZ_H-2*pad3v;
+
+            // Bounding box of path in machine coords
+            float pMinX=vizPath[0].x, pMaxX=pMinX;
+            float pMinY=vizPath[0].y, pMaxY=pMinY;
+            for (auto& pt : vizPath) {
+                pMinX=std::min(pMinX,pt.x); pMaxX=std::max(pMaxX,pt.x);
+                pMinY=std::min(pMinY,pt.y); pMaxY=std::max(pMaxY,pt.y);
+            }
+            float rangeX=std::max(pMaxX-pMinX, 1.0f);
+            float rangeY=std::max(pMaxY-pMinY, 1.0f);
+
+            // Scale to fill viz with 10% padding
+            float scvX=(float)mapWv / (rangeY*1.2f);
+            float scvY=(float)mapHv / (rangeX*1.2f);
+            float scv=std::min(scvX,scvY);
+
+            float pathScreenW=rangeY*scv, pathScreenH=rangeX*scv;
+            int offXv=VIZ_X+pad3v+(int)((mapWv-pathScreenW)/2.0f);
+            int offYv=VIZ_Y+pad3v+(int)((mapHv-pathScreenH)/2.0f);
+
+            // Path background
+            canvas.fillRect(offXv, offYv, (int)pathScreenW, (int)pathScreenH, COL_PANEL3);
+            canvas.drawRect(offXv, offYv, (int)pathScreenW, (int)pathScreenH, COL_BORDER2);
+
+            // Map machine coords → screen (landscape: Y→X, X→Y inverted)
+            auto pathToScreen = [&](float mx, float my, int& sx, int& sy) {
+                sx = offXv + (int)((my - pMinY) * scv);
+                sy = offYv + (int)(pathScreenH - (mx - pMinX) * scv);
+            };
+
+            // Update executed count
+            if (myPercent > 0) vizPathExecuted = (int)vizPath.size() * (int)myPercent / 100;
+            int executed = std::min(vizPathExecuted, (int)vizPath.size()-1);
+
+            // Draw path lines: dim=pending, cyan=done
+            // Limit to 2000 segments to prevent freeze on large files
+            int vizStep = std::max(1, (int)vizPath.size() / 2000);
+            for (int pi=1; pi<(int)vizPath.size(); pi+=vizStep) {
+                bool rapid=(vizPath[pi].t==0);
+                if(rapid&&(pi/vizStep)%3==1) continue;  // dashed rapids
+                int x1,y1,x2,y2;
+                pathToScreen(vizPath[pi-1].x,vizPath[pi-1].y,x1,y1);
+                pathToScreen(vizPath[pi].x,  vizPath[pi].y,  x2,y2);
+                uint16_t col = pi<=executed ? CYAN : (rapid ? (uint16_t)0x4208 : (uint16_t)COL_DIM);
+                canvas.drawLine(x1,y1,x2,y2,col);
+            }
+
+            // Current position marker on path
+            if (executed>0 && executed<(int)vizPath.size()) {
+                int dx,dy; pathToScreen(vizPath[executed].x,vizPath[executed].y,dx,dy);
+                canvas.fillCircle(dx,dy,2,GREEN);
+            }
+
+            // Real machine position dot — mapped to same auto-scale
+            float machX=(float)myAxes[0]/10000.0f;
+            float machY=(float)myAxes[1]/10000.0f;
+            int dotX,dotY; pathToScreen(machX,machY,dotX,dotY);
+            // Only draw if within the scaled view
+            if (dotX>=offXv && dotX<offXv+(int)pathScreenW && dotY>=offYv && dotY<offYv+(int)pathScreenH) {
+                canvas.fillCircle(dotX,dotY,2,ORANGE);
+                canvas.drawCircle(dotX,dotY,2,COL_WHITE);
+            }
+
+            // Bounding box label
+            canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+            canvas.setTextDatum(bottom_right);
+            char pdim[24]; snprintf(pdim,sizeof(pdim),"%.0fx%.0fmm",rangeY,rangeX);
+            canvas.drawString(pdim,offXv+(int)pathScreenW-1,offYv+(int)pathScreenH-1);
+
+            // [X] clear moved to filename strip
+
+            // G-code line counter — only during Cycle
+            if (state == Cycle && vizPathExecuted > 0) {
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+                char lc[16]; snprintf(lc,sizeof(lc),"L%d",vizPathExecuted);
+                canvas.setTextColor(CYAN);
+                canvas.drawString(lc, VIZ_X+2, VIZ_Y+9);
+            }
+            // ── View selector segmented control ───────────────────────────────
+            // 4 tabs across full VIZ width: XY | XZ | YZ | 3D
+            {
+                const int tabH = 18;
+                const int tw   = VIZ_W / 4;   // ~58px each
+                const char* labels[] = { "XY", "XZ", "YZ", "3D" };
+                // accent colours per tab
+                const uint16_t accents[] = { 0x03EF, 0xFC20, 0xFC20, 0x07FF }; // blue, orange, orange, cyan
+                canvas.fillRect(VIZ_X, VIZ_Y, VIZ_W, tabH, 0x0810);
+                canvas.drawFastHLine(VIZ_X, VIZ_Y + tabH, VIZ_W, COL_BORDER2);
+                canvas.setFont(&fonts::Font0);
+                canvas.setTextDatum(middle_center);
+                for (int ti = 0; ti < 4; ti++) {
+                    int tx = VIZ_X + ti * tw;
+                    bool active = (_vizView == ti);
+                    if (active) {
+                        canvas.fillRoundRect(tx+1, VIZ_Y+2, tw-2, tabH-4, 3, accents[ti]);
+                        canvas.setTextColor(0x0000);
+                    } else {
+                        canvas.setTextColor(0x2104);
+                    }
+                    canvas.drawString(labels[ti], tx + tw/2, VIZ_Y + tabH/2 + 1);
+                    if (ti > 0) canvas.drawFastVLine(tx, VIZ_Y+3, tabH-6, 0x1082);
+                }
+            }
+
+        } else {
+            // ── MODE B: Work area map with real-time position ────────────────
+            int pad3=2, mapW=VIZ_W-2*pad3, mapH=VIZ_H-2*pad3;
+            int mapX=VIZ_X+pad3, mapY=VIZ_Y+pad3;
+            float scH=(float)mapW/_workY, scV=(float)mapH/_workX;
+            float sc=std::min(scH,scV);
+            int drawnW=(int)(_workY*sc), drawnH=(int)(_workX*sc);
+            int offX=mapX+(mapW-drawnW)/2, offY=mapY+(mapH-drawnH)/2;
+
+            canvas.fillRect(offX,offY,drawnW,drawnH,COL_PANEL3);
+            canvas.drawRect(offX,offY,drawnW,drawnH,COL_BORDER2);
+            for(int gi=1;gi<4;gi++){
+                canvas.drawFastVLine(offX+drawnW*gi/4,offY,drawnH,COL_BORDER);
+                canvas.drawFastHLine(offX,offY+drawnH*gi/4,drawnW,COL_BORDER);
+            }
+
+            // Home corner dot + XY arrows
+            int hx=(_homeCorner==1||_homeCorner==3)?offX+drawnW:offX;
+            int hy=(_homeCorner==0||_homeCorner==1)?offY+drawnH:offY;
+            canvas.fillCircle(hx,hy,2,GREEN);
+            int xDir=(_homeCorner==0||_homeCorner==1)?-1:1;
+            int yDir=(_homeCorner==1||_homeCorner==3)?-1:1;
+            int al=16;
+            int yax0=(yDir>0)?hx:hx+yDir*al;
+            canvas.drawFastHLine(yax0,hy,  al,GREEN);
+            canvas.drawFastHLine(yax0,hy+1,al,GREEN);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(GREEN);
+            canvas.drawString("Y",hx+yDir*(al+5),hy);
+            int xax0=(xDir>0)?hy:hy+xDir*al;
+            canvas.drawFastVLine(hx,  xax0,al,RED);
+            canvas.drawFastVLine(hx+1,xax0,al,RED);
+            canvas.setTextColor(RED);
+            canvas.drawString("X",hx,hy+xDir*(al+5));
+
+            // Real-time position dot (machine scale)
+            float machX=(float)myAxes[0]/10000.0f;
+            float machY=(float)myAxes[1]/10000.0f;
+            machX=std::max(0.0f,std::min(machX,(float)_workX));
+            machY=std::max(0.0f,std::min(machY,(float)_workY));
+            int dotX,dotY;
+            if(_homeCorner==0){dotX=offX+(int)(machY*sc);dotY=offY+drawnH-(int)(machX*sc);}
+            else if(_homeCorner==1){dotX=offX+drawnW-(int)(machY*sc);dotY=offY+drawnH-(int)(machX*sc);}
+            else if(_homeCorner==2){dotX=offX+(int)(machY*sc);dotY=offY+(int)(machX*sc);}
+            else{dotX=offX+drawnW-(int)(machY*sc);dotY=offY+(int)(machX*sc);}
+            canvas.fillCircle(dotX,dotY,2,ORANGE);
+            canvas.drawCircle(dotX,dotY,2,COL_WHITE);
+
+            canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+            canvas.setTextDatum(bottom_right);
+            char wdim[24]; snprintf(wdim,sizeof(wdim),"%dx%dmm",_workY,_workX);
+            canvas.drawString(wdim,offX+drawnW-1,offY+drawnH-1);
+        }
+
+        // ── Hold action strip: in FEED area (full-width, below VIZ) ─────────────
+        // Z Adjust | Rewind | Free Jog  — using full 320px width gives big tappable buttons
+        if (state == Hold && !_pathJogMode && !_zNudgeOpen && !_freeJogMode && _tab == 0) {
+            int feedY = NAV_Y - FEED_H;        // 160
+            int gap = 4, bh = FEED_H - 10, by = feedY + 5;
+            int bw = (W - gap*4) / 3;          // ~100px each
+            int bx1 = gap;
+            int bx2 = bx1 + bw + gap;
+            int bx3 = bx2 + bw + gap;
+            // Replace FEED area with mode selector
+            canvas.fillRect(0, feedY, W, FEED_H, COL_PANEL);
+            canvas.drawFastHLine(0, feedY, W, COL_BORDER2);
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+            // Z Adjust
+            canvas.fillRoundRect(bx1, by, bw, bh, 4, 0x0828);
+            canvas.drawRoundRect(bx1, by, bw, bh, 4, COL_AX_Z);
+            canvas.drawFastHLine(bx1+4, by+1, bw-8, rgb565_brighten(COL_AX_Z, 20));
+            canvas.setTextColor(COL_AX_Z);
+            canvas.drawString("Z ADJ", bx1+bw/2, by+bh/2);
+            // Rewind
+            uint16_t rwCol = (_retraceSupport == 2) ? COL_DIM2 : CYAN;
+            canvas.fillRoundRect(bx2, by, bw, bh, 4, 0x0828);
+            canvas.drawRoundRect(bx2, by, bw, bh, 4, rwCol);
+            canvas.drawFastHLine(bx2+4, by+1, bw-8, rgb565_brighten(rwCol, 20));
+            canvas.setTextColor(rwCol);
+            canvas.drawString((_retraceSupport == 2) ? "NO PLUG" : "REWIND", bx2+bw/2, by+bh/2);
+            // Free Jog
+            canvas.fillRoundRect(bx3, by, bw, bh, 4, 0x1400);
+            canvas.drawRoundRect(bx3, by, bw, bh, 4, ORANGE);
+            canvas.drawFastHLine(bx3+4, by+1, bw-8, rgb565_brighten(ORANGE, 15));
+            canvas.setTextColor(ORANGE);
+            canvas.drawString("JOG", bx3+bw/2, by+bh/2);
+            _holdZBtn      = {bx1, by, bw, bh};
+            _holdRewindBtn = {bx2, by, bw, bh};
+            _holdJogBtn    = {bx3, by, bw, bh};
+        } else {
+            _holdZBtn = {0,0,0,0}; _holdRewindBtn = {0,0,0,0}; _holdJogBtn = {0,0,0,0};
+        }
+
+        // Viz stats: rapid/feed counts + tool changes
+        if (!vizPath.empty() && _vizNFeed > 0) {
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+            char vstats[32];
+            if (_vizNM6 > 0) snprintf(vstats,sizeof(vstats),"R:%d F:%d T:%d",_vizNRapid,_vizNFeed,_vizNM6);
+            else              snprintf(vstats,sizeof(vstats),"R:%d F:%d",_vizNRapid,_vizNFeed);
+            canvas.setTextColor(COL_DIM2);
+            canvas.drawString(vstats, VIZ_X+2, VIZ_Y+VIZ_H+7);
+        }
+        // ── G-code info strip: filename above, progress bar below ─────────────
+        if (!vizJobName.empty()) {
+            int stripY = VIZ_Y + VIZ_H + 1;  // 1px gap below viz area
+            // [X] clear button — right edge of strip (18×13px)
+            canvas.fillRect(VIZ_X+VIZ_W-18, stripY, 18, 13, 0x4000);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(0xF800); // bright red
+            canvas.drawString("X", VIZ_X+VIZ_W-9, stripY+6);
+            int nameH  = 8;   // filename row height
+            int barH   = 5;   // progress bar height
+            // Background
+            canvas.fillRect(VIZ_X, stripY, VIZ_W, nameH + barH, COL_PANEL2);
+
+            // Filename — scrolling, above the bar
+            static int _ns=0; static uint32_t _nt=0;
+            if (millis()-_nt>350){_nt=millis();_ns++;}
+            std::string dn=vizJobName;
+            int maxChars = (VIZ_W - 4) / 6;  // Font0 is ~6px wide
+            if ((int)dn.size() > maxChars) {
+                int p = _ns % (int)(dn.size() + 4);
+                std::string pd = dn + "    " + dn;
+                dn = pd.substr(p, maxChars);
+            }
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_left);
+            canvas.setTextColor(CYAN);
+            canvas.drawString(dn.c_str(), VIZ_X + 2, stripY + nameH/2);
+
+            // Progress bar — below filename
+            int pbPct = 0;
+            if (simJobRunning && !vizPath.empty())
+                pbPct = vizPathExecuted * 100 / std::max(1, (int)vizPath.size()-1);
+            else if (myPercent > 0)
+                pbPct = (int)myPercent;
+            int pbY = stripY + nameH;
+            canvas.fillRect(VIZ_X, pbY, VIZ_W, barH, COL_BORDER);
+            int pbFill = VIZ_W * pbPct / 100;
+            if (pbFill > 0) canvas.fillRect(VIZ_X, pbY, pbFill, barH, CYAN);
+            // Percentage + ETA right-aligned on filename row
+            char pctS[28];
+            // ETA using accurate _jobElapsed which pauses during Hold
+            if (state==Cycle && pbPct>2 && pbPct<99 && _jobStartTime>0 && vizPathExecuted>10) {
+                uint32_t el = _jobElapsed + (millis()-_jobStartTime); // ms elapsed
+                int done2   = vizPathExecuted;
+                int total2  = (int)vizPath.size();
+                if (done2>0 && total2>done2) {
+                    uint32_t eta = (uint32_t)((float)el/done2*(total2-done2)/1000);
+                    if (eta < 3600)
+                        snprintf(pctS,sizeof(pctS),"%d%% -%d:%02d",pbPct,(int)eta/60,(int)eta%60);
+                    else snprintf(pctS,sizeof(pctS),"%d%%",pbPct);
+                } else snprintf(pctS,sizeof(pctS),"%d%%",pbPct);
+            } else snprintf(pctS,sizeof(pctS),"%d%%",pbPct);
+            canvas.setTextDatum(middle_right);
+            canvas.setTextColor(pbPct>0 ? CYAN : COL_DIM);
+            canvas.drawString(pctS, VIZ_X+VIZ_W-1, stripY + nameH/2);
+        }
+
+        // ── Feed / Speed / Spindle bar — tap to select, MPG adjusts ──────────
+        int fy  = NAV_Y - FEED_H;
+        canvas.fillRect(0, fy, W, FEED_H, COL_PANEL2);
+        hline(0, fy, W, COL_BORDER);
+
+        auto barTxt = [&](const char* s, int x, int y2, int col, int datum = middle_center) {
+            canvas.setFont(&fonts::Font2);
+            canvas.setTextDatum(datum);
+            canvas.setTextColor(col);
+            canvas.drawString(s, x, y2);
+        };
+
+        // 3 equal pills: FEED | RAPID | SPND — each selectable for MPG control
+        int pad2 = 4, gap3 = 3;
+        int pillW3 = (W - 2*pad2 - 2*gap3) / 3;
+        int fh = FEED_H - 8, fy2 = fy + 4;
+        int px0 = pad2;
+        int px1 = px0 + pillW3 + gap3;
+        int px2 = px1 + pillW3 + gap3;
+
+        int lbl_y = fy + FEED_H*32/100;
+        int val_y = fy + FEED_H*70/100;
+
+        auto drawPill3 = [&](int px, int pw, const char* label, const char* val, int col, bool sel) {
+            bool lt = (_currentTheme == 2);
+            if (sel) {
+                canvas.fillRoundRect(px, fy2, pw, fh, 4, col);
+                canvas.drawRoundRect(px, fy2, pw, fh, 4, COL_WHITE);
+                barTxt(label, px + pw/2, lbl_y, lt ? 0x0000 : COL_BG);
+                barTxt(val,   px + pw/2, val_y, lt ? 0x0000 : COL_BG);
+            } else {
+                canvas.fillRoundRect(px, fy2, pw, fh, 4, COL_PANEL2);
+                // Light theme: thicker border
+                if (lt) {
+                    canvas.drawRoundRect(px-1, fy2-1, pw+2, fh+2, 4, col);
+                    canvas.drawRoundRect(px,   fy2,   pw,   fh,   4, col);
+                } else {
+                    canvas.drawRoundRect(px, fy2, pw, fh, 4, col);
+                }
+                barTxt(label, px + pw/2, lbl_y, lt ? 0x0000 : COL_WHITE);
+                barTxt(val,   px + pw/2, val_y, lt ? 0x0000 : col);  // black on light, col on dark
+            }
+        };
+
+        // ── Feed bar pills — layout changes by machine type ─────────────────
+        // CNC (0):     FEED | RAPID | SPND
+        // Plotter (1): FEED | RAPID | PEN (up/down status)
+        // Laser (2):   FEED | RAPID | LASER (power %)
+
+        // FEED — same for all machine types
+        { int col=(myFro<80)?RED:(myFro>120)?ORANGE:CYAN;
+          char v[10]; snprintf(v,sizeof(v),"%d%%",(int)myFro);
+          _feedMinus={px0,fy,pillW3,FEED_H};
+          drawPill3(px0,pillW3,"FEED",v,col,_barSel==1); }
+
+        vline(px1-1, fy+4, fh, COL_BORDER2);
+
+        // RAPID — same for all machine types
+        { int col=(myRro<80)?RED:(myRro>120)?ORANGE:YELLOW;
+          char v[10]; snprintf(v,sizeof(v),"%d%%",(int)myRro);
+          _spdPill={px1,fy,pillW3,FEED_H};
+          drawPill3(px1,pillW3,"RAPID",v,col,_barSel==2); }
+
+        vline(px2-1, fy+4, fh, COL_BORDER2);
+
+        // Third pill — machine-type specific
+        _spndPill={px2,fy,pillW3,FEED_H};
+        if (_machineType == 2) {
+            // LASER: show laser power as % of S1000 (standard laser max)
+            int laserPct = (int)((mySpeed * 100UL) / 1000UL);
+            if (laserPct > 100) laserPct = 100;
+            int lcol = laserPct > 80 ? RED : laserPct > 40 ? ORANGE : 0xFD20; // amber
+            char v[10]; snprintf(v,sizeof(v),"%d%%",laserPct);
+            drawPill3(px2,pillW3,"LASER",v,lcol,_barSel==3);
+        } else if (_machineType == 1) {
+            // DRAG KNIFE / PLOTTER: show Z depth (knife pressure/contact depth)
+            // Z axis is knife depth — show actual value prominently
+            float zPos = myAxes[2] / 10000.0f;  // WCS Z in mm
+            // Colour: Z near 0 = up/clear (dim), Z negative = cutting (cyan→red by depth)
+            int zcol;
+            if (zPos > -0.1f)       zcol = COL_DIM2;   // up/clear
+            else if (zPos > -1.0f)  zcol = CYAN;        // light contact
+            else if (zPos > -3.0f)  zcol = YELLOW;      // normal cut depth
+            else                    zcol = ORANGE;       // deep
+            char v[12]; snprintf(v, sizeof(v), "%.2f", zPos);
+            drawPill3(px2, pillW3, "Z", v, zcol, _barSel==3);
+        } else {
+            // CNC: standard spindle override %
+            int col=(mySro<80)?RED:(mySro>120)?ORANGE:0xF81F;
+            char v[10]; snprintf(v,sizeof(v),"%d%%",(int)mySro);
+            drawPill3(px2,pillW3,"SPND",v,col,_barSel==3);
+        }
+    }  // end drawDROScreen
+
+    // ── Probe screen ─────────────────────────────────────────────────────────
+    // WCS selector, probing operations, tool length
+    int _wcsNum = 1;  // active WCS: 1=G54..6=G59
+    int _probeStep = 0;  // 0=idle, 1-N=wizard step
+    struct ProbeWizard { const char* title; const char* desc; const char* cmd; } ;
+
+    void drawProbeScreen() {
+        int pad=8, gap=6;
+        int W2=W, y=TOP+4;
+
+        // ── WCS selector G54–G59 ─────────────────────────────────────────────
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextDatum(middle_left);
+        canvas.setTextColor(COL_DIM);
+        canvas.drawString("WCS:", pad, y+8);
+        const char* wcsNames[]={"G54","G55","G56","G57","G58","G59"};
+        int bw=(W2-pad*2-4*5)/6;
+        for(int i=0;i<6;i++){
+            bool sel=(i==_wcsNum-1);
+            int bx=pad+(bw+5)*i;
+            if(sel){canvas.fillRoundRect(bx,y,bw,16,3,COL_PANEL);canvas.drawRoundRect(bx,y,bw,16,3,CYAN);}
+            else{canvas.fillRoundRect(bx,y,bw,16,3,COL_PANEL3);canvas.drawRoundRect(bx,y,bw,16,3,COL_BORDER);}
+            canvas.setTextDatum(middle_center);
+            canvas.setTextColor(sel?CYAN:COL_DIM2);
+            canvas.drawString(wcsNames[i],bx+bw/2,y+8);
+        }
+        y+=22; hline(0,y,W2,COL_BORDER); y+=4;
+
+        // ── Axis zero buttons ────────────────────────────────────────────────
+        canvas.setTextDatum(middle_left); canvas.setTextColor(COL_DIM);
+        canvas.setFont(&fonts::Font0);
+        canvas.drawString("Zero:", pad, y+10);
+        const char* axNames[]={"X","Y","Z","All"};
+        int zbw=(W2-pad*2-3*gap)/4;
+        for(int i=0;i<4;i++){
+            int bx=pad+(zbw+gap)*i;
+            canvas.fillRoundRect(bx,y,zbw,20,3,COL_PANEL2);canvas.drawRoundRect(bx,y,zbw,20,3,COL_BORDER2);
+            canvas.setTextDatum(middle_center);
+            int pc2=(i==0)?COL_AX_X:(i==1)?COL_AX_Y:(i==2)?COL_AX_Z:ORANGE;
+            canvas.setTextColor(pc2);
+            canvas.drawString(axNames[i],bx+zbw/2,y+10);
+        }
+        y+=26; hline(0,y,W2,COL_BORDER); y+=4;
+
+        // ── Probing operations ───────────────────────────────────────────────
+        struct { const char* label; const char* sub; int col; } ops[]={
+            {"Tool Length", "Touch-off Z to surface",   YELLOW  },
+            {"Z Surface",   "Probe workpiece top",       CYAN    },
+            {"X Edge",      "Find X axis edge",          COL_AX_X},
+            {"Y Edge",      "Find Y axis edge",          COL_AX_Y},
+            {"XY Corner",   "Find corner of workpiece",  ORANGE  },
+            {"XY Center",   "Center of hole/boss",       GREEN   },
+        };
+        int nOps=6, opH=22, opW=W2-2*pad;
+        for(int i=0;i<nOps;i++){
+            int oy=y+i*(opH+3);
+            if(oy+opH>NAV_Y-4) break;
+            canvas.fillRoundRect(pad,oy,opW,opH,3,COL_PANEL2);
+            canvas.drawRoundRect(pad,oy,opW,opH,3,COL_BORDER);
+            canvas.fillRect(pad,oy+2,4,opH-4,ops[i].col);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+            canvas.setTextColor(COL_WHITE);
+            canvas.drawString(ops[i].label,pad+10,oy+opH*36/100);
+            canvas.setTextColor(COL_DIM2);
+            canvas.drawString(ops[i].sub,pad+10,oy+opH*72/100);
+        }
+    }
+
+    // ── Homing screen ────────────────────────────────────────────────────────
+    void drawHomingScreen() {
+        int pad=6, gap=3, bw=W-2*pad;
+        bool fl=(millis()-_homePressTime)<300;
+        int btnH=28, secLH=13, secGap=3;
+        int secH=secLH+btnH+secGap;
+        // 6 sections: Homing, Home Axis, Zero WCS, Go to 0, Endstops (at bottom as list)
+        int totalH=5*secH + secLH + 3*(btnH+gap);  // 5 button rows + endstop list
+        int avH=NAV_Y-TOP-4;
+
+        _homeScroll=std::max(0,std::min(_homeScroll,std::max(0,totalH-avH)));
+
+        canvas.clearClipRect();
+        if(totalH>avH){
+            int thumbH=std::max(10,avH*avH/totalH);
+            int thumbY=TOP+2+(avH-thumbH)*_homeScroll/std::max(1,totalH-avH);
+            canvas.fillRect(W-3,TOP+2,3,avH,COL_BORDER);
+            canvas.fillRect(W-3,thumbY,3,thumbH,COL_DIM2);
+        }
+        canvas.setClipRect(0, TOP, W-4, avH+4);
+
+        int vy=TOP+2-_homeScroll;
+        int axcols[3]={COL_AX_X,COL_AX_Y,COL_AX_Z};
+        const char* axlet[3]={"X","Y","Z"};
+
+        auto secLabel=[&](const char* lbl){
+            if(vy>TOP-secLH && vy<NAV_Y){
+                canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+                canvas.setTextDatum(middle_left);
+                canvas.drawString(lbl,pad,vy+secLH/2);
+            }
+            vy+=secLH;
+        };
+        auto visible=[&](){ return vy+btnH>TOP && vy<NAV_Y; };
+        auto skipBtn=[&](){ vy+=btnH+secGap; };
+
+        // ── Home All + Probe ──────────────────────────────────────────────
+        secLabel("Homing");
+        if(visible()){
+            int homeW=bw*58/100, probW=bw-homeW-gap;
+            _homeAllBtn={pad,vy,homeW,btnH};
+            _probeBtnR={pad+homeW+gap,vy,probW,btnH};
+            if(fl&&_homePressedId==0){canvas.fillRoundRect(pad,vy,homeW,btnH,4,COL_WHITE2);canvas.setTextColor(COL_BG);}
+            else{canvas.fillRoundRect(pad,vy,homeW,btnH,4,COL_PANEL2);canvas.drawRoundRect(pad,vy,homeW,btnH,4,COL_BORDER2);canvas.setTextColor(COL_WHITE);}
+            canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_center);
+            canvas.drawString("Home All ($H)",pad+homeW/2,vy+btnH/2);
+            if(fl&&_homePressedId==1){canvas.fillRoundRect(pad+homeW+gap,vy,probW,btnH,4,ORANGE);canvas.setTextColor(COL_BG);}
+            else{canvas.fillRoundRect(pad+homeW+gap,vy,probW,btnH,4,ORANGE);canvas.drawRoundRect(pad+homeW+gap,vy,probW,btnH,4,0xC340);canvas.setTextColor(COL_WHITE);}
+            canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_center);
+            canvas.drawString("Probe",pad+homeW+gap+probW/2,vy+btnH/2);
+        } else {_homeAllBtn={0,0,0,0};_probeBtnR={0,0,0,0};}
+        vy+=btnH+secGap;
+
+        // ── Home individual axis ──────────────────────────────────────────
+        secLabel("Home Axis");
+        if(visible()){
+            int aw=(bw-2*gap)/3;
+            for(int i=0;i<3;i++){
+                int hx=pad+i*(aw+gap);
+                _axisHomeBtns[i]={hx,vy,aw,btnH};
+                bool ap=(fl&&_homePressedId==10+i);
+                if(ap) canvas.fillRoundRect(hx,vy,aw,btnH,3,axcols[i]);
+                else{canvas.fillRoundRect(hx,vy,aw,btnH,3,COL_PANEL2);canvas.drawRoundRect(hx,vy,aw,btnH,3,axcols[i]);}
+                canvas.fillRect(hx+1,vy+2,3,btnH-4,axcols[i]);
+                canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_center);
+                canvas.setTextColor(ap?COL_BG:axcols[i]);
+                canvas.drawString(axlet[i],hx+aw/2,vy+btnH/2);
+            }
+        } else{for(int i=0;i<3;i++) _axisHomeBtns[i]={0,0,0,0};}
+        vy+=btnH+secGap;
+
+
+
+        // ── Zero WCS ─────────────────────────────────────────────────────
+        secLabel("Zero WCS");
+        if(visible()){
+            const char* zla[]={"X","Y","Z","All"};
+            int zcols[]={COL_AX_X,COL_AX_Y,COL_AX_Z,ORANGE};
+            int zw=(bw-3*gap)/4;
+            for(int k=0;k<4;k++){
+                int zx=pad+k*(zw+gap);
+                _zeroWcsBtns[k]={zx,vy,zw,btnH};
+                bool zp=(fl&&_homePressedId==20+k);
+                if(zp) canvas.fillRoundRect(zx,vy,zw,btnH,3,zcols[k]);
+                else{canvas.fillRoundRect(zx,vy,zw,btnH,3,COL_PANEL2);canvas.drawRoundRect(zx,vy,zw,btnH,3,zcols[k]);}
+                canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_center);
+                canvas.setTextColor(zp?COL_BG:zcols[k]);
+                char zlbl[8]; snprintf(zlbl,sizeof(zlbl),"%s=0",zla[k]);
+                canvas.drawString(zlbl,zx+zw/2,vy+btnH/2);
+            }
+        } else{for(int k=0;k<4;k++) _zeroWcsBtns[k]={0,0,0,0};}
+        vy+=btnH+secGap;
+
+        // ── Go to 0 (rapid move to work zero) ────────────────────────────
+        secLabel("Go to 0");
+        if(visible()){
+            const char* gla[]={"X","Y","Z","All"};
+            int gcols[]={COL_AX_X,COL_AX_Y,COL_AX_Z,ORANGE};
+            int gw=(bw-3*gap)/4;
+            for(int k=0;k<4;k++){
+                int gx=pad+k*(gw+gap);
+                _gotoZeroBtns[k]={gx,vy,gw,btnH};
+                bool gp=(fl&&_homePressedId==30+k);
+                if(gp) canvas.fillRoundRect(gx,vy,gw,btnH,3,gcols[k]);
+                else{canvas.fillRoundRect(gx,vy,gw,btnH,3,COL_PANEL2);canvas.drawRoundRect(gx,vy,gw,btnH,3,gcols[k]);}
+                canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_center);
+                canvas.setTextColor(gp?COL_BG:gcols[k]);
+                char glbl[8]; snprintf(glbl,sizeof(glbl),"→%s0",gla[k]);
+                canvas.drawString(glbl,gx+gw/2,vy+btnH/2);
+            }
+        } else{for(int k=0;k<4;k++) _gotoZeroBtns[k]={0,0,0,0};}
+        vy+=btnH+secGap;
+
+        // ── Endstops (as list rows at bottom) ────────────────────────────
+        secLabel("Endstops");
+        const char* esNames[]={"X Endstop","Y Endstop","Z Endstop"};
+        for(int i=0;i<3;i++){
+            if(vy>TOP-btnH && vy<NAV_Y){
+                bool trig=myLimitSwitches[i];
+                canvas.fillRoundRect(pad,vy,bw,btnH,3,trig?0x6000:COL_PANEL2);
+                canvas.drawRoundRect(pad,vy,bw,btnH,3,trig?RED:COL_BORDER2);
+                canvas.fillCircle(pad+12,vy+btnH/2,5,trig?RED:COL_DIM2);
+                canvas.setFont(&fonts::Font2);canvas.setTextDatum(middle_left);
+                canvas.setTextColor(COL_WHITE);
+                canvas.drawString(esNames[i],pad+26,vy+btnH/2);
+                canvas.setTextDatum(middle_right);
+                canvas.setTextColor(trig?RED:COL_DIM2);
+                canvas.drawString(trig?"TRIGGERED":"open",pad+bw-6,vy+btnH/2);
+            }
+            vy+=btnH+gap;
+        }
+
+        canvas.clearClipRect();
+    }
+
+    // ── G-code preview — full screen with viz/text toggle ───────────────────
+    void drawGcodePreview() {
+        // Full-screen overlay
+        canvas.fillRect(0, TOP, W, NAV_Y-TOP, COL_BG);
+
+        const std::string& fname = (fileSelected>=0&&fileSelected<(int)fileList.size())
+                                   ? fileList[fileSelected].name : std::string("?");
+
+        // ── Title bar ────────────────────────────────────────────────────────
+        int titleH=18;
+        canvas.fillRect(0,TOP,W,titleH,COL_PANEL);
+        hline(0,TOP+titleH,W,COL_BORDER);
+        f2s(fname,8,TOP+titleH/2,CYAN,middle_left);
+        // Path/lines count right of title
+        if(_previewShowPath){
+            char pc[16]; snprintf(pc,sizeof(pc),"%d pts",(int)vizPath.size());
+            f2(pc,W-6,TOP+titleH/2,COL_DIM2,middle_right);
+        } else {
+            char lc[16]; snprintf(lc,sizeof(lc),"%d lines",(int)previewLines.size());
+            f2(lc,W-6,TOP+titleH/2,COL_DIM2,middle_right);
+        }
+
+        // ── Content area ─────────────────────────────────────────────────────
+        int contentY=TOP+titleH, contentH=NAV_Y-titleH-TOP-28;
+
+        if (_previewShowPath && !vizPath.empty()) {
+            // ── Path visualizer — full content area ──────────────────────────
+            canvas.fillRect(0,contentY,W,contentH,COL_PANEL2);
+
+            // Bounding box
+            float pMinX=vizPath[0].x,pMaxX=pMinX;
+            float pMinY=vizPath[0].y,pMaxY=pMinY;
+            for(auto& pt:vizPath){
+                pMinX=std::min(pMinX,pt.x);pMaxX=std::max(pMaxX,pt.x);
+                pMinY=std::min(pMinY,pt.y);pMaxY=std::max(pMaxY,pt.y);
+            }
+            float rX=std::max(pMaxX-pMinX,1.0f), rY=std::max(pMaxY-pMinY,1.0f);
+            int pad2=8;
+            float scX=(float)(W-2*pad2)/(rY*1.1f);
+            float scY=(float)(contentH-2*pad2)/(rX*1.1f);
+            float sc2=std::min(scX,scY);
+            float pW=rY*sc2, pH=rX*sc2;
+            int ox=(int)(pad2+(W-2*pad2-pW)/2.0f);
+            int oy=(int)(contentY+pad2+(contentH-2*pad2-pH)/2.0f);
+
+            // Background rect
+            canvas.fillRect(ox,oy,(int)pW,(int)pH,COL_PANEL3);
+            canvas.drawRect(ox,oy,(int)pW,(int)pH,COL_BORDER2);
+
+            // Draw all path lines in cyan
+            for(int pi=1;pi<(int)vizPath.size();pi++){
+                int x1=ox+(int)((vizPath[pi-1].y-pMinY)*sc2);
+                int y1=oy+(int)(pH-(vizPath[pi-1].x-pMinX)*sc2);
+                int x2=ox+(int)((vizPath[pi].y-pMinY)*sc2);
+                int y2=oy+(int)(pH-(vizPath[pi].x-pMinX)*sc2);
+                canvas.drawLine(x1,y1,x2,y2,CYAN);
+            }
+
+            // Start dot (green) and end dot (red)
+            if(vizPath.size()>0){
+                int sx=ox+(int)((vizPath[0].y-pMinY)*sc2);
+                int sy=oy+(int)(pH-(vizPath[0].x-pMinX)*sc2);
+                canvas.fillCircle(sx,sy,3,GREEN);
+            }
+            if(vizPath.size()>1){
+                int ex2=ox+(int)((vizPath.back().y-pMinY)*sc2);
+                int ey2=oy+(int)(pH-(vizPath.back().x-pMinX)*sc2);
+                canvas.fillCircle(ex2,ey2,3,RED);
+            }
+
+            // Dimensions label
+            canvas.setFont(&fonts::Font0); canvas.setTextColor(COL_DIM);
+            canvas.setTextDatum(bottom_right);
+            char pdim[24]; snprintf(pdim,sizeof(pdim),"%.0fx%.0fmm",rY,rX);
+            canvas.drawString(pdim,ox+(int)pW-1,oy+(int)pH-1);
+
+        } else {
+            // ── G-code text view ─────────────────────────────────────────────
+            int lh=13, maxL=contentH/lh;
+            int total=(int)previewLines.size();
+
+            // Scroll bar
+            if(total>maxL){
+                int thumbH=std::max(4,contentH*maxL/total);
+                int thumbY=contentY+(contentH-thumbH)*previewScroll/std::max(1,total-maxL);
+                canvas.fillRect(W-3,contentY,3,contentH,COL_BORDER);
+                canvas.fillRect(W-3,thumbY,3,thumbH,COL_DIM2);
+            }
+            for(int i=0;i<maxL&&(previewScroll+i)<total;i++){
+                int ly=contentY+i*lh;
+                int idx=previewScroll+i;
+                if(i%2==0) canvas.fillRect(0,ly,W-4,lh,COL_PANEL);
+                const std::string& ln=previewLines[idx];
+                int col=COL_DIM2;
+                if(!ln.empty()){
+                    char c=ln[0];
+                    if(c=='G'||c=='g') col=CYAN;
+                    else if(c=='M'||c=='m') col=YELLOW;
+                    else if(c==';'||c=='(') col=COL_DIM;
+                    else if(c=='T'||c=='t') col=ORANGE;
+                    else col=COL_WHITE2;
+                }
+                canvas.setFont(&fonts::Font0);
+                canvas.setTextDatum(middle_right);
+                canvas.setTextColor(COL_DIM);
+                char lnum[6]; snprintf(lnum,sizeof(lnum),"%d",idx+1);
+                canvas.drawString(lnum,26,ly+lh/2);
+                canvas.setTextDatum(middle_left);
+                canvas.setTextColor(col);
+                canvas.drawString(ln.substr(0,44).c_str(),30,ly+lh/2);
+            }
+        }
+
+        // ── Action bar: [Exit] [G-code|Path] [Run] ───────────────────────────
+        int abY=NAV_Y-28, abH2=28;
+        canvas.fillRect(0,abY,W,abH2,COL_PANEL);
+        hline(0,abY,W,COL_BORDER);
+
+        int bw3=(W-16)/3, bh3=22, by3=abY+3;
+
+        // Exit — left
+        tintStrokeR(4,by3,bw3,bh3,3,COL_BORDER2,COL_BORDER,40);
+        f2("Exit",4+bw3/2,abY+abH2/2,COL_DIM2,middle_center);
+
+        // Toggle G-code / Path — centre
+        bool hasPath=!vizPath.empty();
+        int togCol=hasPath?YELLOW:COL_DIM;
+        if(_previewShowPath){
+            canvas.fillRoundRect(8+bw3,by3,bw3,bh3,3,COL_PANEL2);
+            canvas.drawRoundRect(8+bw3,by3,bw3,bh3,3,togCol);
+            f2("G-code",8+bw3+bw3/2,abY+abH2/2,togCol,middle_center);
+        } else {
+            canvas.fillRoundRect(8+bw3,by3,bw3,bh3,3,COL_PANEL2);
+            canvas.drawRoundRect(8+bw3,by3,bw3,bh3,3,togCol);
+            f2("Path",8+bw3+bw3/2,abY+abH2/2,hasPath?togCol:COL_DIM,middle_center);
+        }
+
+        // Run — right (shows confirm state)
+        if (_confirmRun) {
+            canvas.fillRoundRect(12+2*bw3,by3,bw3,bh3,3,0x02A0);
+            f2("CONFIRM?",12+2*bw3+bw3/2,abY+abH2/2,0xFFFF,middle_center);
+        } else {
+            canvas.fillRoundRect(12+2*bw3,by3,bw3,bh3,3,COL_PANEL2);
+            canvas.drawRoundRect(12+2*bw3,by3,bw3,bh3,3,GREEN);
+            f2("Run",12+2*bw3+bw3/2,abY+abH2/2,GREEN,middle_center);
+        }
+    }
+
+    // ── Files screen ─────────────────────────────────────────────────────────
+    void drawFilesScreen() {
+        // Layout: [24px header] [rows 30px each] [38px action bar]
+        int hdrH=24, abH=38, rowH=34;
+        int listY=TOP+hdrH;
+        int abY=NAV_Y-abH;
+        int maxR=(abY-listY)/rowH;
+
+        // ── Header: path + Up button ─────────────────────────────────────────
+        canvas.fillRect(0,TOP,W,hdrH,COL_PANEL);
+        hline(0,TOP+hdrH,W,COL_BORDER);
+        // Up button — full-height, easy to tap
+        if (filePath != "/sd") {
+            tintStrokeR(W-42,TOP+3,38,hdrH-6,3,COL_BORDER2,COL_BORDER,50);
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(COL_WHITE2);
+            canvas.drawString("Up",W-23,TOP+hdrH/2);
+        }
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+        canvas.setTextColor(CYAN);
+        // Truncate path to fit left of Up button
+        std::string dispPath = filePath;
+        if((int)dispPath.size()>28) dispPath="..."+dispPath.substr(dispPath.size()-25);
+        canvas.drawString(dispPath.c_str(),5,TOP+hdrH/2);
+
+        // ── File rows ─────────────────────────────────────────────────────────
+        for(int i=0;i<maxR;i++){
+            int fi=fileScroll+i;
+            int ry=listY+i*rowH;
+            int rowbg=(i%2==0)?COL_PANEL:COL_PANEL3;
+            if(fi>=(int)fileList.size()){
+                canvas.fillRect(0,ry,W,rowH,rowbg); continue;
+            }
+            bool sel=(fi==fileSelected);
+            canvas.fillRect(0,ry,W,rowH,sel?COL_BORDER:rowbg);
+            if(sel) canvas.fillRect(0,ry,3,rowH,BLUE);
+            hline(0,ry+rowH-1,W,COL_BORDER);
+            const FileEntry& fe=fileList[fi];
+            if(fe.isDir){
+                // Folder icon
+                canvas.fillRoundRect(6,ry+rowH/2-6,14,10,2,0x3240);
+                canvas.drawRoundRect(6,ry+rowH/2-6,14,10,2,YELLOW);
+                canvas.fillRect(6,ry+rowH/2-9,7,4,0x3240);
+                std::string dn=fe.name+"/";
+                canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
+                canvas.setTextColor(sel?COL_WHITE:YELLOW);
+                canvas.drawString(dn.c_str(),26,ry+rowH/2);
+            } else {
+                // File icon
+                canvas.fillRoundRect(6,ry+4,12,rowH-8,2,sel?COL_BORDER:COL_PANEL3);
+                canvas.drawRoundRect(6,ry+4,12,rowH-8,2,sel?CYAN:COL_DIM2);
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+                canvas.setTextColor(sel?CYAN:COL_DIM2);
+                canvas.drawString("NC",12,ry+rowH/2);
+                // Filename — upper portion of row
+                canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
+                canvas.setTextColor(sel?COL_WHITE:(_currentTheme==2?0x0000:COL_WHITE2));
+                std::string fname=fe.name;
+                if((int)fname.size()>22) fname=fname.substr(0,19)+"...";
+                canvas.drawString(fname.c_str(),24,ry+10);
+                // File size — lower portion, right-aligned, small font
+                if(fe.size>0){
+                    char sz[16];
+                    if(fe.size>=1000000) snprintf(sz,sizeof(sz),"%.1fMB",fe.size/1000000.0);
+                    else if(fe.size>=1000) snprintf(sz,sizeof(sz),"%.1fKB",fe.size/1000.0);
+                    else snprintf(sz,sizeof(sz),"%dB",fe.size);
+                    canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_right);
+                    canvas.setTextColor(COL_DIM2);
+                    canvas.drawString(sz,W-6,ry+rowH-10);
+                }
+            }
+        }
+
+        // ── Action bar: full-width View and Run buttons ───────────────────────
+        canvas.fillRect(0,abY,W,abH,COL_PANEL);
+        hline(0,abY,W,COL_BORDER);
+
+        if(fileSelected>=0&&fileSelected<(int)fileList.size()&&!fileList[fileSelected].isDir){
+            // Show selected filename at top of action bar
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+            canvas.setTextColor(CYAN);
+            std::string sn=fileList[fileSelected].name;
+            if((int)sn.size()>26) sn=sn.substr(0,23)+"...";
+            canvas.drawString(sn.c_str(),6,abY+8);
+            // Two big buttons: [View] [Run]
+            int btnY=abY+14, btnH=abH-16, btnW=(W-12)/2;
+            // View button
+            tintStrokeR(4,btnY,btnW,btnH,4,COL_BORDER2,COL_WHITE2,50);
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(COL_WHITE2);
+            canvas.drawString("View",4+btnW/2,btnY+btnH/2);
+            // Run button — shows CONFIRM? after first tap
+            if (_confirmRun) {
+                canvas.fillRoundRect(8+btnW,btnY,btnW,btnH,4,0x02A0);
+                canvas.setTextColor(0xFFFF);
+                canvas.drawString("CONFIRM?",8+btnW+btnW/2,btnY+btnH/2);
+            } else {
+                tintStrokeR(8+btnW,btnY,btnW,btnH,4,GREEN,GREEN,40);
+                canvas.setTextColor(GREEN);
+                canvas.drawString("Run",8+btnW+btnW/2,btnY+btnH/2);
+            }
+        } else {
+            canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+            canvas.setTextColor(COL_DIM);
+            canvas.drawString("Tap a file to select",W/2,abY+abH/2);
+        }
+
+        // G-code preview overlay
+        if(filePreviewMode&&fileSelected>=0) drawGcodePreview();
+    }
+
+    // ── Terminal screen ───────────────────────────────────────────────────────
+    void drawTerminalScreen() {
+        // Layout: [spindle row 22px] [term output] [quick cmd row 28px] [nav]
+        int sRowH = 22;            // spindle/coolant row height (top)
+        int qRowH = 28;            // quick commands row height (bottom, easier to press)
+        int sRowY = TOP;           // spindle row just below header
+        int qRowY = NAV_Y - qRowH; // quick cmds just above nav bar
+        int outY  = sRowY + sRowH + 1;
+        int outH  = qRowY - outY - 1;
+
+        // ── Top row: Soft Reset button ───────────────────────────────────────
+        canvas.fillRect(0, sRowY, W, sRowH, COL_PANEL2);
+        hline(0, sRowY + sRowH, W, COL_BORDER);
+        canvas.fillRoundRect(4, sRowY+2, W-8, sRowH-4, 3, 0xC000);
+        canvas.drawRoundRect(4, sRowY+2, W-8, sRowH-4, 3, 0xD000);
+        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(0xFFFF);  // white text on dark red — readable on all themes
+        canvas.drawString("Soft Reset (Ctrl-X)", W/2, sRowY+sRowH/2);
+
+        // ── Terminal output area ─────────────────────────────────────────────
+        canvas.fillRect(0, outY, W, outH, COL_PANEL3);
+        int lh = 13;
+        int maxLines = (outH - 2) / lh;
+        int total = fnc_term_count();
+        int start = std::max(0, total - maxLines - termScroll);
+        start     = std::min(start, std::max(0, total - maxLines));
+
+        // Scroll indicator
+        if (total > maxLines) {
+            int trackH = outH - 4;
+            int thumbH = std::max(6, trackH * maxLines / total);
+            int thumbY = outY + 2 + (trackH-thumbH) * start / std::max(1, total-maxLines);
+            canvas.fillRect(W-3, outY+2, 3, trackH, COL_BORDER);
+            canvas.fillRect(W-3, thumbY, 3, thumbH, COL_DIM2);
+        }
+
+        for (int i = 0; i < maxLines && (start + i) < total; i++) {
+            int ly = outY + 2 + i * lh;
+            if (i % 2 == 0) canvas.fillRect(0, ly, W-4, lh, COL_PANEL);
+            const char* line = fnc_term_line(start + i);
+            int col = COL_DIM2;
+            // Use theme-aware colours — light theme needs darker text on light bg
+            bool lightTheme = (_currentTheme == 2);
+            int tGreen  = lightTheme ? 0x0400 : GREEN;   // dark green on white
+            int tCyan   = lightTheme ? 0x0212 : CYAN;    // dark teal on white
+            int tYellow = lightTheme ? 0x8200 : YELLOW;  // dark gold on white
+            if (line[0]=='<') col=tGreen;
+            else if (line[0]=='[') col=tCyan;
+            else if (line[0]=='e'||line[0]=='E'||line[0]=='A') col=RED;
+            else if (line[0]=='o') col=COL_WHITE2;
+            else if (line[0]=='>') col=tYellow;
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_left);
+            canvas.setTextColor(col);
+            canvas.drawString(line, 5, ly+lh/2);
+        }
+
+        // ── Bottom row: Quick GCode commands (large, easy to press) ─────────
+        canvas.fillRect(0, qRowY, W, qRowH, COL_PANEL2);
+        hline(0, qRowY, W, COL_BORDER);
+        int totalGaps = (N_QUICK_CMDS - 1) * 3;
+        int cmdW = (W - 6 - totalGaps) / N_QUICK_CMDS;
+        for (int ci = 0; ci < N_QUICK_CMDS; ci++) {
+            int bx = 3 + ci * (cmdW + 3);
+            _cmdBtns[ci] = { bx, qRowY+2, cmdW, qRowH-4 };
+            if (_currentTheme == 2) {
+                canvas.fillRoundRect(bx, qRowY+2, cmdW, qRowH-4, 3, COL_PANEL2);
+                canvas.drawRoundRect(bx, qRowY+2, cmdW, qRowH-4, 3, 0xF81F);
+                canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+                canvas.setTextColor(0x0000);
+            } else {
+                tintStrokeR(bx, qRowY+2, cmdW, qRowH-4, 3, 0xF81F, 0xF81F, 20);
+                canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+                canvas.setTextColor(0xF81F);
+            }
+            canvas.drawString(QUICK_CMDS[ci], bx+cmdW/2, qRowY+qRowH/2);
+        }
+    }
+
+    // ── Macros screen ─────────────────────────────────────────────────────────
+    void drawMacrosScreen() {
+        int pad=6, gap=2, bh=28;
+        int avH=NAV_Y-TOP-pad;
+
+        // Total items = MACROS only
+        int totalItems=(int)MACROS.size();
+        int visible=avH/(bh+gap);
+        int maxScroll=std::max(0,totalItems-visible);
+        macroScroll=std::max(0,std::min(macroScroll,maxScroll));
+
+        // Scroll bar
+        if(totalItems>visible){
+            int trackH=avH;
+            int thumbH=std::max(8,trackH*visible/totalItems);
+            int thumbY=TOP+pad+(trackH-thumbH)*macroScroll/std::max(1,maxScroll);
+            canvas.fillRect(W-4,TOP+pad,4,trackH,COL_BORDER);
+            canvas.fillRect(W-4,thumbY,4,thumbH,COL_DIM2);
+        }
+
+        // Clip to content area so buttons never draw into nav bar
+        canvas.setClipRect(0, TOP, W-5, avH+pad);
+
+        int bw=W-2*pad-6;
+        int drawn=0;
+        for(int vi=0;vi<visible&&(macroScroll+vi)<totalItems;vi++){
+            int itemIdx=macroScroll+vi;
+            int by=TOP+pad+vi*(bh+gap);
+            if(by+bh > NAV_Y) break;
+            int rh=bh;
+            _macroBtns[vi]={pad,by,bw,rh};
+            drawn++;
+
+            {
+                int mi=itemIdx;
+                bool empty=MACROS[mi].cmd.empty();
+                int mcol=empty?COL_DIM:MACROS[mi].col;
+                bool isP6=(_enableMode==3&&mi==_enableMacro);
+                bool mp=(mi==_macroPressedId&&(millis()-_macroPressTime)<300);
+                if(mp){ canvas.fillRoundRect(pad,by,bw,rh,3,mcol); }
+                else if(isP6){ canvas.fillRoundRect(pad,by,bw,rh,3,COL_PANEL); canvas.drawRoundRect(pad,by,bw,rh,3,mcol);}
+                else{ canvas.fillRoundRect(pad,by,bw,rh,3,COL_PANEL2); canvas.drawRoundRect(pad,by,bw,rh,3,COL_BORDER2);}
+                canvas.fillRect(pad+1,by+2,4,rh-4,mp?COL_BG:mcol);
+                char idx2[4]; snprintf(idx2,sizeof(idx2),"%d",mi+1);
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+                canvas.setTextColor(mcol);
+                canvas.drawString(idx2,pad+12,by+rh/2);
+                // Name top, command bottom
+                canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_left);
+                canvas.setTextColor(mp?COL_BG:(empty?COL_DIM:COL_WHITE));
+                canvas.drawString(MACROS[mi].name.c_str(),pad+22,by+rh*35/100);
+                canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+                canvas.setTextColor(mp?COL_BG:(empty?COL_DIM:COL_DIM2));
+                canvas.drawString(empty?"(empty)":MACROS[mi].cmd.substr(0,34).c_str(),pad+22,by+rh*72/100);
+                if(isP6&&!mp){ canvas.setTextDatum(middle_right); canvas.setTextColor(CYAN); canvas.drawString("P6",pad+bw-4,by+rh/2);}
+            }
+        }
+        for(int vi=drawn;vi<8;vi++) _macroBtns[vi]={0,0,0,0};
+        canvas.clearClipRect();
+    }
+
+    // ── Job Complete overlay ─────────────────────────────────────────────────
+    void drawJobCompleteOverlay() {
+        int pw = W - 30, ph = 90;
+        int px = 15, py = (NAV_Y + TOP) / 2 - ph / 2;
+        int cx2 = px + pw / 2;
+        canvas.fillRoundRect(px, py, pw, ph, 8, 0x0320);
+        canvas.drawRoundRect(px, py, pw, ph, 8, GREEN);
+        canvas.drawLine(cx2-10, py+18, cx2-3, py+26, GREEN);
+        canvas.drawLine(cx2-3,  py+26, cx2+10, py+12, GREEN);
+        canvas.drawLine(cx2-10, py+19, cx2-3, py+27, GREEN);
+        canvas.drawLine(cx2-3,  py+27, cx2+10, py+13, GREEN);
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextDatum(middle_center);
+        canvas.setTextColor(GREEN);
+        canvas.drawString("JOB COMPLETE", cx2, py + 38);
+        uint32_t el = _jobElapsed;
+        int s2 = (el / 1000) % 60, m2 = (el / 60000) % 60, h2 = el / 3600000;
+        char ts[24];
+        if (h2 > 0) snprintf(ts, sizeof(ts), "%dh %02dm %02ds", h2, m2, s2);
+        else        snprintf(ts, sizeof(ts), "%dm %02ds", m2, s2);
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextColor(COL_DIM);
+        char jl[48];
+        snprintf(jl, sizeof(jl), "%s  %s", simJobName.c_str(), ts);
+        canvas.drawString(jl, cx2, py + 56);
+        canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Tap to dismiss", cx2, py + 74);
+    }
+
+    // ── Disconnected overlay ─────────────────────────────────────────────────
+    void drawDisconnectedOverlay() {
+        if (_tab == 3) {
+            // Terminal tab: show a small non-blocking banner at the top only
+            // so the user can still read the [DISC] diagnostic log below it
+            canvas.fillRect(0, TOP, W, 22, 0x4000);  // dark red strip
+            canvas.drawFastHLine(0, TOP+22, W, 0xF800);
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_left);
+            canvas.setTextColor(0xFD20);
+            canvas.drawString(" â² DISCONNECTED — see log below", 2, TOP+11);
+            canvas.setTextDatum(middle_right);
+            canvas.setTextColor(0x9D17);
+            canvas.drawString("Reconnecting...", W-2, TOP+11);
+            return;
+        }
+
+        // All other tabs: full overlay
+        // Semi-transparent dark overlay
+        for (int y2 = TOP; y2 < NAV_Y; y2 += 2)
+            canvas.drawFastHLine(0, y2, W, 0x0000);
+
+        // Central panel
+        int pw=W-40, ph=116;
+        int px=20, py=(NAV_Y+TOP)/2 - ph/2;
+        gradPanel(canvas, px, py, pw, ph, 8, 0x1082, 0xF800);
+
+        // Warning triangle
+        canvas.fillTriangle(W/2, py+10, W/2-13, py+34, W/2+13, py+34, 0xFD20);
+        canvas.fillRect(W/2-2, py+15, 4, 10, 0x1082);
+        canvas.fillRect(W/2-2, py+28, 4, 4,  0x1082);
+
+        // Title
+        canvas.setFont(&fonts::Font2);
+        canvas.setTextDatum(middle_center);
+        canvas.setTextColor(0xF800);
+        canvas.drawString("DISCONNECTED", W/2, py+48);
+
+        // Info lines
+        canvas.setFont(&fonts::Font0);
+        canvas.setTextColor(0x9D17);
+        canvas.drawString("FluidNC not responding", W/2, py+66);
+        canvas.drawString("Check UART connection", W/2, py+78);
+
+        // Hint: switch to terminal to see diagnostics
+        canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Tap Term tab for details", W/2, py+90);
+
+        // Reconnecting indicator
+        canvas.setTextColor(0xFD20);
+        canvas.drawString("Reconnecting...", W/2, py+104);
+    }
+
+    // ── Probe overlay ─────────────────────────────────────────────────────────
+    void drawProbeOverlay() {
+        canvas.fillRect(0, TOP, W, NAV_Y - TOP, COL_BG);
+
+        // Title bar
+        int titleH = 24;
+        canvas.fillRect(0, TOP, W, titleH, COL_PANEL2);
+        hline(0, TOP + titleH, W, COL_BORDER);
+        canvas.fillCircle(12, TOP + titleH/2, 4, CYAN);
+        f2("Select Probe Operation", 22, TOP + titleH/2, COL_WHITE, middle_left);
+        _probeClose = { W - 36, TOP, 36, titleH };
+        tintStrokeR(W-34, TOP+3, 30, titleH-6, 3, COL_BORDER2, COL_BORDER, 60);
+        f2("X", W - 19, TOP + titleH/2, COL_DIM);
+
+        // Cards — 6 rows with label + description + command
+        int listY = TOP + titleH + 3;
+        int avail = NAV_Y - listY - 2;
+        int rowH  = avail / N_PROBE_OPTS;
+
+        for (int i = 0; i < N_PROBE_OPTS; i++) {
+            int ry = listY + i * rowH;
+            int rh = rowH - 2;
+            _probeRows[i] = { 0, ry, W, rh };
+
+            int c = PROBE_OPTS[i].col;
+
+            // Row background — tinted with probe colour
+            canvas.fillRect(0, ry, W, rh, COL_PANEL3);
+            canvas.fillRect(0, ry, W, 1, COL_BORDER);
+            // Left colour bar (8px) — solid vivid colour
+            canvas.fillRect(0, ry, 8, rh, c);
+            canvas.fillRect(8, ry, 60, rh, COL_PANEL2);
+
+            // Colour icon circle
+            canvas.fillCircle(28, ry + rh/2, rh/2 - 3, c);
+            canvas.drawCircle(28, ry + rh/2, rh/2 - 3, COL_WHITE);
+
+            // Probe name — Font0 bold colour, upper third
+            canvas.setFont(&fonts::Font2);
+            canvas.setTextDatum(middle_left);
+            canvas.setTextColor(c);
+            canvas.drawString(PROBE_OPTS[i].label, 52, ry + rh*32/100);
+
+            // Description — Font0 dim, lower third
+            canvas.setFont(&fonts::Font0);
+            canvas.setTextDatum(middle_left);
+            canvas.setTextColor(COL_DIM2);
+            canvas.drawString(PROBE_OPTS[i].sub, 52, ry + rh*70/100);
+
+            // G-code command — right side, dim (no feed rate)
+            canvas.setTextDatum(middle_right);
+            canvas.setTextColor(COL_DIM2);
+            canvas.drawString(PROBE_OPTS[i].cmd, W - 6, ry + rh*70/100);
+
+            hline(0, ry + rh + 1, W, COL_BORDER);
+        }
+    }
+
+    // ── Alarm overlay ─────────────────────────────────────────────────────────
+    void drawAlarmOverlay(bool estopOnly = false) {
+        // Dim background
+        canvas.fillRect(0, TOP, W, NAV_Y-TOP, 0x8000);
+
+        int pw = W-20, cx = W/2;
+        int avH = NAV_Y - TOP - 4;
+
+        if (_showEstopRecovery) {
+            // ── E-stop recovery menu ──────────────────────────────────────
+            int ph = avH;  // use full available height
+            int px = cx-pw/2, py = TOP+2;
+            fillR(px,py,pw,ph,6,0x2800); strokeR(px,py,pw,ph,6,YELLOW);
+            f2("! E-STOP RELEASED",cx,py+14,YELLOW,middle_center);
+            f2("Choose action:",cx,py+28,COL_WHITE2,middle_center);
+            // 4 stacked buttons filling the space
+            int bx=px+6, bw3=pw-12, bh3=(ph-48)/4-2, bby=py+40;
+            canvas.fillRoundRect(bx,bby,bw3,bh3,3,GREEN);
+            f2("Resume if safe  (~)",cx,bby+bh3/2,0x0000,middle_center);
+            _unlockBtn={bx,bby,bw3,bh3};  bby+=bh3+3;
+            canvas.fillRoundRect(bx,bby,bw3,bh3,3,COL_AX_Z);
+            f2("Rehome  ($H)",cx,bby+bh3/2,0x0000,middle_center);
+            _rehomeBtn={bx,bby,bw3,bh3};  bby+=bh3+3;
+            canvas.fillRoundRect(bx,bby,bw3,bh3,3,ORANGE);
+            f2("Rehome + Resume job",cx,bby+bh3/2,0x0000,middle_center);
+            _rehomeResBtn={bx,bby,bw3,bh3};  bby+=bh3+3;
+            canvas.fillRoundRect(bx,bby,bw3,bh3,3,COL_PANEL2);
+            canvas.drawRoundRect(bx,bby,bw3,bh3,3,RED);
+            f2("Cancel Job  ($X)",cx,bby+bh3/2,COL_WHITE,middle_center);
+            _unlockBtnFull={bx,bby,bw3,bh3};
+        } else if (mpgEstopActive) {
+            // ── E-stop held ───────────────────────────────────────────────
+            int ph=90, px=cx-pw/2, py=(NAV_Y+TOP)/2-ph/2;
+            fillR(px,py,pw,ph,6,0x2800); strokeR(px,py,pw,ph,6,RED);
+            f2("! E-STOP ACTIVE",cx,py+20,RED,middle_center);
+            f2("Release e-stop",cx,py+44,COL_WHITE2,middle_center);
+            f2("to see recovery options",cx,py+62,COL_DIM,middle_center);
+            _unlockBtn={0,0,0,0}; _rehomeBtn={0,0,0,0};
+            _rehomeResBtn={0,0,0,0}; _unlockBtnFull={0,0,0,0};
+        } else {
+            // ── Normal FluidNC alarm ──────────────────────────────────────
+            int ph=110, px=cx-pw/2, py=(NAV_Y+TOP)/2-ph/2;
+            fillR(px,py,pw,ph,6,0x2800); strokeR(px,py,pw,ph,6,RED);
+            f2("! ALARM",cx,py+20,RED,middle_center);
+            f2("Press UNLOCK to clear",cx,py+44,COL_WHITE2,middle_center);
+            int ux=px+8, uy=py+ph-44, uw=pw-16, uh=34;
+            _unlockBtn={ux,uy,uw,uh};
+            tintStrokeR(ux,uy,uw,uh,6,RED,RED,60);
+            f2("UNLOCK  ($X)",cx,uy+uh/2,COL_WHITE,middle_center);
+            _rehomeBtn={0,0,0,0}; _rehomeResBtn={0,0,0,0}; _unlockBtnFull={0,0,0,0};
+        }
+    }
+
+    // ── Pre-run info overlay — drawn in VIZ area only, DRO gauges still visible ─
+    void drawRunSequenceOverlay() {
+        // Draw inside the viz panel (right side of DRO)
+        int vx=VIZ_X, vy=VIZ_Y, vw=VIZ_W, vh=VIZ_H;
+        canvas.fillRect(vx,vy,vw,vh,COL_PANEL);
+        canvas.drawRect(vx,vy,vw,vh,CYAN);
+        // Title bar
+        canvas.fillRect(vx,vy,vw,16,CYAN);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_BG);
+        canvas.drawString("PREPARING JOB",vx+vw/2,vy+8);
+        // Job name
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_WHITE2);
+        std::string jn=simJobName.size()>16?simJobName.substr(0,13)+"...":simJobName;
+        canvas.drawString(jn.c_str(),vx+vw/2,vy+26);
+        // 4 steps
+        struct { const char* label; } steps[]={
+            {"Setup (G90)"},
+            {"Raising Z"},
+            {"Moving to X0 Y0"},
+            {"Starting file"},
+        };
+        int sY=vy+38;
+        for(int i=0;i<4;i++){
+            bool done=(_runStep>i+1);
+            bool active=(_runStep==i+1);
+            int sy=sY+i*26;
+            if(active){canvas.fillRoundRect(vx+2,sy-6,vw-4,20,2,COL_DIM);}
+            int dotcol=done?GREEN:active?YELLOW:COL_DIM2;
+            canvas.fillCircle(vx+10,sy+4,4,dotcol);
+            canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+            canvas.setTextColor(done?GREEN:active?YELLOW:COL_DIM2);
+            canvas.drawString(steps[i].label,vx+18,sy+4);
+        }
+    }
+
+    // ── Z height nudge overlay — inside viz area, encoder-controlled ──────────
+    void drawZNudgeOverlay() {
+        int vx=VIZ_X, vy=VIZ_Y, vw=VIZ_W;
+        int vh = NAV_Y - FEED_H - VIZ_Y;  // taller: VIZ + filename strip area
+        canvas.fillRect(vx, vy, vw, vh, COL_PANEL);
+        canvas.drawRect(vx, vy, vw, vh, COL_AX_Z);
+        // Title bar
+        canvas.fillRect(vx, vy, vw, 16, COL_AX_Z);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_BG);
+        canvas.drawString("Z HEIGHT ADJUST", vx+vw/2, vy+8);
+        // Step info
+        float stepVal=mpgSteps[(int)mpgStepIdx];
+        char stepBuf[20]; snprintf(stepBuf,sizeof(stepBuf),"Step: %.3fmm",stepVal);
+        canvas.setTextColor(COL_DIM2); canvas.drawString(stepBuf,vx+vw/2,vy+28);
+        // Display: base Z, offset (big), new Z
+        float newZ = _zNudgeBaseZ + _zNudgeOffset;
+        int offsetCol = _zNudgeOffset > 0.0005f ? GREEN
+                      : _zNudgeOffset < -0.0005f ? RED : COL_WHITE;
+
+        // "Hold Z" row
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+        canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Hold Z:", vx+4, vy+38);
+        canvas.setTextDatum(middle_right); canvas.setTextColor(COL_AX_Z);
+        char cb[14]; snprintf(cb,14,"%.3f mm",_zNudgeBaseZ);
+        canvas.drawString(cb, vx+vw-4, vy+38);
+
+        // Big offset display
+        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(offsetCol);
+        char ob[16]; snprintf(ob,16,"%+.3f", _zNudgeOffset);
+        canvas.drawString(ob, vx+vw/2, vy+60);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Z offset (mm)", vx+vw/2, vy+72);
+
+        // "New Z" row
+        canvas.setTextDatum(middle_left); canvas.setTextColor(COL_DIM2);
+        canvas.drawString("New Z:", vx+4, vy+86);
+        canvas.setTextDatum(middle_right); canvas.setTextColor(offsetCol);
+        char nb[14]; snprintf(nb,14,"%.3f mm", newZ);
+        canvas.drawString(nb, vx+vw-4, vy+86);
+
+        // Enable button status indicator — prominent warning when not held
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        if (!mpgJogAllowed) {
+            // Enable not held — show warning, lock icon indicator
+            canvas.fillRoundRect(vx+6, vy+95, vw-12, 18, 3, 0x4000);
+            canvas.drawRoundRect(vx+6, vy+95, vw-12, 18, 3, RED);
+            canvas.setTextColor(RED);
+            canvas.drawString("HOLD ENABLE to adjust", vx+vw/2, vy+104);
+        } else {
+            // Enable held — show active hints
+            canvas.setTextColor(GREEN);
+            canvas.drawString("ENABLED — turn to adjust", vx+vw/2, vy+100);
+            canvas.setTextColor(COL_DIM);
+            canvas.drawString("CCW=deeper  CW=shallower", vx+vw/2, vy+111);
+        }
+        // Buttons
+        int bw3=(vw-10)/2, bh3=22, bby=vy+vh-bh3-3;
+        canvas.fillRoundRect(vx+3,    bby,bw3,bh3,3,COL_PANEL2);
+        canvas.drawRoundRect(vx+3,    bby,bw3,bh3,3,COL_BORDER2);
+        canvas.setTextColor(COL_WHITE); canvas.drawString("Cancel",vx+3+bw3/2,bby+bh3/2);
+        // Apply+Resume only enabled when enable button held
+        uint16_t resumeBg = mpgJogAllowed ? (uint16_t)GREEN : COL_PANEL2;
+        uint16_t resumeFg = mpgJogAllowed ? (uint16_t)COL_BG : COL_DIM;
+        canvas.fillRoundRect(vx+7+bw3,bby,bw3,bh3,3,resumeBg);
+        canvas.drawRoundRect(vx+7+bw3,bby,bw3,bh3,3,mpgJogAllowed?(uint16_t)GREEN:COL_BORDER2);
+        canvas.setTextColor(resumeFg); canvas.drawString("Apply+Resume",vx+7+bw3+bw3/2,bby+bh3/2);
+        _zCloseBtn  ={vx+3,     bby,bw3,bh3};
+        _zResumeBtn ={vx+7+bw3, bby,bw3,bh3};
+    }
+
+    // ── Free Jog overlay — shown during Hold free jog mode ──────────────────
+    void drawFreeJogOverlay() {
+        int vx=VIZ_X, vy=VIZ_Y, vw=VIZ_W;
+        int vh = NAV_Y - FEED_H - VIZ_Y;  // taller: VIZ + filename strip area
+        canvas.fillRect(vx, vy, vw, vh, COL_PANEL);
+        canvas.drawRect(vx, vy, vw, vh, ORANGE);
+        // Title bar
+        canvas.fillRect(vx, vy, vw, 16, ORANGE);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_BG);
+        canvas.drawString("FREE JOG — Hold paused", vx+vw/2, vy+8);
+        // Saved hold position
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_left);
+        canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Hold pos:", vx+4, vy+26);
+        canvas.setTextDatum(middle_right); canvas.setTextColor(ORANGE);
+        char saved[40]; snprintf(saved, sizeof(saved), "X%.1f Y%.1f Z%.2f",
+                                 _freeJogSaveX, _freeJogSaveY, _freeJogSaveZ);
+        canvas.drawString(saved, vx+vw-4, vy+26);
+        // Current position
+        float cx2 = myAxes[0]/10000.0f, cy2 = myAxes[1]/10000.0f, cz2 = myAxes[2]/10000.0f;
+        canvas.setTextDatum(middle_left); canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Now:", vx+4, vy+40);
+        canvas.setTextDatum(middle_right); canvas.setTextColor(COL_WHITE);
+        char cur[40]; snprintf(cur, sizeof(cur), "X%.1f Y%.1f Z%.2f", cx2, cy2, cz2);
+        canvas.drawString(cur, vx+vw-4, vy+40);
+        // Distance from hold position
+        float dx = cx2 - _freeJogSaveX, dy = cy2 - _freeJogSaveY, dz = cz2 - _freeJogSaveZ;
+        float dist = sqrtf(dx*dx + dy*dy + dz*dz);
+        canvas.setTextDatum(middle_center);
+        char distStr[32]; snprintf(distStr, sizeof(distStr), "%.2f mm from hold pos", dist);
+        canvas.setTextColor(dist > 50.0f ? RED : dist > 10.0f ? YELLOW : COL_DIM2);
+        canvas.drawString(distStr, vx+vw/2, vy+56);
+        // Enable indicator
+        if (!mpgJogAllowed) {
+            canvas.fillRoundRect(vx+6, vy+68, vw-12, 14, 2, 0x4000);
+            canvas.drawRoundRect(vx+6, vy+68, vw-12, 14, 2, RED);
+            canvas.setTextColor(RED);
+            canvas.drawString("HOLD ENABLE to jog", vx+vw/2, vy+75);
+        } else {
+            canvas.setTextColor(GREEN);
+            canvas.drawString("ENABLED — jog with encoder", vx+vw/2, vy+75);
+        }
+        // Hint
+        canvas.setTextColor(COL_DIM2);
+        canvas.drawString("Select axis on DRO to jog", vx+vw/2, vy+88);
+        // Buttons
+        int bw3=(vw-10)/2, bh3=22, bby=vy+vh-bh3-3;
+        // Cancel — return to hold strip without resuming
+        canvas.fillRoundRect(vx+3, bby, bw3, bh3, 3, COL_PANEL2);
+        canvas.drawRoundRect(vx+3, bby, bw3, bh3, 3, COL_BORDER2);
+        canvas.setTextColor(COL_WHITE); canvas.drawString("Cancel", vx+3+bw3/2, bby+bh3/2);
+        // Return to hold position
+        canvas.fillRoundRect(vx+7+bw3, bby, bw3, bh3, 3, ORANGE);
+        canvas.setTextColor(COL_BG); canvas.drawString("Return+Hold", vx+7+bw3+bw3/2, bby+bh3/2);
+        _freeJogReturnBtn = {vx+7+bw3, bby, bw3, bh3};
+        canvas.drawRect(vx+3, bby, bw3, bh3, COL_BORDER2);  // cancel rect
+    }
+
+    void drawPathJogOverlay() {
+        int vx=VIZ_X, vy=VIZ_Y, vw=VIZ_W, vh=VIZ_H;
+        int total = (int)vizPath.size();
+        if (total == 0) { _pathJogMode = false; return; }
+
+        canvas.fillRect(vx, vy, vw, vh, COL_PANEL);
+        canvas.drawRect(vx, vy, vw, vh, CYAN);
+
+        // Title bar
+        canvas.fillRect(vx, vy, vw, 16, CYAN);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_BG);
+        canvas.drawString("PATH RETRACE", vx+vw/2, vy+8);
+
+        // Step switch controls jog feed speed (not jump size — always 1 pt per detent)
+        float stepVal = mpgSteps[(int)mpgStepIdx];
+        const char* speedLabel = (stepVal <= 0.011f) ? "Speed: SLOW" : (stepVal <= 0.11f) ? "Speed: MED" : "Speed: FAST";
+        canvas.setTextColor(COL_DIM2); canvas.drawString(speedLabel, vx+vw/2, vy+26);
+
+        // Index / total
+        int idx = std::max(0, std::min(_pathJogIdx, total-1));
+        // Show direction arrow + warn if file too large for rewind
+        char idxBuf[32]; snprintf(idxBuf, sizeof(idxBuf), "%s%d / %d%s",
+            idx < vizPathExecuted ? "<<" : "", idx, total-1, idx > vizPathExecuted ? ">>" : "");
+        canvas.setFont(&fonts::Font2); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(idx == vizPathExecuted ? CYAN : YELLOW);
+        canvas.drawString(idxBuf, vx+vw/2, vy+44);
+        if (!_allFileLinesComplete) {
+            canvas.setFont(&fonts::Font0); canvas.setTextColor(RED);
+            canvas.drawString("File too large — resume restarts job", vx+vw/2, vy+57);
+        }
+
+        // Target XY position
+        float tx = vizPath[idx].x;
+        float ty = vizPath[idx].y;
+        char xbuf[20], ybuf[20];
+        snprintf(xbuf, sizeof(xbuf), "X %.3f", tx);
+        snprintf(ybuf, sizeof(ybuf), "Y %.3f", ty);
+        canvas.setFont(&fonts::Font0); canvas.setTextDatum(middle_center);
+        canvas.setTextColor(COL_AX_X);
+        canvas.drawString(xbuf, vx+vw/2, vy+60);
+        canvas.setTextColor(COL_AX_Y);
+        canvas.drawString(ybuf, vx+vw/2, vy+72);
+
+        // Progress bar
+        int pbw = vw-12;
+        canvas.drawRect(vx+6, vy+82, pbw, 8, COL_BORDER2);
+        int fill = total > 1 ? (idx * pbw / (total-1)) : pbw;
+        if (fill > 0) canvas.fillRect(vx+6, vy+82, fill, 8, CYAN);
+
+        // Hints
+        canvas.setTextColor(COL_DIM);
+        canvas.drawString("CCW=rewind  CW=forward", vx+vw/2, vy+100);
+        canvas.drawString("FluidNC retraces path live", vx+vw/2, vy+112);
+
+        // Buttons: Cancel | Resume here (dimmed until abort complete)
+        int bw3=(vw-10)/2, bh3=22, bby=vy+vh-bh3-3;
+        canvas.fillRoundRect(vx+3,     bby, bw3, bh3, 3, COL_PANEL2);
+        canvas.drawRoundRect(vx+3,     bby, bw3, bh3, 3, COL_BORDER2);
+        canvas.setTextColor(COL_WHITE); canvas.drawString("Cancel", vx+3+bw3/2, bby+bh3/2);
+        canvas.fillRoundRect(vx+7+bw3, bby, bw3, bh3, 3, GREEN);
+        canvas.setTextColor(COL_BG);
+        canvas.drawString("Resume here", vx+7+bw3+bw3/2, bby+bh3/2);
+
+        _pathJogExitBtn   = {vx+3,     bby, bw3, bh3};
+        _pathJogResumeBtn = {vx+7+bw3, bby, bw3, bh3};
+    }
+
+
+public:
+    TabScene() : Scene("TabUI", 4) {}  // encoder_scale=4: X4 PCNT quadrature, 1 detent = 1 step
+
+    void onEntry(void* arg = nullptr) override {
+        sprite_offset = { 0, 0 };
+        termLines.clear();
+        vizCacheInit();
+        // Default axis letters XYZABC
+        const char* defLetters = "XYZABC";
+        for (int i=0;i<6;i++) _axisLetters[i] = defLetters[i];
+        _axisAutoDetected = false;
+        fnc_term_inject("> $I");
+        termLines.push_back({ "[MSG:FluidDial UI]", GREEN   });
+        fnc_realtime(StatusReport);
+        // Request axis count and names from FluidNC
+        send_line("$axes/count");
+        for (int i=0;i<6;i++) {
+            char cmd[24]; snprintf(cmd,sizeof(cmd),"$axes/%d/name",i);
+            send_line(cmd);
+        }
+        request_file_list("/sd");
+    }
+
+    void onDROChange() override {
+        // Reject glitched jumps: >500mm change in one update = UART noise
+        static float _prevAx[8] = {};
+        for (int i = 0; i < 8; i++) {
+            float cur = myAxes[i] / 10000.0f;
+            float prev = _prevAx[i];
+            if (prev != 0.0f && fabsf(cur - prev) > 500.0f)
+                myAxes[i] = (int32_t)(prev * 10000.0f);  // revert
+            else
+                _prevAx[i] = cur;
+        }
+        if (_tab == 0) reDisplay();
+    }
+    void onLineReceived()  override { if (_tab == 2) reDisplay(); }
+    void onLimitsChange() override { if (_tab == 1) reDisplay(); }
+
+    void onStateChange(state_t old_state) override {
+        if (state == Alarm) {
+            _alarmOpen = true;
+            _vizGenBusy = false;  // abort any in-progress viz generation display
+            _alarmBeepCount = 4;
+            _alarmBeepNext = millis();
+            if (mpgEstopActive) {
+                _estopRecovery = 1;
+                // E-stop: cancel any pending action sequence to avoid conflicts
+                _pendingAction = 0;
+            }
+            // Bug 4+5: clear overlays on Alarm — alarm overlay must take over
+            if (_zNudgeOpen) {
+                // Undo any queued G10 WCS shift that won't now execute
+                char undo[48];
+                snprintf(undo, sizeof(undo), "G10 L20 P1 Z%.4f", _zNudgeBaseZ);
+                send_line(undo);
+                _zNudgeOpen = false; _zNudgeOffset = 0.0f;
+            }
+            if (_pathJogMode) {
+                fnc_realtime((realtime_cmd_t)0x85);  // cancel any in-progress jog
+                _pathJogMode = false;
+                _pathJogAborted = false;
+            }
+            _runStep = 0;  // close pre-run overlay
+        }
+        else {
+            // Keep alarm open if estop recovery is pending
+            if (!_showEstopRecovery) _alarmOpen = false;
+        }
+        if (state == Cycle && old_state != Cycle) {
+        }
+        if (state == Idle && !_showEstopRecovery) {
+            if (_pendingAction == 0 && !_pathJogMode) {
+                _jobSentToFluidNC = false;
+            }
+            _estopRecovery = 0; _zNudgeOffset = 0; _freeJogMode = false;
+        }
+        if (state == Hold) {
+            // Always reset overlay modes when entering Hold — fresh strip every time
+            _zNudgeOpen  = false; _zNudgeOffset = 0.0f;
+            _pathJogMode = false; _pathJogAborted = false;
+            _freeJogMode = false;
+        }
+        if (state == Disconnected) {
+            _runStep = 0;  // close pre-run overlay on disconnect
+            _freeJogMode = false;  // exit free jog on disconnect
+            // Do NOT force tab switch — let user stay on current tab
+        }
+
+        // Pending actions now handled in tabui_checkPressExpiry (polled each dispatch cycle)
+        // Reconnection: re-request axis config when coming back online
+        if (old_state == Disconnected && state != Disconnected) {
+            send_line("$axes/count");
+            for (int i=0;i<6;i++) {
+                char cmd[24]; snprintf(cmd,sizeof(cmd),"$axes/%d/name",i);
+                send_line(cmd);
+            }
+        }
+        // Job timer
+        if (state == Cycle && old_state != Cycle) {
+            // Started or resumed
+            _jobStartTime = millis();
+            _freeJogMode = false;  // exit free jog on resume
+        } else if (state != Cycle && old_state == Cycle) {
+            // Job finished (or aborted)
+            if (_jobSentToFluidNC && state == Idle) {
+                jobrecov_jobComplete();  // clean finish — clear checkpoint
+                _jobComplete = true;
+                _jobCompleteMs = millis();
+            }
+            // Paused or ended — accumulate elapsed
+            _jobElapsed += millis() - _jobStartTime;
+            _jobStartTime = 0;
+        }
+        if (state == Idle || state == Alarm) {
+            // Job ended — keep elapsed for display
+            _jobStartTime = 0;
+        }
+        reDisplay();
+    }
+
+    void onMessage(char* command, char* arguments) override {
+        // Parse $axes/N/name=X responses
+        if (command && strncmp(command, "axes/", 5) == 0) {
+            // Format: axes/N/name  arguments = X (or Y, Z, A, B, C)
+            const char* p = command + 5;
+            int axIdx = atoi(p);
+            const char* slash = strchr(p, '/');
+            if (slash && strncmp(slash, "/name", 5) == 0 && axIdx >= 0 && axIdx < 6) {
+                if (arguments && arguments[0] >= 'A' && arguments[0] <= 'Z') {
+                    _axisLetters[axIdx] = arguments[0];
+                    _axisAutoDetected = true;
+                    // Auto-detect mode from axis letters
+                    if (n_axes == 4) {
+                        bool hasA = false, hasY2 = false;
+                        for (int i=0;i<n_axes;i++) {
+                            if (_axisLetters[i]=='A') hasA=true;
+                            if (i>0 && _axisLetters[i]=='Y') hasY2=true;
+                        }
+                        if (hasY2) { _droAxesMode=3; tabui_setAxes(3); }
+                        else if (hasA) { _droAxesMode=1; tabui_setAxes(1); }
+                    } else if (n_axes == 2) {
+                        _droAxesMode=2; tabui_setAxes(2);
+                    } else if (n_axes == 3) {
+                        _droAxesMode=0; tabui_setAxes(0);
+                    }
+                }
+            }
+        }
+        // Parse VizGenerator plugin messages
+        // VizReady format: VizReady:/sd/f.nc.viz:N:xmin:xmax:ymin:ymax
+        if (arguments && strncmp(arguments, "VizReady:", 9) == 0) {
+            _vizGenBusy = false;
+            const char* p = arguments + 9;
+            const char* colon = strchr(p, ':');
+            if (colon) {
+                _vizLoadPath = std::string(p, colon - p);
+                // VizReady:path:N:xmin:xmax:ymin:ymax:zmin:zmax:nRapid:nFeed:nM6
+                float n=0,x0=0,x1=0,y0=0,y1=0,z0=0,z1=0;
+                int nr=0,nf=0,nm=0;
+                sscanf(colon+1, "%f:%f:%f:%f:%f:%f:%f:%d:%d:%d",
+                       &n,&x0,&x1,&y0,&y1,&z0,&z1,&nr,&nf,&nm);
+                _vizLoadTotal = (int)n;
+                _vizBounds[0]=x0; _vizBounds[1]=x1;
+                _vizBounds[2]=y0; _vizBounds[3]=y1;
+                _vizBounds[4]=z0; _vizBounds[5]=z1;
+                _vizNRapid=nr; _vizNFeed=nf; _vizNM6=nm;
+                // Start loading the viz file using existing batch protocol
+                if (!_vizLoadPath.empty()) {
+                    _vizLoading = true;
+                    vizPath.clear(); vizPathExecuted = 0;
+                    _vizNRapid = 0; _vizNFeed = 0; _vizNM6 = 0;  // reset stats for new viz
+                    request_file_preview(_vizLoadPath.c_str(), 1, 500); // skip header line
+                    fnc_term_inject(("> Viz loading: " + _vizLoadPath).c_str());
+                    markDirty();
+                }
+            } else {
+                // Short form: VizReady:/path (file existed, no bounds)
+                _vizLoadPath = p;
+                _vizLoading = true;
+                vizPath.clear();
+                vizPathExecuted = 0;
+                request_file_preview(_vizLoadPath.c_str(), 1, 500);
+                fnc_term_inject(("> Viz loading: " + _vizLoadPath).c_str());
+                markDirty();
+            }
+            return;
+        }
+        if (arguments && strncmp(arguments, "VizBusy:", 8) == 0) {
+            _vizGenBusy = true;
+            fnc_term_inject((std::string("[Viz: ") + (arguments+8) + "]").c_str());
+            markDirty();
+            return;
+        }
+        if (arguments && strncmp(arguments, "VizDeleted", 10) == 0) {
+            _vizGenBusy = false; vizPath.clear(); vizJobName.clear();
+            markDirty(); return;
+        }
+        if (arguments && strncmp(arguments, "VizErr:", 7) == 0) {
+            _vizGenBusy = false;  // stop spinner on error
+            fnc_term_inject((std::string("[Viz error: ") + (arguments+7) + "]").c_str());
+            _vizLoading = false;
+            markDirty();
+            return;
+        }
+
+        // Parse PathRetrace plugin status messages
+        if (arguments && strncmp(arguments, "PathRetrace:", 12) == 0) {
+            const char* p = arguments + 12;
+            if (strncmp(p, "Empty", 5) == 0) {
+                // Plugin IS present — buffer empty (no job run yet)
+                _retraceSupport = 1;
+                _retraceStartMs = 0;
+                fnc_term_inject("> PathRetrace: plugin OK (run a job first)");
+            } else if (strncmp(p, "Active", 6) == 0) {
+                // Plugin confirmed present and active
+                _retraceSupport = 1;
+                _retraceStartMs = 0;
+                fnc_term_inject("> Path retrace: FluidNC plugin active");
+            } else if (strncmp(p, "Resumed", 7) == 0 || strncmp(p, "Cancelled", 9) == 0) {
+                _pathJogMode = false;
+                reDisplay();
+            } else if (strncmp(p, "AtStart", 7) == 0 || strncmp(p, "AtCurrent", 9) == 0) {
+                beep_ui(600, 30);  // end-of-buffer beep
+            } else {
+                // Parse "N/M" position report → update overlay display
+                int n = 0, m = 0;
+                if (sscanf(p, "%d/%d", &n, &m) == 2) {
+                    _pathJogIdx   = n;
+                    _pathJogTotal = m;
+                    markDirty();
+                }
+            }
+            return;  // don't add PathRetrace msgs to terminal
+        }
+        std::string line = std::string("[MSG:") + arguments + "]";
+        termLines.push_back({ line, GREEN });
+        if (termLines.size() > 200) termLines.erase(termLines.begin());
+        if (termScroll == 0 && _tab == 2) reDisplay();
+        if (_tab == 2) reDisplay();
+    }
+
+    void onFileLines(int firstLine, const std::vector<std::string>& lines) override {
+        static const int BATCH = 500;
+
+        // ── Viz file loading: parse "x,y" lines into vizPath ─────────────────
+        if (_vizLoading && !_vizLoadPath.empty()) {
+            bool done = false;
+            for (auto& l : lines) {
+                if (l.empty() || l[0] == 'V') continue;  // skip header if repeated
+                float x = 0, y = 0;
+                float z = 0; int t = 1;
+                int parsed = sscanf(l.c_str(), "%f,%f,%f,%d", &x, &y, &z, &t);
+                if (parsed >= 2) {
+                    if ((int)vizPath.size() < VIZ_MAX_POINTS)
+                        vizPath.push_back({x, y, z, (uint8_t)t});
+                }
+            }
+            // Request next batch if more points expected
+            int loaded = (int)vizPath.size();
+            int nextLine = firstLine + (int)lines.size();
+            if ((int)lines.size() >= BATCH && loaded < _vizLoadTotal && loaded < VIZ_MAX_POINTS) {
+                request_file_preview(_vizLoadPath.c_str(), nextLine, BATCH);
+            } else {
+                // Done
+                _vizLoading = false;
+                char msg[64];
+                snprintf(msg, sizeof(msg), "> Viz loaded: %d points", loaded);
+                fnc_term_inject(msg);
+                markDirty();
+            }
+            return;
+        }
+
+        // Guard: ignore batches from a previous file (stale response)
+        if (_loadingDone && firstLine > 0) return;
+
+        // Detect .viz sidecar format (first line starts with "VIZ:")
+        if (firstLine == 0 && !lines.empty() && lines[0].substr(0,4) == "VIZ:") {
+            // Parse sidecar: VIZ:N header then x,y lines
+            vizPath.clear(); vizPathExecuted = 0;
+            int expected = 0;
+            try {
+                // Header: VIZ N x0 x1 y0 y1 z0 z1 nRapid nFeed nM6
+                int nr=0, nf=0, nm=0;
+                float z0=0, z1=0;
+                sscanf(lines[0].c_str(), "VIZ %d %f %f %f %f %f %f %d %d %d",
+                       &expected, &_vizBounds[0], &_vizBounds[1],
+                       &_vizBounds[2], &_vizBounds[3], &z0, &z1, &nr, &nf, &nm);
+                _vizBounds[4] = z0; _vizBounds[5] = z1;
+                if (nr > 0 || nf > 0) { _vizNRapid=nr; _vizNFeed=nf; _vizNM6=nm; }
+            } catch(...) {}
+            vizPath.reserve(std::min(expected, 8000));
+            for (int li = 1; li < (int)lines.size(); li++) {
+                const auto& ln = lines[li];
+                size_t comma = ln.find(',');
+                if (comma == std::string::npos) continue;
+                try {
+                    float x = std::stof(ln.substr(0, comma));
+                    size_t comma2 = ln.find(',', comma+1);
+                    float y = std::stof(ln.substr(comma+1, comma2 == std::string::npos ? std::string::npos : comma2-comma-1));
+                    float z = 0.0f; uint8_t t = 1;
+                    if (comma2 != std::string::npos) {
+                        size_t comma3 = ln.find(',', comma2+1);
+                        z = std::stof(ln.substr(comma2+1));
+                        if (comma3 != std::string::npos) t = (uint8_t)std::stoi(ln.substr(comma3+1));
+                    }
+                    vizPath.push_back({x, y, z, t});
+                    if ((int)vizPath.size() >= VIZ_MAX_POINTS) break;
+                } catch(...) {}
+            }
+            // If more batches needed for sidecar, keep chaining
+            if ((int)lines.size() >= 60 && !_loadingPath.empty() && (int)vizPath.size() < VIZ_MAX_POINTS) {
+                _loadingBatch = firstLine + (int)lines.size();
+                request_file_preview(_loadingPath.c_str(), _loadingBatch, 500);
+            } else {
+                _loadingDone = true; _loadingPath = "";
+                // Sidecar parsed — also load G-code text for preview
+                if (!_vizSidecarPath.empty()) {
+                    _loadingPath = _vizSidecarPath; _vizSidecarPath = "";
+                    allFileLines.clear(); previewLines.clear();
+                    request_file_preview(_loadingPath.c_str(), 0, 500);
+                    _loadingDone = false;
+                }
+            }
+            if (_tab == 2) markDirty();
+            return;  // don't process as regular G-code
+        }
+
+        if (firstLine == 0) {
+            // First batch — reset accumulator
+            allFileLines.clear();
+            previewLines.clear();
+            _allFileLinesComplete = false;
+            _loadingDone = false;
+            previewFirstLine = 0;
+            previewScroll = 0;
+        }
+
+        // Accumulate into both allFileLines and previewLines
+        // Cap both vectors to prevent OOM on large files
+        static constexpr int MAX_PREVIEW_LINES = 2000;
+        bool hitCap = false;
+        for (auto& l : lines) {
+            if ((int)allFileLines.size() < MAX_REWIND_LINES)
+                allFileLines.push_back(l);
+            else
+                hitCap = true;
+            if ((int)previewLines.size() < MAX_PREVIEW_LINES)
+                previewLines.push_back(l);
+        }
+
+        bool moreAvailable = ((int)lines.size() >= 60 && !_loadingPath.empty());
+        if (moreAvailable && !hitCap) {
+            // More lines available and cap not hit — request next batch
+            _loadingBatch = firstLine + (int)lines.size();
+            request_file_preview(_loadingPath.c_str(), _loadingBatch, BATCH);
+        } else {
+            // End of file OR cap hit — stop loading
+            _allFileLinesComplete = !hitCap && !moreAvailable;
+            _loadingDone = true;
+            _loadingBatch = 0;
+            _loadingPath = "";  // clear so stale batches from old files are ignored
+            if (fileSelected>=0 && fileSelected<(int)fileList.size()) {
+                parseGcodeToVizPath(allFileLines, fileList[fileSelected].name);
+                vizCacheEvictOld();
+                vizCacheSave(fileList[fileSelected].name,
+                             fileList[fileSelected].size, vizPath);
+            }
+        }
+
+        if (_tab == 2) markDirty();
+    }
+
+    void onFilesList() override {
+        fileList.clear();
+        fileScroll   = 0;
+        fileSelected = -1;
+        for (size_t i = 0; i < fileVector.size(); i++) {
+            FileEntry fe;
+            fe.name  = fileVector[i].fileName;
+            fe.isDir = fileVector[i].isDir();
+            fe.size  = fe.isDir ? 0 : fileVector[i].fileSize;
+            if ((int)fileList.size() < 500)  // cap ~500 entries to prevent OOM
+                fileList.push_back(fe);
+        }
+        if (_tab == 2) reDisplay();
+    }
+
+    void onEncoder(int delta) override {
+        mpgLastDir = (delta > 0) ? 1 : -1;
+        mpgDirTime = millis();
+
+        // Path jog: move machine along loaded toolpath while in Hold
+        // While in Hold and no overlay open: first MPG turn opens the overlay
+        // CW (delta>0) → path jog (if path loaded);  CCW (delta<0) → Z nudge
+        // Hold state: CW encoder = path retrace (FluidNC plugin), CCW = Z nudge
+        // Free jog mode: encoder jogs selected axis (or Z by default)
+        if (_freeJogMode && _tab == 0 && mpgJogAllowed) {
+            int axis = (mpgAxis >= 0) ? mpgAxis : 2;  // default to Z
+            float dist = delta * mpgSteps[(int)mpgStepIdx];
+            static const int jogFeed[] = { 100, 500, 2000 };
+            int feed = jogFeed[(int)mpgStepIdx];
+            static const char* axNames[] = { "X", "Y", "Z", "A", "B", "C" };
+            char cmd[64];
+            snprintf(cmd, sizeof(cmd), "$J=G91 G21 %s%.4f F%d",
+                     axNames[axis], dist, feed);
+            send_line(cmd);
+            reDisplay(); return;
+        }
+        if (_tab == 0 && state == Hold && !_pathJogMode && !_zNudgeOpen && !_freeJogMode) {
+            if (delta > 0) {
+                // Enter retrace mode — FluidNC plugin handles everything
+                if (!_pathJogMode) {
+                    if (_retraceSupport == 2) {
+                        fnc_term_inject("> Rewind: PathRetrace plugin not installed in FluidNC");
+                        _retraceWarnMs = millis();
+                        reDisplay(); return;
+                    }
+                    _pathJogMode = true;
+                    _pathJogIdx  = 0;
+                    _pathJogAborted = true;
+                    _retraceStartMs = millis();
+                    send_line("$Retrace/Start");
+                    fnc_term_inject("> Path retrace: checking FluidNC plugin...");
+                }
+            } else if (delta < 0) {
+                if (!mpgJogAllowed) {
+                    // Enable button not held — warn and block
+                    fnc_term_inject("> Z Nudge: hold enable button to activate");
+                    reDisplay(); return;
+                }
+                _zNudgeOpen = true;
+                _zNudgeOffset = 0.0f;
+                _zNudgeBaseZ = myAxes[2] / 10000.0f;
+            }
+        }
+
+        if (_pathJogMode && _tab == 0) {
+            // Send $Retrace/Rev or /Fwd — one command per encoder detent
+            // FluidNC plugin moves the machine along its recorded path buffer
+            if (delta < 0) {
+                send_line("$Retrace/Rev");  // step backward along path
+                _pathJogIdx = std::max(0, _pathJogIdx - 1);
+            } else if (delta > 0) {
+                send_line("$Retrace/Fwd");  // step forward along path
+                _pathJogIdx = std::min(_pathJogIdx + 1, (int)vizPath.size() - 1);
+            }
+            markDirty();
+            return;
+        }
+
+        // Z nudge: shift WCS Z so job resumes at new height
+        // G10 L20 P1 adjusts WCS so current machine pos = new value
+        // This permanently shifts all subsequent job Z moves by 'move' amount
+        if (_zNudgeOpen && _tab == 0) {
+            if (!mpgJogAllowed) {
+                // Enable released mid-nudge — block movement, show hint
+                reDisplay();
+                return;
+            }
+            float step = mpgSteps[(int)mpgStepIdx];
+            _zNudgeOffset += delta * step;
+            // Queue G10 L20 P1 into FluidNC's serial buffer.
+            // During Hold, FluidNC buffers this and applies it on ~ resume.
+            char cmd[64];
+            snprintf(cmd, sizeof(cmd), "G10 L20 P1 Z%.4f", _zNudgeBaseZ + _zNudgeOffset);
+            send_line(cmd);
+            reDisplay();
+            return;
+        }
+
+        // Jogging ONLY on DRO tab (tab 0) — all other tabs use wheel for scrolling
+        if (_tab == 0 && mpgAxis >= 0 && _barSel == 0) {
+            reDisplay();  // update DRO to show axis/step highlight
+            if (mpgJogAllowed) {
+                float dist = delta * mpgSteps[(int)mpgStepIdx];
+                static const int jogFeed[] = { 100, 500, 2000 };
+                int feed = jogFeed[(int)mpgStepIdx];
+
+                if (_droAxesMode == 3) {
+                    // XYYZ mode: axis 0=X, 1=Y(both), 2=Z, 3=Y2(independent)
+                    // In FluidNC, Y2 ganged axis uses same 'Y' command — both move together
+                    // For Y1 (axis 1): move Y — Y2 slave follows automatically
+                    // For Y2 (axis 3): also move Y — note: true independent Y2 requires
+                    //   FluidNC config with separate axis letter (check your machine config)
+                    if (mpgAxis == 3) {
+                        // Y2 independent — try 'B' first (common FluidNC ganged axis letter)
+                        // If your machine uses a different letter, change 'B' here
+                        send_linef("$J=G91 B%.3f F%d", dist, feed);
+                    } else {
+                        static const char axCharYYZ[] = { 'X', 'Y', 'Z', 'Y' };
+                        send_linef("$J=G91 %c%.3f F%d", axCharYYZ[mpgAxis], dist, feed);
+                    }
+                } else {
+                    // Use auto-detected axis letters from FluidNC config
+                    char axC = _axisAutoDetected ? _axisLetters[(int)mpgAxis]
+                                                 : "XYZA"[(int)mpgAxis];
+                    send_linef("$J=G91 %c%.3f F%d", axC, dist, feed);
+                }
+            }
+            return;
+        }
+
+        // MPG wheel controls selected bar override (feed or spindle)
+        if (_tab == 0 && _barSel != 0) {
+            if (_barSel == 1) {
+                // Feed override: coarse ±10% per detent
+                fnc_realtime(delta>0 ? FeedOvrCoarsePlus : FeedOvrCoarseMinus);
+            } else if (_barSel == 2) {
+                // Rapid override: only 3 fixed levels — 100%(0x95), 50%(0x96), 25%(0x97)
+                // Cycle through them: CW = lower, CCW = higher
+                uint8_t rapid_cmd;
+                // CW (delta>0) = faster (higher %), CCW (delta<0) = slower (lower %)
+                // Levels: 0x95=100%, 0x96=50%, 0x97=25%
+                if (myRro >= 100)     rapid_cmd = delta>0 ? 0x95 : 0x96;  // at 100%: CW→stays, CCW→50%
+                else if (myRro >= 50) rapid_cmd = delta>0 ? 0x95 : 0x97;  // at 50%:  CW→100%, CCW→25%
+                else                  rapid_cmd = delta>0 ? 0x96 : 0x97;  // at 25%:  CW→50%,  CCW→stays
+                fnc_realtime((realtime_cmd_t)rapid_cmd);
+            } else {
+                // Spindle override: coarse ±10% per detent
+                fnc_realtime(delta>0 ? (realtime_cmd_t)0x9A : (realtime_cmd_t)0x9B);
+            }
+            // Throttle reDisplay during job to avoid CPU overload
+            static uint32_t _lastOvrRedraw = 0;
+            if (millis() - _lastOvrRedraw > 150) {
+                _lastOvrRedraw = millis();
+                reDisplay();
+            }
+            return;
+        }
+
+        // All other cases: scroll the active tab (axis switch position ignored)
+        if (_tab == 1) {
+            // Home tab scroll — each detent = 8px
+            _homeScroll = std::max(0, _homeScroll + delta * 8);
+        } else if (_tab == 2) {
+            if (filePreviewMode) {
+                int maxS = std::max(0, (int)previewLines.size() - 1);
+                previewScroll = std::max(0, std::min(previewScroll + delta, maxS));
+            } else {
+                fileScroll = std::max(0, fileScroll + delta);
+            }
+        } else if (_tab == 3) {
+            termScroll = std::max(0, termScroll - delta);
+            int maxScroll = std::max(0, fnc_term_count() - ((NAV_Y-CMD_H-TOP-4-2)/13));
+            termScroll    = std::min(termScroll, maxScroll);
+        } else if (_tab == 4) {
+            macroScroll = std::max(0, macroScroll + delta);
+        }
+        reDisplay();  // always redraw so header arrow is immediate on any tab
+    }
+
+    // Parse G-code lines into vizPath (machine mm XY coords)
+    void parseGcodeToVizPath(const std::vector<std::string>& lines, const std::string& name) {
+        vizPath.clear(); vizPathExecuted = 0; vizJobName = name;
+        float cx=0, cy=0; bool isAbs=true;
+        int parseYieldCtr = 0;
+        for (const auto& ln : lines) {
+            // Yield to RTOS every 200 lines to prevent WDT reset on large files
+            if (++parseYieldCtr >= 200) { parseYieldCtr = 0; vTaskDelay(1); }
+            const char* p = ln.c_str();
+            // Skip whitespace, comments, empty lines, line numbers
+            while (*p==' '||*p=='	') p++;
+            if (!*p || *p==';' || *p=='(' || *p=='%') continue;
+            if (*p=='N'||*p=='n') { while(*p&&!isspace(*p)) p++; while(*p==' ') p++; }
+            if (!*p) continue;
+            // Scan all words in line (handles compact: G0X10Y20 and spaced: G0 X10 Y20)
+            float nx=cx, ny=cy; bool hasX=false, hasY=false;
+            const char* q=p;
+            while (*q) {
+                char c=*q;
+                if (c=='G'||c=='g') {
+                    int gn=(int)strtol(q+1,nullptr,10);
+                    if (gn==90) isAbs=true;
+                    else if (gn==91) isAbs=false;
+                }
+                if (c=='X'||c=='x') {
+                    char* end; float v=strtof(q+1,&end);
+                    if (end>q+1) { nx=isAbs?v:cx+v; hasX=true; q=end; continue; }
+                }
+                if (c=='Y'||c=='y') {
+                    char* end; float v=strtof(q+1,&end);
+                    if (end>q+1) { ny=isAbs?v:cy+v; hasY=true; q=end; continue; }
+                }
+                q++;
+            }
+            if ((hasX||hasY) && (nx!=cx||ny!=cy)) {
+                if ((int)vizPath.size() < VIZ_MAX_POINTS)  // cap to prevent OOM
+                    vizPath.push_back({nx, ny, 0.0f, 1});
+                cx=nx; cy=ny;
+            }
+        }
+    }
+
+    // Shared handler for overlay button taps — called from both onTouchClick and onTouchHold
+    // Returns true if the tap was consumed by an overlay.
+    bool handleOverlayTap(int x, int y) {
+        if (_tab != 0) return false;
+        if (_pathJogMode) {
+            if (hit(_pathJogExitBtn, x, y)) {
+                // Cancel retrace — FluidNC plugin stays in Hold, job can be resumed normally
+                send_line("$Retrace/Cancel");
+                _pathJogMode = false;
+                _pathJogAborted = false;
+                _pendingAction = 0;
+                fnc_term_inject("> Retrace cancelled — machine in Hold. Use Hold btn to resume.");
+                markDirty();
+                return true;
+            }
+            if (hit(_pathJogResumeBtn, x, y)) {
+                // "Resume here" — live rewind resume:
+                // 1. Write remaining G-code from _pathJogIdx onwards to LittleFS /rewind.nc
+                // 2. Ctrl-X abort the held job (→ Alarm)
+                // 3. pendingAction 6: $X to clear Alarm → Idle
+                // 4. pendingAction 7: run /rewind.nc — machine is already at the chosen point
+                //
+                // Spindle is kept running by FluidNC during Hold.
+                // After Ctrl-X the spindle stops — so the resume file starts with M3 Sx to restart it.
+                _pathJogMode = false;
+
+                // $Retrace/Resume: FluidNC plugin restores spindle and resumes job
+                // Machine is already at the retrace position — no file handling needed
+                send_line("$Retrace/Resume");
+                fnc_term_inject("> Retrace: resuming job from current position");
+                _pathJogAborted = false;
+                markDirty();
+                return true;
+            }
+            return true;  // consume all touches while open
+        }
+        // Free jog mode touch handling
+        if (_freeJogMode && _tab == 0) {
+            // Cancel — exit free jog without moving
+            if (y >= VIZ_Y + VIZ_H - 25 && x >= VIZ_X && x < VIZ_X + VIZ_W*2/3) {
+                _freeJogMode = false;
+                fnc_term_inject("> Free Jog: cancelled");
+                reDisplay(); return true;
+            }
+            // Return to hold position
+            if (hit(_freeJogReturnBtn, x, y)) {
+                char cmd1[80], cmd2[80], cmd3[80];
+                float safeZ = std::max(_freeJogSaveZ + 2.0f, 0.0f);
+                snprintf(cmd1, sizeof(cmd1), "$J=G90 G21 Z%.4f F500", safeZ);
+                send_line(cmd1);
+                snprintf(cmd2, sizeof(cmd2), "$J=G90 G21 X%.4f Y%.4f F3000",
+                         _freeJogSaveX, _freeJogSaveY);
+                send_line(cmd2);
+                snprintf(cmd3, sizeof(cmd3), "$J=G90 G21 Z%.4f F300", _freeJogSaveZ);
+                send_line(cmd3);
+                _freeJogMode = false;
+                fnc_term_inject("> Free Jog: returning to hold position");
+                reDisplay(); return true;
+            }
+            return true;  // consume all other touches in free jog mode
+        }
+
+        if (_zNudgeOpen) {
+            if (hit(_zCloseBtn, x, y)) {
+                char undo[48];
+                snprintf(undo, sizeof(undo), "G10 L20 P1 Z%.4f", _zNudgeBaseZ);
+                send_line(undo);
+                _zNudgeOpen = false;
+                _zNudgeOffset = 0.0f;
+                reDisplay();
+                return true;
+            }
+            if (hit(_zResumeBtn, x, y)) {
+                if (!mpgJogAllowed) {
+                    fnc_term_inject("> Apply+Resume: hold enable button first");
+                    markDirty(); return true;
+                }
+                char finalG10[48];
+                snprintf(finalG10, sizeof(finalG10), "G10 L20 P1 Z%.4f",
+                         _zNudgeBaseZ + _zNudgeOffset);
+                send_line(finalG10);
+                _zNudgeOpen = false;
+                _zNudgeOffset = 0.0f;
+                fnc_realtime((realtime_cmd_t)'~');  // resume job
+                reDisplay();
+                return true;
+            }
+            return true;  // consume all touches while open
+        }
+        return false;
+    }
+
+    void onTouchHold() override {
+        // Relay hold-taps to overlay handler so slow presses still work
+        if (handleOverlayTap(touchX, touchY)) return;
+    }
+
+    void onTouchClick() override {
+        int x = touchX, y = touchY;
+        beep_ui(600, 8);   // subtle click
+
+        // Dismiss job complete overlay on any tap
+        if (_jobComplete) {
+            _jobComplete = false;
+            _jobSentToFluidNC = false;
+            markDirty();
+            return;
+        }
+
+        // Job recovery wizard intercepts touches — but not when probe overlay is open
+        if (jobrecov_getPhase() != RecoveryPhase::None && !_probeOpen) {
+            jobrecov_onTouch(x, y);
+            markDirty(); return;
+        }
+
+        // Alarm/E-stop overlay — intercepts all touches
+        if (_alarmOpen || _forceAlarm) {
+            if (_showEstopRecovery) {
+                extern volatile bool _forceAlarm;
+                auto clearRecovery = [&](){
+                    _showEstopRecovery=false; _estopRecovery=0;
+                    _alarmOpen=false; _forceAlarm=false;
+                };
+                // ── Resume if safe: $X → Idle → ~ ────────────────────────────
+                if (hit(_unlockBtn, x, y)) {
+                    send_line("$X");
+                    fnc_term_inject("> $X — will resume when Idle");
+                    _pendingAction = 4;  // on Idle: send ~
+                    clearRecovery(); markDirty(); return;
+                }
+                // ── Rehome: $X → Idle → Z lift → $HZ → Idle → $HX $HY ────────
+                if (hit(_rehomeBtn, x, y)) {
+                    send_line("$X");
+                    fnc_term_inject("> $X → rehome sequence starting...");
+                    _pendingAction = 1;  // Idle → Z lift + $HZ → Idle → $HX $HY
+                    clearRecovery(); markDirty(); return;
+                }
+                // ── Rehome + Resume job ────────────────────────────────────────
+                if (hit(_rehomeResBtn, x, y)) {
+                    send_line("$X");
+                    fnc_term_inject("> $X → rehome → resume job...");
+                    _pendingAction = 2;  // Idle → Z lift + $HZ → Idle → $HX $HY → Idle → run
+                    clearRecovery(); markDirty(); return;
+                }
+                // ── Cancel job: $X + clear all job state + clear viz ─────────────
+                if (hit(_unlockBtnFull, x, y)) {
+                    send_line("$X");
+                    fnc_term_inject("> $X: Alarm cleared, job cancelled");
+                    simJobName.clear();
+                    _jobSentToFluidNC = false;
+                    simJobRunning = false;
+                    vizPathExecuted = 0;
+                    vizPath.clear();        // clear toolpath from DRO viz
+                    vizJobName.clear();     // clear job name from viz strip
+                    fileSelected = -1;      // deselect file
+                    _runStep = 0;           // close any overlay
+                    clearRecovery(); markDirty(); return;
+                }
+            } else if (!mpgEstopActive) {
+                // Normal FluidNC alarm
+                if (hit(_unlockBtn, x, y)) {
+                    send_line("$X"); fnc_term_inject("> $X");
+                    termLines.push_back({"[MSG:Unlocked]", GREEN});
+                    _alarmOpen=false; markDirty();
+                }
+            }
+            return;
+        }
+
+        // Probe overlay
+        if (_probeOpen) {
+            if (hit(_probeClose, x, y)) {
+                _probeOpen = false;
+                if (_probeOpenForRecovery) { _probeOpenForRecovery = false; markDirty(); }
+                reDisplay(); return;
+            }
+            for (int i = 0; i < N_PROBE_OPTS; i++) {
+                if (hit(_probeRows[i], x, y)) {
+                    _probeOpen = false;
+                    if (PROBE_OPTS[i].cmd[0]) {
+                        send_line(PROBE_OPTS[i].cmd);
+                        fnc_term_inject((std::string("> ") + PROBE_OPTS[i].cmd).c_str());
+                    }
+                    reDisplay(); return;
+                }
+            }
+            _probeOpen = false;
+            if (_probeOpenForRecovery) { _probeOpenForRecovery = false; }
+            reDisplay(); return;
+        }
+
+        // Nav bar — Hold/Abort (when job active) or tab switch
+        if (y >= NAV_Y) {
+            // Check Hold/Abort buttons first (shown when job running on DRO tab)
+            if (hit(_holdBtn, x, y)) {
+                if (!mpgJogAllowed) {
+                    fnc_term_inject("> Hold/Resume: hold enable button");
+                    reDisplay(); return;
+                }
+                if (state == Hold) {
+                    fnc_realtime((realtime_cmd_t)'~');  // Resume
+                    fnc_term_inject("> Resume");
+                } else {
+                    fnc_realtime((realtime_cmd_t)'!');  // Hold
+                    fnc_term_inject("> Hold");
+                }
+                reDisplay(); return;
+            }
+            if (hit(_abortBtn, x, y)) {
+                if (!mpgJogAllowed) {
+                    fnc_term_inject("> Abort: hold enable button");
+                    reDisplay(); return;
+                }
+                fnc_realtime((realtime_cmd_t)0x18);    // Soft Reset
+                fnc_term_inject("> Abort: Reset sent");
+                simJobRunning = false; vizPathExecuted = 0;
+                reDisplay(); return;
+            }
+            for (int i = 0; i < N_TABS; i++) {
+                if (hit(_navTabs[i], x, y)) {
+                    _tab = i;
+                    _confirmRun = false;  // reset two-tap confirm on any tab switch
+                    if (_tab == 2) {
+                        request_file_list(filePath.c_str());
+                    }
+                    reDisplay(); return;
+                }
+            }
+            return;
+        }
+
+        // DRO screen
+        if (_tab == 0) {
+            // Overlay intercept: path jog and Z nudge buttons handled here and in onTouchHold
+            if (handleOverlayTap(x, y)) return;
+
+            // ── Hold mode button strip (in FEED area, full width) ─────────────
+            if (state == Hold && !_pathJogMode && !_zNudgeOpen && !_freeJogMode) {
+                if (hit(_holdZBtn, x, y)) {
+                    if (!mpgJogAllowed) {
+                        fnc_term_inject("> Z Nudge: hold enable button to activate");
+                        reDisplay(); return;
+                    }
+                    _zNudgeOpen = true; _zNudgeOffset = 0.0f;
+                    _zNudgeBaseZ = myAxes[2] / 10000.0f;
+                    reDisplay(); return;
+                }
+                if (hit(_holdJogBtn, x, y)) {
+                    _freeJogSaveX = myAxes[0] / 10000.0f;
+                    _freeJogSaveY = myAxes[1] / 10000.0f;
+                    _freeJogSaveZ = myAxes[2] / 10000.0f;
+                    _freeJogMode  = true;
+                    fnc_term_inject("> Free Jog: position saved — jog freely, tap Return to go back");
+                    reDisplay(); return;
+                }
+                if (hit(_holdRewindBtn, x, y)) {
+                    if (_retraceSupport == 2) {
+                        fnc_term_inject("> Rewind: PathRetrace plugin not installed in FluidNC");
+                        _retraceWarnMs = millis();
+                        reDisplay(); return;
+                    }
+                    _pathJogMode = true; _pathJogIdx = 0; _pathJogAborted = true;
+                    _retraceStartMs = millis();
+                    send_line("$Retrace/Start");
+                    fnc_term_inject("> Path retrace: checking FluidNC plugin...");
+                    reDisplay(); return;
+                }
+            }
+            if (x >= VIZ_X && x < VIZ_X+VIZ_W && y >= VIZ_Y && y < VIZ_Y+VIZ_H) {
+                // View tab bar tap — 4-tab segmented control
+                if (y >= VIZ_Y && y <= VIZ_Y+18) {
+                    int tw = VIZ_W / 4;
+                    int tab = (x - VIZ_X) / tw;
+                    if (tab >= 0 && tab < 4) {
+                        _vizView = tab;
+                        reDisplay(); return;
+                    }
+                }
+                // [X] clear: now in filename strip, tapped below
+                    // [X] clear in filename strip
+                if (!vizJobName.empty() && x >= VIZ_X+VIZ_W-18 &&
+                    y >= VIZ_Y+VIZ_H && y < VIZ_Y+VIZ_H+13) {
+                    vizPath.clear(); vizJobName.clear(); vizPathExecuted=0;
+                    _vizBounds[0]=_vizBounds[1]=_vizBounds[2]=_vizBounds[3]=0;
+                    _vizNRapid=0; _vizNFeed=0; _vizNM6=0;
+                    _vizView=0; markDirty(); return;
+                }
+            uint32_t now2=millis();
+                if (now2-_lastVizTap < 400) { _vizFullscreen=!_vizFullscreen; _lastVizTap=0; }
+                else { _lastVizTap=now2; }
+                markDirty(); return;
+            }
+            // Mode toggle pills: WPos/MPos and mm/in (top of viz area)
+            if (y >= TOP+2 && y <= TOP+12 && x >= DROW+2) {
+                int px=DROW+2, pw=36, g=3;
+                if (x < px+pw)   { _showMPos=false; reDisplay(); return; }  // WPos
+                if (x < px+pw+g+pw) { _showMPos=true; reDisplay(); return; }  // MPos
+                px+=pw+g+pw+g+4;
+                if (x < px+24)   { send_line("G21"); reDisplay(); return; }  // mm
+                if (x < px+51)   { send_line("G20"); reDisplay(); return; }  // in
+            }
+            // Simulation mode: tap a DRO axis row to simulate +0.1mm jog
+            if (false && x < DROW && y >= TOP && y < NAV_Y - FEED_H) {  // sim removed
+                static const int _axCounts[] = {3,4,2,4};
+                int _dr = (NAV_Y - TOP - FEED_H) / _axCounts[_droAxesMode];
+                int axis = (y - TOP) / _dr;
+                if (simMode_handleDROTap(axis)) { reDisplay(); return; }
+            }
+            // Tap FEED or SPND pill to toggle MPG wheel control
+            // Centre (SPEED) pill is display-only
+            if (y >= NAV_Y - FEED_H) {
+                int third = W / 3;
+                if      (x < third)    { _barSel = (_barSel==1)?0:1; reDisplay(); return; }
+                else if (x < 2*third)  { _barSel = (_barSel==2)?0:2; reDisplay(); return; }
+                else                   { _barSel = (_barSel==3)?0:3; reDisplay(); return; }
+            }
+
+        }
+
+        // Homing screen
+        if (_tab == 1) {
+            if (hit(_homeAllBtn, x, y)) {
+                _homePressedId=0; _homePressTime=millis(); g_pressExpiryMs = millis()+300;
+                // Home Z first for safety, then X and Y
+                send_line("$HZ"); fnc_term_inject("> $HZ (Z first for safety)");
+                _pendingAction = 10;  // when Idle: home X and Y
+                reDisplay(); return;
+            }
+            if (hit(_probeBtnR, x, y)) {
+                _homePressedId=1; _homePressTime=millis(); g_pressExpiryMs = millis()+300;
+                _probeOpen=true; reDisplay(); return;
+            }
+            const char* axcmds[]={"$HX","$HY","$HZ"};
+            for(int i=0;i<3;i++){
+                if(hit(_axisHomeBtns[i],x,y)){
+                    _homePressedId=10+i; _homePressTime=millis(); g_pressExpiryMs = millis()+300;
+                    send_line(axcmds[i]);
+                    fnc_term_inject((std::string("> ")+axcmds[i]).c_str());
+                    reDisplay(); return;
+                }
+            }
+            const char* zcmds[]={"G10 L20 P1 X0","G10 L20 P1 Y0","G10 L20 P1 Z0","G10 L20 P1 X0 Y0 Z0"};
+            for(int k=0;k<4;k++){
+                if(hit(_zeroWcsBtns[k],x,y)){
+                    _homePressedId=20+k; _homePressTime=millis(); g_pressExpiryMs = millis()+300;
+                    send_line(zcmds[k]);
+                    fnc_term_inject((std::string("> ")+zcmds[k]).c_str());
+                    termLines.push_back({"ok",GREEN});
+                    reDisplay(); return;
+                }
+            }
+            // Go to Zero buttons — safe Z lift before XY movement
+            for(int k=0;k<4;k++){
+                if(hit(_gotoZeroBtns[k],x,y)){
+                    _homePressedId=30+k; _homePressTime=millis(); g_pressExpiryMs=millis()+300;
+                    send_line("G90");            // absolute mode
+                    if (k == 0) {                // X only
+                        send_line("G53 G0 Z0"); // safe Z height (machine home)
+                        send_line("G0 X0");      // move X to WCS zero
+                        fnc_term_inject("> Go X0 (Z safe lift first)");
+                    } else if (k == 1) {         // Y only
+                        send_line("G53 G0 Z0"); // safe Z height
+                        send_line("G0 Y0");      // move Y to WCS zero
+                        fnc_term_inject("> Go Y0 (Z safe lift first)");
+                    } else if (k == 2) {         // Z only
+                        send_line("G0 Z0");      // move Z directly to WCS zero
+                        fnc_term_inject("> Go Z0");
+                    } else {                     // All: Z up, XY to zero, Z to zero
+                        send_line("G53 G0 Z0"); // 1. lift Z to machine home (safe)
+                        send_line("G0 X0 Y0");  // 2. move XY to WCS zero
+                        send_line("G0 Z0");      // 3. lower Z to WCS zero
+                        fnc_term_inject("> Go All 0 (Z lift → XY → Z0)");
+                    }
+                    reDisplay(); return;
+                }
+            }
+        }
+
+        // Files screen
+        if (_tab == 2) {
+            int hdrH=24, abH=38, rowH=34;
+            int listY=TOP+hdrH, abY=NAV_Y-abH;
+
+            // ── Preview overlay is checked FIRST — it covers the whole screen ──
+            if (filePreviewMode) {
+                int pAbY=NAV_Y-28, bw3=(W-16)/3;
+                if (y >= pAbY) {
+                    // Action bar: [Exit] [G-code/Path] [Run]
+                    if (x < 4+bw3) {
+                        // Exit — cancel any pending confirm
+                        _confirmRun=false;
+                        filePreviewMode=false; _previewShowPath=false;
+                        markDirty(); return;
+                    }
+                    if (x < 8+2*bw3) {
+                        // Toggle — cancel any pending confirm
+                        _confirmRun=false;
+                        if (!vizPath.empty()) _previewShowPath=!_previewShowPath;
+                        else _previewShowPath=false;
+                        markDirty(); return;
+                    }
+                    // Run button — two-tap confirm
+                    if (!_confirmRun) { _confirmRun=true; markDirty(); return; }
+                    _confirmRun=false;
+                    simJobName=fileList[fileSelected].name;
+                    _tab=0; filePreviewMode=false; _previewShowPath=false;
+                    std::string rpath=filePath+"/"+simJobName;
+                    // Ensure viz is available (FluidNC VizGenerator plugin)
+                    send_linef("$Viz/Generate=%s", rpath.c_str());
+                    send_linef("$Localfs/Run=%s",rpath.c_str());
+                    termLines.push_back({"> Run: "+simJobName,COL_DIM2});
+                    _jobSentToFluidNC=true;
+                    jobrecov_jobStarted((filePath+"/"+simJobName).c_str());
+                    _runStep=1; _runStartMs=millis(); markDirty(); return;
+                }
+                // Tap in content area — scroll or consume
+                if (y > pAbY - 20 && y < pAbY) {
+                    // tapped near action bar — ignore
+                }
+                // flick/scroll handled by onUpFlick/onDownFlick
+                return;  // consume — don't let file list handle it
+            }
+
+            // ── Up button ────────────────────────────────────────────────────
+            if (filePath != "/sd" && y>=TOP && y<TOP+hdrH && x>=W-42) {
+                size_t pos = filePath.rfind('/');
+                if (pos != std::string::npos && pos > 0) filePath=filePath.substr(0,pos);
+                else filePath="/sd";
+                fileScroll=0; fileSelected=-1;
+                request_file_list(filePath.c_str()); return;
+            }
+
+            // ── Action bar (View / Run) ───────────────────────────────────────
+            if (y >= abY && fileSelected>=0 && fileSelected<(int)fileList.size()
+                && !fileList[fileSelected].isDir) {
+                int btnY=abY+14, btnH2=abH-16, btnW=(W-12)/2;
+                if (y>=btnY && y<btnY+btnH2) {
+                    if (x<=4+btnW) {
+                        // View
+                        previewScroll=0; _previewShowPath=false;
+                        filePreviewMode=true; markDirty(); return;
+                    } else if (x>=8+btnW) {
+                        // Run — two-tap confirm
+                        if (!_confirmRun) { _confirmRun=true; markDirty(); return; }
+                        _confirmRun=false;
+                        simJobName=fileList[fileSelected].name;
+                        _tab=0; filePreviewMode=false; _previewShowPath=false;
+                        send_line("G90");
+                        send_line("G53 G0 Z0");
+                        send_line("G0 X0 Y0");
+                        std::string path2=filePath+"/"+simJobName;
+                        send_linef("$Localfs/Run=%s",path2.c_str());
+                        termLines.push_back({"> Run: "+simJobName,COL_DIM2});
+                        _jobSentToFluidNC=true;
+                        jobrecov_jobStarted((filePath+"/"+simJobName).c_str());
+                        _runStep=1; _runStartMs=millis(); markDirty(); return;
+                    }
+                }
+                _confirmRun=false; return;
+            }
+
+            // ── File rows ────────────────────────────────────────────────────
+            if (y >= listY && y < abY) {
+                int fi=fileScroll+(y-listY)/rowH;
+                if (fi < (int)fileList.size()) {
+                    if (fileList[fi].isDir) {
+                        filePath+="/"+fileList[fi].name;
+                        fileScroll=0; fileSelected=-1;
+                        request_file_list(filePath.c_str());
+                    } else {
+                        fileSelected=fi;
+                        filePreviewMode=false;
+                        previewLines.clear(); previewScroll=0;
+                        allFileLines.clear();
+                        std::string path=filePath+"/"+fileList[fi].name;
+                        // Always clear old viz when switching files (FIX: same viz bug)
+                        vizPath.clear(); vizPathExecuted=0;
+                        _vizBounds[0]=_vizBounds[1]=_vizBounds[2]=_vizBounds[3]=0;
+                        _vizBounds[4]=_vizBounds[5]=0;
+                        _vizNRapid=0; _vizNFeed=0; _vizNM6=0;
+                        vizJobName=fileList[fi].name;
+                        int fsize=fileList[fi].size;
+                        // Request viz from FluidNC plugin (cached or generate)
+                        send_linef("$Viz/Generate=%s", path.c_str());
+                        // Always load G-code preview lines (FIX: 0 lines bug)
+                        _loadingPath=path; _loadingBatch=0;
+                        request_file_preview(path.c_str(),0,500);
+                        markDirty();
+                    }
+                }
+                return;
+            }
+        }
+
+        // Terminal screen
+        // Probe screen touches (tab 2)
+
+        if (_tab == 3) {
+            // Top row: Soft Reset
+            if (y>=TOP && y<TOP+22) {
+                fnc_realtime((realtime_cmd_t)0x18);
+                fnc_term_inject("> Soft Reset (Ctrl-X)");
+                reDisplay(); return;
+            }
+            for (int ci = 0; ci < N_QUICK_CMDS; ci++) {
+                if (hit(_cmdBtns[ci], x, y)) {
+                    char _echo[68];
+                    snprintf(_echo, sizeof(_echo), "> %s", QUICK_CMDS[ci]);
+                    fnc_term_inject(_echo);
+                    send_line(QUICK_CMDS[ci]);
+                    reDisplay(); return;
+                }
+            }
+        }
+
+        // Macros screen — _macroBtns maps visible slots to MACROS[macroScroll+vi]
+        if (_tab == 4) {
+            // Spindle sub-menu open
+            for (int vi = 0; vi < 8; vi++) {
+                if (_macroBtns[vi].w == 0) break;
+                if (hit(_macroBtns[vi], x, y)) {
+                    int mi = macroScroll + vi;
+                    _macroPressedId = mi; _macroPressTime = millis();
+                    g_pressExpiryMs = millis() + 300;
+                    reDisplay();  // immediate highlight
+                    if (mi < (int)MACROS.size() && !MACROS[mi].cmd.empty()) {
+                        send_line(MACROS[mi].cmd.c_str());
+                        fnc_term_inject((std::string("> ")+MACROS[mi].cmd).c_str());
+                    }
+                    return;
+                }
+            }
+        }
+    }  // end onTouchClick
+
+    void onLeftFlick()  override {}
+    void onRightFlick() override {}
+    void onScrollDrag(int dy) override {
+        // Continuous drag scroll for all scrollable tabs
+        if (_tab == 1) {
+            _homeScroll = std::max(0, _homeScroll + dy);
+            reDisplay();
+        } else if (_tab == 2) {
+            fileScroll += dy;
+            if (fileScroll < 0) fileScroll = 0;
+            reDisplay();
+        } else if (_tab == 3) {
+            termScroll += dy;
+            reDisplay();
+        } else if (_tab == 4) {
+            macroScroll += dy;
+            if (macroScroll < 0) macroScroll = 0;
+            reDisplay();
+        }
+    }
+
+    void onUpFlick() override {
+        if (_tab == 1) { _homeScroll = std::max(0, _homeScroll - 40); reDisplay(); }
+        if (_tab == 2 && filePreviewMode) { previewScroll = std::max(0, previewScroll - 5); reDisplay(); }
+        if (_tab == 3) { termScroll = std::max(0, termScroll - 5); reDisplay(); }
+        if (_tab == 4) { if(_spindleMenuOpen){_spindleMenuOpen=false;}else{macroScroll=std::max(0,macroScroll-2);} reDisplay(); }
+    }
+    void onDownFlick() override {
+        if (_tab == 1) { _homeScroll += 40; reDisplay(); }
+        if (_tab == 2 && filePreviewMode) { previewScroll += 5; reDisplay(); }
+        if (_tab == 3) {
+            termScroll += 5;
+            int cmdY  = NAV_Y - CMD_H;
+            int outH  = cmdY - TOP - 4;
+            int lh3   = 12;
+            int maxL  = (outH - 4) / lh3;
+            int maxSc = std::max(0, fnc_term_count() - maxL);
+            termScroll = std::min(termScroll, maxSc);
+            reDisplay();
+        }
+        if (_tab == 4) { macroScroll+=2; reDisplay(); }
+    }
+
+    void reDisplay() override {
+        static bool _inRedisplay = false;
+        if (_inRedisplay) return;  // prevent reentrant calls
+        _inRedisplay = true;
+        _currentTab = _tab;
+        canvas.fillSprite(COL_BG);
+        drawHeader();
+        canvas.fillRect(0, TOP, W, NAV_Y - TOP, COL_BG);
+        switch (_tab) {
+            case 0: drawDROScreen();      break;
+            case 1: drawHomingScreen();   break;
+            case 2: drawFilesScreen();    break;
+            case 3: drawTerminalScreen(); break;
+            case 4: drawMacrosScreen();   break;
+        }
+        if (_probeOpen)              drawProbeOverlay();
+        if (_runStep > 0) {
+            uint32_t el = millis() - _runStartMs;
+            // Hard timeout: close overlay after 8s regardless
+            if (el > 8000) { _runStep = 0; }
+            // Close as soon as FluidNC enters Cycle (job running)
+            else if (_jobSentToFluidNC && state == Cycle) { _runStep = 0; }
+            // Close if machine goes Alarm (something went wrong)
+            else if (state == Alarm) { _runStep = 0; }
+            else {
+                // Advance steps by time
+                if      (el < 600)  _runStep = 1;
+                else if (el < 2000) _runStep = 2;
+                else if (el < 4000) _runStep = 3;
+                else                _runStep = 4;
+                drawRunSequenceOverlay();
+            }
+        }
+        if (_freeJogMode && _tab == 0) drawFreeJogOverlay();
+        if (_pathJogMode)            drawPathJogOverlay();
+        if (_zNudgeOpen && !_pathJogMode) drawZNudgeOverlay();
+        if (_alarmOpen || _forceAlarm) drawAlarmOverlay(_forceAlarm && simMode_active());
+        // Job complete overlay — DRO tab, after Cycle→Idle
+        if (_jobComplete && _tab == 0 && state == Idle) {
+            drawJobCompleteOverlay();
+        }
+
+        // Don't show disconnected overlay while recovery prompt is shown
+        // Only show disconnected overlay after 2 seconds continuous disconnection
+        // Prevents brief UART glitches flashing the overlay
+        {
+            static uint32_t _disconnSince = 0;
+            if (state == Disconnected && !simMode_active() &&
+                jobrecov_getPhase() == RecoveryPhase::None) {
+                if (_disconnSince == 0) _disconnSince = millis();
+                if (millis() - _disconnSince >= 2000) drawDisconnectedOverlay();
+            } else {
+                _disconnSince = 0;
+            }
+        }
+        drawNav();
+        // Recovery wizard drawn absolutely last
+        if (jobrecov_getPhase() != RecoveryPhase::None) {
+            jobrecov_draw(&canvas, W, H, TOP, NAV_Y);
+            // If user tapped "Open Probe" in ToolChange screen
+            if (jobrecov_wantsProbe()) {
+                jobrecov_clearProbe();
+                _probeOpen = true;
+                _probeOpenForRecovery = true;
+            }
+        }
+        refreshDisplay();
+        _inRedisplay = false;
+    }
+};
+
+static TabScene tabScene;
+
+void mpgCheckMacroFire() {
+    if (!_p6MacroFire) return;
+    _p6MacroFire = false;
+    if (_enableMacro >= 0 && _enableMacro < (int)MACROS.size()
+        && !MACROS[_enableMacro].cmd.empty()) {
+        send_line(MACROS[_enableMacro].cmd.c_str());
+    }
+}
+
+// Global press expiry — set by any button press, checked in dispatch_events
+void tabui_setEstopRecovery() {
+    _estopRecovery = 1;
+    _showEstopRecovery = true;  // signal class to keep overlay open
+    markDirty();
+}
+
+static void tabui_saveHourMeter();  // forward declaration
+
+void tabui_checkPressExpiry() {
+    uint32_t now = millis();
+    if (g_pressExpiryMs > 0 && now >= g_pressExpiryMs) {
+        g_pressExpiryMs = 0;
+        markDirty();
+    }
+    // Periodic job checkpoint save — every 10 seconds while job running
+    static uint32_t _lastChkptSave = 0;
+    if (_jobSentToFluidNC && state == Cycle && now - _lastChkptSave > 10000) {
+        _lastChkptSave = now;
+        jobrecov_saveNow();
+    }
+    // Hour meter: accumulate job seconds when machine is in Cycle state
+    if (state == Cycle) {
+        if (_cycleSecLast == 0) _cycleSecLast = now;
+        if (now - _cycleSecLast >= 1000) {
+            uint32_t secs = (now - _cycleSecLast) / 1000;
+            _jobSeconds += secs;
+            _cycleSecLast = now - ((now - _cycleSecLast) % 1000);
+            // Save every 30 seconds
+            static uint32_t _lastHrSave = 0;
+            if (now - _lastHrSave > 60000) { _lastHrSave = now; tabui_saveHourMeter(); }
+            // Check maintenance due
+            if (!_maintNotified && _maintDueSecs > 0 && _jobSeconds >= _maintDueSecs) {
+                _maintNotified = true;
+                beep_ui(880, 200);
+                markDirty();
+            }
+        }
+    } else {
+        _cycleSecLast = 0;
+    }
+
+    // Alarm two-tone beep (4 pairs)
+    if (_alarmBeepCount > 0 && now >= _alarmBeepNext) {
+        beep_ui(880,  60);
+        delay(80);
+        beep_ui(1400, 60);
+        _alarmBeepCount--;
+        _alarmBeepNext = now + 500;
+    }
+    // Handle tab switch requested by recovery wizard (e.g. "Go to Home tab")
+    if (_tabFromRecovery >= 0) {
+        extern void tabui_setTab(int);
+        _currentTab = _tabFromRecovery;
+        _tabFromRecovery = -1;
+        markDirty();
+    }
+
+    // ── PathRetrace plugin availability check ────────────────────────────────
+    // If $Retrace/Start was sent but no [MSG:PathRetrace:Active] arrived within
+    // 2 seconds, assume the plugin is not installed in FluidNC.
+    if (_retraceStartMs > 0 && (now - _retraceStartMs) > 2000) {
+        _retraceStartMs = 0;
+        _retraceSupport = 2;  // mark as unavailable
+        _pathJogMode    = false;
+        _retraceWarnMs  = millis();
+        fnc_term_inject("> Rewind: PathRetrace plugin not found in FluidNC");
+        fnc_term_inject(">   Install FluidNC-PathRetrace-plugin.zip to enable");
+        markDirty();
+    }
+
+    // ── Heap monitor — warn if heap critically low ───────────────────────────
+    {
+        static uint32_t _lastHeapCheck = 0;
+        if (now - _lastHeapCheck > 5000) {  // check every 5s
+            _lastHeapCheck = now;
+            uint32_t freeHeap = ESP.getFreeHeap();
+            uint32_t minFree  = ESP.getMinFreeHeap();  // all-time low water mark
+            if (freeHeap < 30000) {  // <30KB is critical
+                char hm[64];
+                snprintf(hm, sizeof(hm), "[WARN] Heap low: %luB free, min=%luB",
+                         (unsigned long)freeHeap, (unsigned long)minFree);
+                fnc_term_inject(hm);
+                // Trim caches to recover memory
+                if ((int)allFileLines.size() > 1000) {
+                    allFileLines.resize(1000);
+                    allFileLines.shrink_to_fit();
+                }
+                if ((int)previewLines.size() > 500) {
+                    previewLines.resize(500);
+                    previewLines.shrink_to_fit();
+                }
+            }
+        }
+    }
+
+    // Pending action poll — fires when machine reaches Idle state
+    // More reliable than onStateChange callback which can miss transitions
+    static uint32_t _lastActionCheck = 0;
+    // Actions 6 and 8 fire on Alarm OR Idle (Idle fallback if Alarm state was brief)
+    bool action68_trigger = (_pendingAction == 6 || _pendingAction == 8)
+                         && (state == Alarm || state == Idle)
+                         && now - _lastActionCheck > 300;
+    if (action68_trigger) {
+        _lastActionCheck = now;
+        int act = _pendingAction;
+        _pendingAction = 0;
+        if (state == Alarm) send_line("$X");  // clear alarm only if in Alarm state
+        if (act == 6) {
+            fnc_term_inject(state == Alarm ? "> $X: clearing alarm for rewind resume"
+                                           : "> Rewind: ready to run");
+            _pendingAction = 7;  // on Idle: run rewind.nc
+        } else {
+            fnc_term_inject(state == Alarm ? "> $X: machine clear — rewind jogging ready"
+                                           : "> Rewind: jog ready");
+            _pendingAction = 9;  // on Idle: set _pathJogAborted=true + send first jog
+        }
+    }
+    if (_pendingAction != 0 && _pendingAction != 6 && state == Idle && now - _lastActionCheck > 300) {
+        _lastActionCheck = now;
+        int action = _pendingAction;
+        _pendingAction = 0;
+        if (action == 1) {
+            send_line("$HZ");
+            fnc_term_inject("> $HZ: Homing Z");
+            _pendingAction = 11;
+        } else if (action == 11) {
+            send_line("$HX"); send_line("$HY");
+            fnc_term_inject("> $HX $HY: Homing XY");
+        } else if (action == 2) {
+            send_line("$HZ");
+            fnc_term_inject("> $HZ: Homing Z first");
+            _pendingAction = 12;
+        } else if (action == 12) {
+            send_line("$HX"); send_line("$HY");
+            fnc_term_inject("> $HX $HY");
+            _pendingAction = 3;
+        } else if (action == 3) {
+            if (!simJobName.empty()) {
+                // Large-file rewind fallback: re-run original job from start.
+                // Spindle was stopped by the abort — restart it before running.
+                if (mySpeed > 0) {
+                    char sline[32];
+                    snprintf(sline, sizeof(sline), "M3 S%u", (unsigned)mySpeed);
+                    send_line(sline);
+                    send_line("G4 P2");  // 2s spindle spool-up
+                }
+                std::string rpath = filePath+"/"+simJobName;
+                send_linef("$Localfs/Run=%s", rpath.c_str());
+                _jobSentToFluidNC = true;
+                _runStep = 1; _runStartMs = millis();
+                fnc_term_inject(("> Rerun from start: "+simJobName).c_str());
+            } else {
+                fnc_term_inject("> Cannot restart: no job name. Use Files tab to re-run.");
+                _jobSentToFluidNC = false;
+            }
+        } else if (action == 4) {
+            fnc_realtime((realtime_cmd_t)'~');
+            fnc_term_inject("> ~ Resume");
+        } else if (action == 7) {
+            // Legacy fallback — no longer triggered (retrace now handled by FluidNC plugin)
+            fnc_term_inject("> Action 7: legacy path, not expected. Re-run from Files tab.");
+        } else if (action == 9) {
+            // Path jog abort complete — machine now Idle, ready for $J jogging
+            _pathJogAborted = true;
+            fnc_term_inject("> Live rewind ready — turn MPG to jog along path");
+            // Send jog to current _pathJogIdx in case user already turned encoder
+            int total9 = (int)vizPath.size();
+            if (_pathJogMode && total9 > 0) {
+                int idx9 = std::max(0, std::min(_pathJogIdx, total9-1));
+                float tx9 = vizPath[idx9].x;
+                float ty9 = vizPath[idx9].y;
+                float sv9 = mpgSteps[(int)mpgStepIdx];
+                int fd9 = (sv9 <= 0.011f) ? 300 : (sv9 <= 0.11f) ? 1000 : 3000;
+                char c9[64];
+                snprintf(c9, sizeof(c9), "$J=G90 G21 X%.3f Y%.3f F%d", tx9, ty9, fd9);
+                send_line(c9);
+            }
+        } else if (action == 10) {
+            send_line("$HX"); send_line("$HY");
+            fnc_term_inject("> $HX $HY");
+        }
+        markDirty();
+    }
+}
+
+void tabui_setVolume(int v) {
+    _volumeLevel = (v < 0) ? 0 : (v > 9) ? 9 : v;
+}
+void tabui_setMachineType(int t) { _machineType = t; }
+
+// Called from FluidNCModel::show_error when FluidNC responds with an error.
+// Detects error response to $Retrace/Start — means plugin is not installed.
+void tabui_onFluidNCError(int err) {
+    if (_retraceStartMs > 0) {
+        // Any error while waiting for retrace confirmation = plugin absent
+        _retraceStartMs = 0;
+        _retraceSupport = 2;
+        _pathJogMode    = false;
+        _retraceWarnMs  = millis();
+        fnc_term_inject("> Rewind: plugin not installed (FluidNC error response)");
+        fnc_term_inject(">   Install FluidNC-PathRetrace-plugin.zip to enable");
+        markDirty();
+    }
+}
+
+// Hour meter — load/save from NVS
+void tabui_loadHourMeter() {
+    nvs_handle_t h = nvs_init("tabui_hrs");
+    if (!h) return;
+    int32_t v=0;
+    nvs_get_i32(h, "jobSecs", &v); _jobSeconds = (uint32_t)v;
+    v=0; nvs_get_i32(h, "maintDue", &v); _maintDueSecs = (uint32_t)v;
+    // Auto-arm on first boot: if no due time set, arm from current hours
+    if (_maintDueSecs == 0 && _maintIntervalH > 0) {
+        _maintDueSecs = _jobSeconds + (uint32_t)(_maintIntervalH * 3600);
+        tabui_saveHourMeter();
+    }
+}
+void tabui_saveHourMeter() {
+    nvs_handle_t h = nvs_init("tabui_hrs");
+    if (!h) return;
+    nvs_set_i32(h, "jobSecs",  (int32_t)_jobSeconds);
+    nvs_set_i32(h, "maintDue", (int32_t)_maintDueSecs);
+    nvs_commit(h);
+}
+void tabui_resetMaintenance() {
+    _maintDueSecs = _jobSeconds + (uint32_t)(_maintIntervalH * 3600);
+    _maintNotified = false;
+    tabui_saveHourMeter();
+}
+void tabui_setMaintInterval(int h) {
+    _maintIntervalH = h;
+}
+uint32_t tabui_getJobSeconds() { return _jobSeconds; }
+bool     tabui_maintDue()      { return _maintDueSecs > 0 && _jobSeconds >= _maintDueSecs; }
+
+void tabui_resetJobState() {
+    // Clear stale job state flags — call on boot or mode switch
+    simJobRunning    = false;
+    _jobSentToFluidNC = false;
+    vizPathExecuted  = 0;
+}
+
+Scene* getTabScene() { return &tabScene; }
